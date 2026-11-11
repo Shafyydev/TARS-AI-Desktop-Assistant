@@ -1,0 +1,3 @@
+﻿# Extra dependencies for the TARS local web dashboard (kept separate from core requirements)
+fastapi>=0.110.0
+uvicorn>=0.29.0

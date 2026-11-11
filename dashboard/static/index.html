@@ -1,0 +1,221 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TARS Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b0f14; --panel: #121922; --panel2: #0f151d; --border: #223040;
+      --text: #e6edf3; --muted: #9fb0c3; --cyan: #39d0ff; --green: #3ddc97; --amber: #ffcc66; --red: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Segoe UI, system-ui, -apple-system, sans-serif; background: radial-gradient(1200px 600px at 10% -10%, #122033 0%, var(--bg) 50%), var(--bg); color: var(--text); }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); background: rgba(10,14,20,0.8); backdrop-filter: blur(6px); position: sticky; top: 0; z-index: 5; }
+    .brand { display: flex; gap: 12px; align-items: center; }
+    .logo { font-weight: 800; letter-spacing: 3px; color: var(--cyan); font-size: 20px; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .pill { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--green); background: #0e1712; }
+    .layout { display: grid; grid-template-columns: 320px 1fr 360px; gap: 14px; padding: 14px; }
+    .panel { background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; min-height: 120px; }
+    .panel h2 { margin: 0; padding: 10px 12px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--cyan); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
+    .panel .body { padding: 10px 12px; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat { background: #0c1219; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+    .stat .k { font-size: 11px; color: var(--muted); }
+    .stat .v { font-size: 16px; font-weight: 700; margin-top: 2px; }
+    .kv { font-size: 12px; color: var(--muted); margin: 4px 0; }
+    .kv b { color: var(--text); font-weight: 600; }
+    .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 110px); }
+    .chat-log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .msg { max-width: 92%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); white-space: pre-wrap; line-height: 1.35; font-size: 14px; }
+    .msg.user { align-self: flex-end; background: #142233; border-color: #27415f; }
+    .msg.assistant { align-self: flex-start; background: #101821; }
+    .msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.2); }
+    .composer input { flex: 1; background: #0c1219; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+    .composer button { background: #0f2a36; color: var(--cyan); border: 1px solid #1f5f7a; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+    .composer button:disabled { opacity: .5; cursor: not-allowed; }
+    .list { max-height: 220px; overflow: auto; font-size: 12px; }
+    .item { padding: 6px 0; border-bottom: 1px dashed #1d2835; }
+    .item:last-child { border-bottom: none; }
+    .tag { color: var(--amber); font-weight: 600; }
+    .ok { color: var(--green); } .fail { color: var(--red); }
+    .mono { font-family: Consolas, ui-monospace, monospace; font-size: 11px; color: #c9d6e2; }
+    .small { font-size: 11px; color: var(--muted); }
+    a { color: var(--cyan); }
+    @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .chat-wrap { height: 60vh; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">TARS</div>
+      <div>
+        <div><b>Tactical Autonomous Robotic System</b> — Local Dashboard</div>
+        <div class="sub">Control & monitor without terminal · <span id="clock">--</span></div>
+      </div>
+    </div>
+    <div id="online" class="pill">● CONNECTING</div>
+  </header>
+
+  <div class="layout">
+    <section class="panel" style="grid-row: span 2;">
+      <h2>System Telemetry</h2>
+      <div class="body">
+        <div class="stats">
+          <div class="stat"><div class="k">CPU Load</div><div class="v" id="cpu">--</div></div>
+          <div class="stat"><div class="k">RAM</div><div class="v" id="ram">--</div></div>
+          <div class="stat"><div class="k">Disk Free</div><div class="v" id="disk">--</div></div>
+          <div class="stat"><div class="k">Battery</div><div class="v" id="battery">--</div></div>
+        </div>
+        <div style="margin-top:10px">
+          <div class="kv"><b>LLM:</b> <span id="llm">--</span></div>
+          <div class="kv"><b>Honesty:</b> <span id="honesty">--</span> · <b>Humor:</b> <span id="humor">--</span> · <b>Sarcasm:</b> <span id="sarcasm">--</span></div>
+          <div class="kv"><b>CWD:</b> <span id="cwd" class="mono">--</span></div>
+        </div>
+        <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
+        <div class="kv"><b>Reminders</b></div>
+        <div id="reminders" class="list small">Loading…</div>
+        <div class="kv" style="margin-top:10px"><b>Preferences</b></div>
+        <div id="prefs" class="list small">Loading…</div>
+      </div>
+    </section>
+
+    <section class="panel chat-wrap">
+      <h2>Command Console</h2>
+      <div id="chat" class="chat-log"></div>
+      <div class="composer">
+        <input id="prompt" placeholder="Type a command for TARS (e.g. 'system status', 'open notepad')…" />
+        <button id="send">Send</button>
+      </div>
+      <div class="small" style="padding:0 10px 10px;color:var(--muted)">Runs through TARS agent locally. Destructive actions are denied in dashboard mode unless confirmed via terminal.</div>
+    </section>
+
+    <section class="panel" style="grid-row: span 2;">
+      <h2>Activity</h2>
+      <div class="body">
+        <div class="kv"><b>Recent Conversation</b></div>
+        <div id="history" class="list">Loading…</div>
+        <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
+        <div class="kv"><b>Tool Call Log (latest)</b></div>
+        <div id="toolslog" class="list mono">Loading…</div>
+      </div>
+    </section>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+function addMsg(role, text, meta){
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  d.innerHTML = (meta?`<div class="meta">${esc(meta)}</div>`:'') + esc(text);
+  $('chat').appendChild(d);
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
+
+async function refreshStatus(){
+  try{
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    $('online').textContent = '● ONLINE';
+    $('online').style.color = 'var(--green)';
+    $('clock').textContent = j.time || '--';
+    const t = j.telemetry || {};
+    $('cpu').textContent = (t.cpu_load_percent!=null? t.cpu_load_percent+'%':'--');
+    $('ram').textContent = (t.ram_usage_percent!=null? t.ram_usage_percent+'%':'--');
+    $('disk').textContent = (t.disk_free_gb!=null? t.disk_free_gb+' GB':'--');
+    $('battery').textContent = t.battery || '--';
+    $('cwd').textContent = j.cwd || '--';
+    const llm = j.llm||{};
+    $('llm').textContent = `${llm.model||'n/a'} (${llm.available?'available':'offline/local'})`;
+    const p = j.personality||{};
+    $('honesty').textContent = (p.honesty!=null? p.honesty+'%':'--');
+    $('humor').textContent = (p.humor!=null? p.humor+'%':'--');
+    $('sarcasm').textContent = (p.sarcasm!=null? p.sarcasm+'%':'--');
+  }catch(e){
+    $('online').textContent = '● OFFLINE';
+    $('online').style.color = 'var(--red)';
+  }
+}
+
+async function refreshReminders(){
+  try{
+    const j = await (await fetch('/api/reminders')).json();
+    const items = j.items || [];
+    if(!items.length){ $('reminders').innerHTML = '<span class="small">No upcoming reminders.</span>'; return; }
+    $('reminders').innerHTML = items.map(r=>`<div class="item"><span class="tag">${esc(r.due_time||'')}</span><br>${esc(r.message||'')}</div>`).join('');
+  }catch(e){ $('reminders').textContent = 'Unavailable'; }
+}
+
+async function refreshPrefs(){
+  try{
+    const j = await (await fetch('/api/preferences')).json();
+    const items = (j.items||[]).slice(0,12);
+    if(!items.length){ $('prefs').innerHTML = '<span class="small">No stored facts.</span>'; return; }
+    $('prefs').innerHTML = items.map(r=>`<div class="item"><b>${esc(r.key)}</b>: ${esc(typeof r.value==='string'?r.value:JSON.stringify(r.value))}</div>`).join('');
+  }catch(e){ $('prefs').textContent = 'Unavailable'; }
+}
+
+async function refreshHistory(){
+  try{
+    const j = await (await fetch('/api/history?limit=20')).json();
+    const items = j.items||[];
+    if(!items.length){ $('history').innerHTML = '<span class="small">No conversation yet.</span>'; return; }
+    $('history').innerHTML = items.slice(-20).map(m=>{
+      const role = m.role==='user'?'You':'TARS';
+      const txt = (m.content||'').slice(0,140);
+      return `<div class="item"><span class="tag">${role}</span> ${esc(txt)}${(m.content||'').length>140?'…':''}</div>`;
+    }).join('');
+  }catch(e){ $('history').textContent = 'Unavailable'; }
+}
+
+async function refreshToolLogs(){
+  try{
+    const j = await (await fetch('/api/tool-logs?limit=20')).json();
+    const items = j.items||[];
+    if(!items.length){ $('toolslog').innerHTML = '<span class="small">No tool calls logged.</span>'; return; }
+    $('toolslog').innerHTML = items.map(it=>{
+      if(it.raw) return `<div class="item">${esc(it.raw)}</div>`;
+      const ok = it.result && it.result.success===false ? 'fail':'ok';
+      return `<div class="item"><span class="${ok}">${esc(it.tool_name||'?')}</span> <span class="small">${esc(it.datetime||'')}</span></div>`;
+    }).join('');
+  }catch(e){ $('toolslog').textContent = 'Unavailable'; }
+}
+
+async function sendPrompt(){
+  const input = $('prompt');
+  const text = input.value.trim();
+  if(!text) return;
+  input.value='';
+  $('send').disabled = true;
+  addMsg('user', text, 'You');
+  try{
+    const r = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt:text})});
+    const j = await r.json();
+    if(!r.ok){ addMsg('assistant', j.detail || 'Request failed', 'Error'); }
+    else {
+      let meta = `TARS · ${j.duration_sec||0}s`;
+      if(j.steps && j.steps.length) meta += ` · ${j.steps.length} step(s)`;
+      addMsg('assistant', j.response || '(no response)', meta);
+      if(j.steps && j.steps.length){
+        const lines = j.steps.map(s=>`- ${s.tool||'step'}: ${s.result && s.result.success===false ? 'FAILED':'OK'}`).join('\n');
+        addMsg('assistant', lines, 'Executed steps');
+      }
+    }
+  }catch(e){ addMsg('assistant', 'Network error: '+e, 'Error'); }
+  $('send').disabled = false;
+  refreshHistory(); refreshToolLogs(); refreshReminders(); refreshStatus();
+}
+
+$('send').addEventListener('click', sendPrompt);
+$('prompt').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendPrompt(); });
+
+addMsg('assistant', 'Dashboard connected. Enter a command below to control TARS without the terminal.', 'TARS');
+refreshStatus(); refreshReminders(); refreshPrefs(); refreshHistory(); refreshToolLogs();
+setInterval(refreshStatus, 5000);
+setInterval(()=>{ refreshReminders(); refreshHistory(); refreshToolLogs(); }, 10000);
+</script>
+</body>
+</html>
