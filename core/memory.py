@@ -113,3 +113,42 @@ class MemoryStore:
         """Closes the database connection."""
         if self._conn:
             self._conn.close()
+
+
+_default_memory_store: Optional[MemoryStore] = None
+
+
+def get_default_memory() -> MemoryStore:
+    """Returns the default active MemoryStore instance."""
+    global _default_memory_store
+    if _default_memory_store is None:
+        _default_memory_store = MemoryStore()
+    return _default_memory_store
+
+
+def set_default_memory(store: MemoryStore) -> None:
+    """Sets the active MemoryStore instance."""
+    global _default_memory_store
+    _default_memory_store = store
+
+
+def remember_fact(key: str, value: str) -> Dict[str, Any]:
+    """
+    Stores a persistent user preference, fact, or instruction into memory.
+
+    Args:
+        key: The preference label or topic (e.g. 'user_name', 'favorite_browser', 'working_directory').
+        value: The detail or value to remember (e.g. 'Shafyy', 'Brave', 'd:/codehub').
+
+    Returns:
+        Dict indicating success, key, value, and a confirmation message.
+    """
+    store = get_default_memory()
+    store.set_user_preference(key, value)
+    return {
+        "success": True,
+        "key": key,
+        "value": value,
+        "message": f"Remembered: '{key}' is '{value}'."
+    }
+
