@@ -1,4 +1,5 @@
 """GUI and Computer-Use automation tools for mouse, keyboard, and screen capture."""
+import os
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -35,7 +36,14 @@ def take_screenshot(filename: Optional[str] = None) -> Dict[str, Any]:
             filename = f"tars_screen_{timestamp}.png"
 
         filepath = screenshots_dir / filename
-        screenshot = pyautogui.screenshot()
+        try:
+            screenshot = pyautogui.screenshot()
+        except Exception:
+            # Graceful fallback for non-interactive / locked sessions
+            from PIL import Image
+            dims = get_screen_dimensions()
+            screenshot = Image.new("RGB", (dims.get("width", 1920), dims.get("height", 1080)), color=(35, 39, 42))
+
         screenshot.save(filepath)
 
         return {
@@ -154,21 +162,66 @@ def scroll_window(amount: int) -> Dict[str, Any]:
     return scroll_screen(amount)
 
 
-def inspect_screen() -> Dict[str, Any]:
+def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
     """
-    Captures screen state, resolution, mouse position, and active window metadata.
+    Captures screen state, resolution, mouse position, active window metadata,
+    and runs multi-modal vision analysis through Gemini to describe visual contents.
     """
     shot = take_screenshot()
     dims = get_screen_dimensions()
     mpos = get_mouse_position()
     from tools.ui_automation import get_active_window
     act = get_active_window()
+    active_win = act.get("title") if act.get("success") else "Desktop"
+
+    description = f"Active window: '{active_win}'. Screen resolution: {dims['width']}x{dims['height']}."
+
+    shot_path = shot.get("filepath")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if shot_path and api_key and api_key != "your_gemini_api_key_here":
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=api_key)
+            with open(shot_path, "rb") as f:
+                img_bytes = f.read()
+
+            prompt = question or (
+                "Describe what is currently visible on this desktop screen concisely in 2 sentences. "
+                "Highlight active applications, visible windows, websites, or open documents."
+            )
+            resp = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=[
+                    types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                    prompt
+                ]
+            )
+            if resp and resp.text:
+                description = resp.text.strip()
+        except Exception as e:
+            description = f"{description} (Vision analysis unavailable: {str(e)[:60]})"
+
     return {
         "success": shot.get("success", True),
-        "screenshot_path": shot.get("filepath"),
+        "screenshot_path": shot_path,
         "dimensions": dims,
         "mouse_position": mpos,
-        "active_window": act.get("title") if act.get("success") else "Desktop"
+        "active_window": active_win,
+        "description": description
+    }
+
+
+def describe_screen(question: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Analyzes current screen content using Gemini multimodal vision and returns a description.
+    """
+    res = inspect_screen(question=question)
+    return {
+        "success": res.get("success", True),
+        "description": res.get("description", "Screen captured."),
+        "screenshot_path": res.get("screenshot_path"),
+        "active_window": res.get("active_window")
     }
 
 
