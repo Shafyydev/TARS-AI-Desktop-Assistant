@@ -18,6 +18,7 @@ class TestTARS(unittest.TestCase):
         self.speaker = VoiceSpeaker()
         self.listener = VoiceListener()
         self.agent = TARSAgent()
+        self.agent.set_confirmation_callback(lambda tool, args: True)
 
     def test_safe_command(self):
         is_allowed, req_confirm, reason = self.safety.evaluate_command("Get-Process")
@@ -100,6 +101,23 @@ class TestTARS(unittest.TestCase):
         res_switch = self.agent.run_agent_loop("switch window")
         self.assertTrue(res_switch["success"])
         self.assertEqual(res_switch["steps"][0]["tool"], "switch_window")
+
+    def test_narrowed_regexes_fall_through(self):
+        # "help me write an email" should NOT match the canned help/capabilities fast path
+        fast_help = self.agent._autonomous_local_execute("help me write an email")
+        self.assertIsNone(fast_help)
+
+        # "tell me a funny story" should not trigger canned joke
+        fast_story = self.agent._autonomous_local_execute("tell me a story about interstellar travel")
+        self.assertIsNone(fast_story)
+
+        # Non-imperative click sentence should not trigger GUI click
+        fast_click = self.agent._autonomous_local_execute("click on the link and read the paper and explain it to me")
+        self.assertIsNone(fast_click)
+
+        # Conversational tab sentence should not trigger press_keys ctrl+w
+        fast_tab = self.agent._autonomous_local_execute("explain what a browser tab is and how it works")
+        self.assertIsNone(fast_tab)
 
     def test_presence_instant_response(self):
         res = self.agent.run_agent_loop("where are you now")
@@ -342,6 +360,124 @@ class TestTARS(unittest.TestCase):
             import os
             self.assertTrue(os.path.exists(exe))
             self.assertIn("brave", exe.lower())
+
+
+class TestConfirmationGate(unittest.TestCase):
+    """Tests for Phase 1 Task 1: Central confirmation gate and safety normalization."""
+
+    def setUp(self):
+        self.safety = SafetyValidator()
+        self.agent = TARSAgent()
+        # Default unconfirmed agent
+
+    def test_safety_whitespace_and_case_bypasses(self):
+        # Two spaces bypass
+        allowed, req, reason = self.safety.evaluate_command("format  c:")
+        self.assertFalse(allowed)
+        self.assertIn("blocked", reason.lower())
+
+        # Multiple spaces and uppercase
+        allowed2, req2, reason2 = self.safety.evaluate_command("  FORMAT   C:  ")
+        self.assertFalse(allowed2)
+
+        # Del with spaces on protected path
+        allowed3, req3, reason3 = self.safety.evaluate_command("del /f /s   c:\\windows\\system32")
+        self.assertFalse(allowed3)
+
+    def test_destructive_tool_unconfirmed_blocks(self):
+        # execute_tool on destructive tool without callback or confirmed flag
+        res = self.agent.execute_tool("delete_file_or_folder", {"name": "test.txt", "location": "desktop"})
+        self.assertFalse(res.get("success", False))
+        self.assertTrue(res.get("requires_confirmation"))
+        self.assertFalse(res.get("confirmed"))
+        self.assertIn("CONFIRMATION REQUIRED", res.get("error", ""))
+        self.assertIsNotNone(self.agent.pending_confirmation)
+
+    def test_destructive_tool_denied_by_callback(self):
+        self.agent.set_confirmation_callback(lambda tool, args: False)
+        res = self.agent.execute_tool("empty_recycle_bin", {})
+        self.assertFalse(res.get("success", False))
+        self.assertIn("DENIED", res.get("error", ""))
+
+    def test_destructive_tool_approved_by_callback(self):
+        self.agent.set_confirmation_callback(lambda tool, args: True)
+        res = self.agent.execute_tool("run_approved_command", {"command": "Write-Output 'OK'"})
+        self.assertTrue(res.get("success", True))
+
+    def test_destructive_tool_cmd_requires_confirmation(self):
+        from tools.terminal_tools import run_cmd
+        res = run_cmd("shutdown /s /t 60")
+        self.assertFalse(res["success"])
+        self.assertTrue(res["requires_confirmation"])
+        self.assertIn("CONFIRMATION REQUIRED", res["stderr"])
+
+    def test_two_turn_conversational_confirmation(self):
+        # 1. User requests destructive delete
+        res1 = self.agent.run_agent_loop("delete folder dummy_test on desktop")
+        self.assertIsNotNone(self.agent.pending_confirmation)
+
+        # 2. User confirms with 'yes'
+        res2 = self.agent.run_agent_loop("yes")
+        self.assertIsNone(self.agent.pending_confirmation)
+        self.assertIn("Confirmed", res2["response"])
+
+    def test_two_turn_conversational_cancellation(self):
+        # 1. User requests destructive action
+        self.agent.run_agent_loop("delete folder dummy_test on desktop")
+        self.assertIsNotNone(self.agent.pending_confirmation)
+
+        # 2. User cancels with 'no'
+        res = self.agent.run_agent_loop("no")
+        self.assertIsNone(self.agent.pending_confirmation)
+        self.assertIn("cancelled", res["response"].lower())
+
+    def test_remember_fact_tool_and_fast_path(self):
+        from core.memory import remember_fact
+        # Direct tool execution
+        res = remember_fact("test_key", "test_val")
+        self.assertTrue(res["success"])
+        self.assertEqual(self.agent.memory.get_user_preference("test_key"), "test_val")
+
+        # Conversational fast path
+        res_loop = self.agent.run_agent_loop("remember that my editor is VSCode")
+        self.assertTrue(res_loop["success"])
+        self.assertEqual(self.agent.memory.get_user_preference("my editor"), "VSCode")
+        self.assertIn("VSCode", res_loop["response"])
+
+        all_prefs = self.agent.memory.get_all_preferences()
+        self.assertIn("my editor", all_prefs)
+        self.assertIn("test_key", all_prefs)
+
+    def test_llm_provider_error_surfacing(self):
+        from core.llm_provider import LLMProvider
+        provider = LLMProvider()
+        # Force client to None
+        provider.client = None
+        res = provider.run_tool_agent_loop(
+            prompt="Hello",
+            system_instruction="sys",
+            tools_list=[],
+            tool_executor=lambda name, args: None
+        )
+        self.assertIsNotNone(res)
+        self.assertFalse(res["success"])
+        self.assertTrue(res["response"].startswith("LLM unavailable:"))
+
+    def test_settings_models_no_duplicates(self):
+        from core.llm_provider import DEFAULT_MODELS
+        # Verify no duplicates in DEFAULT_MODELS
+        self.assertEqual(len(DEFAULT_MODELS), len(set(DEFAULT_MODELS)))
+
+        # Verify no duplicate in settings.yaml fallback
+        import yaml
+        from pathlib import Path
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        primary = cfg["llm"]["model"]
+        fallbacks = cfg["llm"]["fallback_models"]
+        self.assertNotIn(primary, fallbacks)
+
 
 
 if __name__ == "__main__":
