@@ -22,6 +22,10 @@ edge-tts>=6.1.12
 pygame>=2.5.2
 SpeechRecognition>=3.10.4
 pyaudio>=0.2.14
+pvporcupine>=4.0.0
+
+# Task Scheduling & Reminders
+apscheduler>=3.10.0
 
 # Web & Network Automation
 playwright>=1.44.0

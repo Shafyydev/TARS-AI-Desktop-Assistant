@@ -17,7 +17,7 @@ graph TD
     FastPath -- "No (Compound / Novel Tasks)" --> Orchestrator["TaskOrchestrator & TaskState"]
     
     Orchestrator --> LLM["LLMProvider (Gemini 3.8 Flash ReAct Engine)"]
-    LLM --> ToolRegistry["Central Tool Registry (54 Tools)"]
+    LLM --> ToolRegistry["Central Tool Registry (78 Tools)"]
     
     subgraph Execution Engines [TARS Execution 'Hands']
         ToolRegistry --> Term["💻 Terminal Engine (PowerShell / Shell / Safety)"]
@@ -35,7 +35,7 @@ graph TD
 
 ---
 
-## 🛠️ Implemented Tool Ecosystem (54 Registered Tools)
+## 🛠️ Implemented Tool Ecosystem (78 Registered Tools)
 
 ### 1. Terminal & Execution Security
 - `run_powershell(command, timeout, cwd)`: Executes PowerShell commands with UTF-8 encoding.
@@ -81,10 +81,27 @@ graph TD
 - `get_file_metadata(path)`: Retrieves size, creation time, modified time, and permissions.
 - `search_files(root, pattern, max_results)`: Recursive glob search across approved roots.
 
-### 6. Closed-Loop Verification & Safety
+### 6. Closed-Loop Verification, Memory & Safety
+- `remember_fact(key, value)`: Stores persistent user preferences and long-term memory into SQLite.
 - `verify_action(check, expected)`: Confirms path existence, process state, or window presence.
 - `cancel_current_task()`: Immediately cancels active multi-step operations.
 - `SafetyValidator`: Blocks destructive sequences (`format`, `diskpart`, `rmdir /s /q C:\Windows`) and enforces confirmation on sensitive commands.
+
+### 7. Vision & Multimodal Screen Understanding
+- `describe_screen(question)`: High-accuracy screen understanding passing desktop captures to Gemini (`gemini-3.8-flash`) to identify open apps, UI elements, and document text.
+- `inspect_screen()`: Retrieves screenshot, dimensions, mouse position, and active window metadata.
+
+### 8. Reminders & Persistent Timers (APScheduler + SQLite)
+- `set_reminder(message, minutes)`: Schedules persistent timers and reminders that trigger spoken voice alerts even across application restarts.
+- `list_active_reminders()`: Lists all upcoming scheduled alarms and timers.
+- `cancel_active_reminder(reminder_id)`: Cancels scheduled reminder by ID.
+
+### 9. Google Workspace (Gmail & Google Calendar)
+- `list_unread_emails(max_results)`: Fetches recent unread Gmail messages with snippets and senders.
+- `read_email(message_id)`: Retrieves full message contents and plain text body.
+- `send_email(to, subject, body)`: Sends email via official Gmail API (gated by central confirmation).
+- `list_upcoming_events(max_results)`: Lists upcoming Google Calendar events from user's primary calendar.
+- `create_calendar_event(summary, start_time, end_time, description)`: Schedules events on Google Calendar.
 
 ---
 
@@ -121,7 +138,8 @@ playwright install chromium
 ### 3. Environment Configuration
 Create or edit `.env` in the project root:
 ```ini
-# Google Gemini API Key (Uses gemini-3.8-flash for multi-modal reasoning and tool-calling)
+# Google Gemini API Key (Required for multi-modal ReAct planning & autonomous compound reasoning;
+# local OS hotkeys, system telemetry, media keys, audio controls, and UI automation run 100% offline without a key)
 GEMINI_API_KEY=your_gemini_api_key_here
 
 # Voice settings
@@ -156,7 +174,7 @@ python main.py --test-mic
 ## 🧪 Running Automated Tests
 
 ```powershell
-# Run the full test suite (34 unit, integration, and acceptance tests):
+# Run the full test suite (66+ unit, integration, acceptance, and interaction tests):
 python -m unittest discover tests
 
 # Run master acceptance criteria tests:

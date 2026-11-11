@@ -25,7 +25,10 @@ temp/
 *.mp3
 screenshots/
 memory.db
+reminders.db
+*.db
 memory_store.json
+scratch/
 
 # IDE & OS
 .vscode/
