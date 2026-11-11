@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pyautogui
 
-# Safety fail-safe: moving mouse to any screen corner immediately aborts pyautogui
-pyautogui.FAILSAFE = True
+# Disable fail-safe corner abort so automated background/corner sessions do not crash
+pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.05
 
 

@@ -77,6 +77,12 @@ from tools.ui_automation import (
     type_into_ui_element,
     wait_for_condition
 )
+from tools.interaction_tools import (
+    get_active_window_context,
+    smart_click,
+    smart_type,
+    smart_search
+)
 
 __all__ = [
     "SafetyValidator",
@@ -150,5 +156,9 @@ __all__ = [
     "cancel_current_task",
     "request_task_cancellation",
     "is_task_cancelled",
-    "reset_cancellation"
+    "reset_cancellation",
+    "get_active_window_context",
+    "smart_click",
+    "smart_type",
+    "smart_search"
 ]

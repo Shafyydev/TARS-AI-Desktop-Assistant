@@ -138,13 +138,17 @@ class TARSAgent:
             "browser_click_element": tools.browser_click_element,
             "browser_extract_text": tools.browser_extract_text,
             "connect_brave": tools.connect_brave,
-            # UI Automation
+            # UI Automation & Smart Interaction
             "get_active_window": tools.get_active_window,
+            "get_active_window_context": tools.get_active_window_context,
             "list_running_applications": tools.list_running_applications,
             "get_ui_elements": tools.get_ui_elements,
             "click_ui_element": tools.click_ui_element,
             "type_into_ui_element": tools.type_into_ui_element,
             "wait_for_condition": tools.wait_for_condition,
+            "smart_click": tools.smart_click,
+            "smart_type": tools.smart_type,
+            "smart_search": tools.smart_search,
             # Memory & Verification
             "verify_action": tools.verify_action,
             "cancel_current_task": tools.cancel_current_task,
@@ -219,14 +223,49 @@ class TARSAgent:
                     break
             step1 = self.execute_tool("launch_application", {"app_name": app_target})
             time.sleep(0.5)
-            step2 = self.execute_tool("type_text", {"text": text_to_type, "press_enter": press_enter})
+            step2 = self.execute_tool("smart_type", {"text": text_to_type, "press_enter": press_enter})
             return {
                 "response": f"Opened {app_target} and typed '{text_to_type}'.",
                 "steps": [
                     {"tool": "launch_application", "args": {"app_name": app_target}, "result": step1},
-                    {"tool": "type_text", "args": {"text": text_to_type, "press_enter": press_enter}, "result": step2}
+                    {"tool": "smart_type", "args": {"text": text_to_type, "press_enter": press_enter}, "result": step2}
                 ],
                 "success": True
+            }
+
+        # Compound: "open <app> and search [for] <query>"
+        open_and_search = re.match(r"^(?:open|launch|start)\s+([a-zA-Z0-9\s]+?)\s+and\s+(?:search\s+for|search|look\s+up)\s+(.+)$", p_clean)
+        if open_and_search:
+            app_target = open_and_search.group(1).strip()
+            query = open_and_search.group(2).strip()
+            step1 = self.execute_tool("launch_application", {"app_name": app_target})
+            time.sleep(0.7)
+            step2 = self.execute_tool("smart_search", {"query": query})
+            return {
+                "response": f"Opened {app_target} and searched for '{query}'.",
+                "steps": [
+                    {"tool": "launch_application", "args": {"app_name": app_target}, "result": step1},
+                    {"tool": "smart_search", "args": {"query": query}, "result": step2}
+                ],
+                "success": True
+            }
+
+        # Compound: "click <target> and (?:type|write|input|enter) <text>"
+        click_and_type = re.match(r"^(?:click|focus|select)\s+(?:on\s+|the\s+)?(.+?)\s+and\s+(?:type|write|input|enter)\s+(.+)$", p_clean)
+        if click_and_type:
+            target = click_and_type.group(1).strip()
+            text_to_type = click_and_type.group(2).strip()
+            press_enter = False
+            for sfx in [" and enter", " and hit enter", " and press enter"]:
+                if text_to_type.endswith(sfx):
+                    text_to_type = text_to_type[:-len(sfx)].strip()
+                    press_enter = True
+                    break
+            res = self.execute_tool("smart_type", {"text": text_to_type, "target": target, "press_enter": press_enter})
+            return {
+                "response": f"Clicked {target} and typed '{text_to_type}'" + (" and pressed Enter." if press_enter else "."),
+                "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "target": target, "press_enter": press_enter}, "result": res}],
+                "success": res.get("success", True) if isinstance(res, dict) else True
             }
 
         # Compound: "create folder <name> [on <loc>] and open it"
@@ -380,10 +419,24 @@ class TARSAgent:
             res = self.execute_tool("move_mouse_relative", {"dx": 120, "dy": 0})
             return {"response": "Moved cursor right.", "steps": [{"tool": "move_mouse_relative", "args": {"dx": 120, "dy": 0}, "result": res}], "success": True}
 
-        # Any general click command: "click", "click this", "click on this", "click here", "just click"
-        if re.search(r"\bclick\b", p_clean):
+        # Exact blind click command: "click", "click this", "click here", "just click", "left click"
+        if p_clean in ["click", "just click", "click here", "click this", "left click"]:
             res = self.execute_tool("click_coordinate", {"button": "left", "clicks": 1})
             return {"response": "Clicked.", "steps": [{"tool": "click_coordinate", "args": {"button": "left", "clicks": 1}, "result": res}], "success": True}
+
+        # Targeted click: e.g. "click search bar", "click the first video", "click new tab", "click close"
+        click_target_match = re.match(r"^(?:click|tap|select|press)\s+(?:on\s+|the\s+)?(.+)", p_clean)
+        if click_target_match:
+            target_cand = click_target_match.group(1).strip()
+            # Defer single hotkey presses to the dedicated key handlers below
+            if target_cand not in ["enter", "return", "space", "spacebar", "tab", "escape", "esc", "backspace", "delete", "del"]:
+                res = self.execute_tool("smart_click", {"target": target_cand})
+                msg = res.get("message") if isinstance(res, dict) else f"Clicked {target_cand}."
+                return {
+                    "response": msg,
+                    "steps": [{"tool": "smart_click", "args": {"target": target_cand}, "result": res}],
+                    "success": res.get("success", True) if isinstance(res, dict) else True
+                }
 
         # 5. GUI Scrolling (Flexible Regex)
         if re.search(r"\bscroll\b.*\b(bottom|end)\b|\bbottom\s+of\s+page\b", p_clean):
@@ -403,6 +456,28 @@ class TARSAgent:
             return {"response": "Scrolled up.", "steps": [{"tool": "scroll_screen", "args": {"amount": 650}, "result": res}], "success": True}
 
         # 6. GUI Keyboard Typing & Key Presses
+        # Match "type <text> into/in <target>" e.g. "type interstellar into search bar"
+        type_target_match = re.match(r"^(?:type|write|input)\s+(.+?)\s+(?:into|in|on)\s+(?:the\s+)?(.+)$", p_clean)
+        if type_target_match:
+            text_to_type = type_target_match.group(1).strip()
+            target_field = type_target_match.group(2).strip()
+            press_enter = False
+            for sfx in [" and enter", " and hit enter", " and press enter"]:
+                if text_to_type.endswith(sfx):
+                    text_to_type = text_to_type[:-len(sfx)].strip()
+                    press_enter = True
+                    break
+                if target_field.endswith(sfx):
+                    target_field = target_field[:-len(sfx)].strip()
+                    press_enter = True
+                    break
+            res = self.execute_tool("smart_type", {"text": text_to_type, "target": target_field, "press_enter": press_enter})
+            return {
+                "response": f"Typed '{text_to_type}' into {target_field}" + (" and pressed enter." if press_enter else "."),
+                "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "target": target_field, "press_enter": press_enter}, "result": res}],
+                "success": res.get("success", True) if isinstance(res, dict) else True
+            }
+
         type_match = re.match(r"^(?:type|write|input)\s+(.+)", p_clean)
         if type_match:
             text_to_type = type_match.group(1).strip()
@@ -412,11 +487,11 @@ class TARSAgent:
                     text_to_type = text_to_type[:-len(sfx)].strip()
                     press_enter = True
                     break
-            res = self.execute_tool("type_text", {"text": text_to_type, "press_enter": press_enter})
+            res = self.execute_tool("smart_type", {"text": text_to_type, "press_enter": press_enter})
             return {
-                "response": f"Typed '{text_to_type}'.",
-                "steps": [{"tool": "type_text", "args": {"text": text_to_type, "press_enter": press_enter}, "result": res}],
-                "success": True
+                "response": f"Typed '{text_to_type}'" + (" and pressed enter." if press_enter else "."),
+                "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "press_enter": press_enter}, "result": res}],
+                "success": res.get("success", True) if isinstance(res, dict) else True
             }
 
         if re.search(r"\b(press|hit)?\s*(enter|return)\s*(key)?\b|\b(click\s+ok|press\s+ok|hit\s+ok)\b|^ok$", p_clean):
@@ -586,19 +661,15 @@ class TARSAgent:
             yt_q = yt_match.group(1) or yt_match.group(2) or yt_match.group(3) or ""
             yt_q = yt_q.strip(" ?.")
             if yt_q:
-                import urllib.parse
-                yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(yt_q)}"
-                res = self.execute_tool("launch_application", {"app_name": yt_url})
-                return {"response": f"Playing '{yt_q}' on YouTube.", "steps": [{"tool": "launch_application", "args": {"app_name": yt_url}, "result": res}], "success": True}
+                res = self.execute_tool("smart_search", {"query": yt_q, "engine": "youtube"})
+                return {"response": f"Playing '{yt_q}' on YouTube.", "steps": [{"tool": "smart_search", "args": {"query": yt_q, "engine": "youtube"}, "result": res}], "success": True}
 
         search_match = re.search(r"^(?:search\s+(?:google\s+|web\s+)?for|google|search\s+web\s+for)\s+(.+)", p_clean)
         if search_match:
             s_query = search_match.group(1).strip(" ?.")
             if s_query:
-                import urllib.parse
-                s_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(s_query)}"
-                res = self.execute_tool("launch_application", {"app_name": s_url})
-                return {"response": f"Searching Google for '{s_query}'.", "steps": [{"tool": "launch_application", "args": {"app_name": s_url}, "result": res}], "success": True}
+                res = self.execute_tool("smart_search", {"query": s_query, "engine": "google"})
+                return {"response": f"Searching Google for '{s_query}'.", "steps": [{"tool": "smart_search", "args": {"query": s_query, "engine": "google"}, "result": res}], "success": True}
 
         # 14. Media Playback Controls
         if re.search(r"\b(mute|unmute|silence)\b", p_clean):
@@ -836,8 +907,22 @@ class TARSAgent:
             if val is not None:
                 return {"response": f"The answer is {val}.", "steps": [], "success": True}
 
-        # 21. Free Online Knowledge & Web Search (100% Free, Zero API Keys)
-        info_match = re.match(r"^(?:who is|what is|where is|tell me about|search for|google|search web for|search)\s+(.+)", p_clean)
+        # 21. Smart Web & Desktop In-App Search
+        search_match = re.match(r"^(?:search\s+for|search\s+web\s+for|search\s+youtube\s+for|search|google)\s+(.+)", p_clean)
+        if search_match:
+            raw_query = search_match.group(1).strip(" ?.")
+            # Check if query contains "on youtube" or "in youtube"
+            engine = "youtube" if "youtube" in p_clean else "google"
+            res = self.execute_tool("smart_search", {"query": raw_query, "engine": engine})
+            msg = res.get("message") if isinstance(res, dict) else f"Searching for '{raw_query}'."
+            return {
+                "response": msg,
+                "steps": [{"tool": "smart_search", "args": {"query": raw_query, "engine": engine}, "result": res}],
+                "success": res.get("success", True) if isinstance(res, dict) else True
+            }
+
+        # 22. Free Online Knowledge (Wikipedia QA)
+        info_match = re.match(r"^(?:who is|what is|where is|tell me about|explain|define)\s+(.+)", p_clean)
         if info_match:
             query = info_match.group(1).strip(" ?.")
             answer = tools.get_free_knowledge(query)
@@ -845,8 +930,8 @@ class TARSAgent:
                 summary = answer[:250] + ("..." if len(answer) > 250 else "")
                 return {"response": summary, "steps": [{"tool": "get_free_knowledge", "args": {"query": query}, "result": {"answer": summary}}], "success": True}
             else:
-                res = self.execute_tool("search_web", {"query": query})
-                return {"response": f"Searching web for '{query}'.", "steps": [{"tool": "search_web", "args": {"query": query}, "result": res}], "success": True}
+                res = self.execute_tool("smart_search", {"query": query})
+                return {"response": f"Searching for '{query}'.", "steps": [{"tool": "smart_search", "args": {"query": query}, "result": res}], "success": True}
 
         return None
 
