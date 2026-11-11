@@ -163,6 +163,21 @@ def main() -> None:
     speaker = VoiceSpeaker(fast_voice=use_fast) if not args.text_only else None
     listener = VoiceListener(language=args.language, mic_index=args.mic_index) if (args.voice_mode or not args.text_only) else None
 
+    # Wire Central Confirmation Gate for destructive actions
+    def confirm_action(tool_name: str, arguments: dict) -> bool:
+        arg_summary = ", ".join(f"{k}={v}" for k, v in arguments.items())
+        if args.voice_mode and speaker and listener:
+            speaker.speak(f"Confirmation required. Do you want to execute {tool_name.replace('_', ' ')}? Say yes or no.", blocking=True)
+            speech, _ = listener.listen_once(timeout=6, phrase_time_limit=4)
+            if speech and any(aff in speech.lower() for aff in ["yes", "confirm", "proceed", "do it", "sure"]):
+                return True
+            return False
+        else:
+            ans = Prompt.ask(f"[bold red]CONFIRMATION REQUIRED[/bold red] - Execute [bold yellow]{tool_name}[/bold yellow] ({arg_summary})? (yes/no)", default="no")
+            return ans.strip().lower() in ["yes", "y"]
+
+    agent.set_confirmation_callback(confirm_action)
+
     render_hud(agent)
 
     if listener:
