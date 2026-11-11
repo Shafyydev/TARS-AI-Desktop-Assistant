@@ -336,17 +336,22 @@ class TaskOrchestrator:
             tools_list = list(self.agent.tool_registry.values())
             system_instruction = self.agent.system_prompt
 
+            history = self.agent.memory.get_recent_messages(limit=10) if hasattr(self.agent, "memory") else None
+            user_prefs = self.agent.memory.get_all_preferences() if hasattr(self.agent, "memory") else None
+
             llm_result = self.llm.run_tool_agent_loop(
                 prompt=request,
                 system_instruction=system_instruction,
                 tools_list=tools_list,
                 tool_executor=self.agent.execute_tool,
+                history=history,
+                user_preferences=user_prefs,
                 on_status=on_status,
                 max_iterations=5,
                 timeout=25.0
             )
 
-            if llm_result and llm_result.get("success"):
+            if llm_result:
                 return llm_result
 
         # 5. Fallback: single tool matching or friendly guidance
