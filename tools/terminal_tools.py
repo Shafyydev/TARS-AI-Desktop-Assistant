@@ -147,6 +147,15 @@ def run_cmd(command: str, timeout: int = 30, cwd: Optional[str] = None) -> Dict[
             "requires_confirmation": False
         }
 
+    if req_confirm:
+        return {
+            "success": False,
+            "exit_code": -2,
+            "stdout": "",
+            "stderr": f"CONFIRMATION REQUIRED: {reason}",
+            "requires_confirmation": True
+        }
+
     start_time = time.time()
     try:
         result = subprocess.run(
