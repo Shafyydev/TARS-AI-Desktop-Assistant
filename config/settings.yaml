@@ -14,7 +14,7 @@ personality:
 llm:
   provider: "gemini"
   model: "gemini-3.8-flash"
-  fallback_models: ["gemini-flash-latest", "gemini-3.8-flash"]
+  fallback_models: ["gemini-flash-latest"]
   temperature: 0.3
   max_output_tokens: 2048
 
