@@ -92,6 +92,11 @@ def launch_application(app_name: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to launch {app_name}: {str(e)}"}
 
 
+def open_application(app_name: str) -> Dict[str, Any]:
+    """Alias for launch_application."""
+    return launch_application(app_name)
+
+
 def kill_process(process_name: str) -> Dict[str, Any]:
     """
     Terminates running processes matching the given name (e.g. 'chrome.exe' or 'notepad').
@@ -343,12 +348,13 @@ def resolve_system_target(target: str) -> Optional[Path]:
         return None
 
     # 1. Drive check (e.g. "d drive", "drive d", "d:", "c drive", "d")
-    drive_match = re.search(r"\b([a-zA-Z])\s*(?:drive|disk)\b|\b(?:drive|disk)\s*([a-zA-Z])\b|^([a-zA-Z]):\\?$|^([a-zA-Z])$", clean)
-    if drive_match:
-        letter = (drive_match.group(1) or drive_match.group(2) or drive_match.group(3) or drive_match.group(4)).upper()
-        p = Path(f"{letter}:\\")
-        if p.exists():
-            return p
+    if len(clean.split()) <= 3:
+        drive_match = re.search(r"^(?:the\s+)?([a-zA-Z])\s*(?:drive|disk)$|^(?:the\s+)?(?:drive|disk)\s*([a-zA-Z])$|^([a-zA-Z]):\\?$|^([a-zA-Z])$", clean)
+        if drive_match:
+            letter = (drive_match.group(1) or drive_match.group(2) or drive_match.group(3) or drive_match.group(4)).upper()
+            p = Path(f"{letter}:\\")
+            if p.exists():
+                return p
 
     # 2. Known Windows User Shell Folders (Desktop, Downloads, Documents, etc.)
     if clean in ["desktop", "downloads", "documents", "pictures", "videos", "music", "home", "onedrive"]:

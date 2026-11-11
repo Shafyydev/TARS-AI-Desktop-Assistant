@@ -5,8 +5,53 @@ from typing import Dict, Any, Optional
 from tools.safety import SafetyValidator
 
 _safety = SafetyValidator()
-
 MAX_OUTPUT_CHARS = 8000
+
+_last_command_output = {
+    "command": "",
+    "stdout": "",
+    "stderr": "",
+    "exit_code": 0,
+    "timestamp": 0.0
+}
+
+
+def run_approved_command(command: str, shell: str = "powershell", timeout: int = 30) -> Dict[str, Any]:
+    """
+    Executes an approved Windows command (via PowerShell or CMD) after safety protocol validation.
+    Caches execution output for subsequent retrieval.
+    """
+    global _last_command_output
+    if shell.lower() in ["cmd", "cmd.exe"]:
+        res = run_cmd(command, timeout=timeout)
+    else:
+        res = run_powershell(command, timeout=timeout)
+
+    _last_command_output = {
+        "command": command,
+        "stdout": res.get("stdout", ""),
+        "stderr": res.get("stderr", ""),
+        "exit_code": res.get("exit_code", 0),
+        "timestamp": time.time()
+    }
+    return res
+
+
+def get_command_output(last_n_chars: int = 4000) -> Dict[str, Any]:
+    """
+    Retrieves the output, exit code, and execution status of the last executed command.
+    """
+    stdout = _last_command_output.get("stdout", "")
+    if len(stdout) > last_n_chars:
+        stdout = stdout[-last_n_chars:]
+    return {
+        "success": _last_command_output.get("exit_code") == 0,
+        "command": _last_command_output.get("command", ""),
+        "stdout": stdout,
+        "stderr": _last_command_output.get("stderr", ""),
+        "exit_code": _last_command_output.get("exit_code", 0),
+        "timestamp": _last_command_output.get("timestamp", 0.0)
+    }
 
 
 def run_powershell(command: str, timeout: int = 30, cwd: Optional[str] = None) -> Dict[str, Any]:

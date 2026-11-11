@@ -1,147 +1,187 @@
-# TARS — Autonomous Voice-Driven OS Control Agent 🤖
+# TARS — Autonomous Voice-Driven AI Desktop Assistant 🤖
 
 > *"Honesty, new parameter: ninety percent. Humor: seventy-five percent."* — TARS, *Interstellar*
 
-**TARS** is an autonomous, voice-driven digital companion and computer-use agent designed to take over your PC and perform tasks entirely by voice. Built with low-latency speech pipelines, multi-modal reasoning, and comprehensive OS-level execution engines, TARS can operate the terminal, interact with native Windows applications, browse the web, and manage system resources seamlessly.
+**TARS** (Tactical Autonomous Robotic System) is a practical, voice-controlled, autonomous AI desktop assistant capable of understanding natural-language commands, planning multi-step tasks, controlling native Windows applications, interacting with websites, managing files, executing approved commands, inspecting results, recovering from errors, and reporting task completion through speech.
 
 ---
 
-## ⚡ Core Capabilities
+## ⚡ Architecture & Execution Loop
 
 ```mermaid
 graph TD
-    UserVoice["🗣️ User Voice Command"] --> Listener["Voice Ingestion (VAD / STT)"]
-    Listener --> Brain["🧠 TARS Cognitive Engine (ReAct Agent Loop)"]
+    User["🗣️ Voice Command / Keyboard Input"] --> Listener["VoiceListener (Acoustic VAD / STT)"]
+    Listener --> FastPath{"Fast-Path Heuristics?<br/>(<1ms)"}
+    
+    FastPath -- "Yes (Volume, Media, Hotkeys)" --> ExecFast["Direct Tool Execution"]
+    FastPath -- "No (Compound / Novel Tasks)" --> Orchestrator["TaskOrchestrator & TaskState"]
+    
+    Orchestrator --> LLM["LLMProvider (Gemini 3.8 Flash ReAct Engine)"]
+    LLM --> ToolRegistry["Central Tool Registry (54 Tools)"]
     
     subgraph Execution Engines [TARS Execution 'Hands']
-        Brain --> Term["💻 Terminal Engine (PowerShell / Shell)"]
-        Brain --> OS["🎛️ Windows OS Engine (Apps, Audio, Stats, Windows)"]
-        Brain --> GUI["🖱️ Computer Use & GUI (Mouse, Keyboard, Screen Vision)"]
-        Brain --> Web["🌐 Web Automation (Playwright / Headless Browser)"]
+        ToolRegistry --> Term["💻 Terminal Engine (PowerShell / Shell / Safety)"]
+        ToolRegistry --> OS["🎛️ Windows OS Engine (Apps, Audio, Explorer, Power)"]
+        ToolRegistry --> UIA["🪟 Windows UI Automation (pywinauto UIA Semantic)"]
+        ToolRegistry --> GUI["🖱️ Computer Use & GUI (Mouse, Keyboard, Vision)"]
+        ToolRegistry --> Web["🌐 Web Automation (Playwright Native Brave / Chrome)"]
+        ToolRegistry --> FS["📁 Real Filesystem Engine (Pathlib, Diagnostics)"]
     end
 
-    Term --> Feedback["Observation & State"]
-    OS --> Feedback
-    GUI --> Feedback
-    Web --> Feedback
-
-    Feedback --> Brain
-    Brain --> Safety["🛡️ Safety Guardrails"]
-    Brain --> Speaker["🔊 Low-Latency Neural TTS (Voice Output)"]
-```
-
-### 1. Terminal & Developer Control
-- Runs arbitrary PowerShell or CMD commands in real time with continuous streaming output.
-- Automates Git workflows (`status`, `commit`, `push`, `pull`, branch management).
-- Launches, monitors, and terminates background developer servers, build tools, and scripts.
-
-### 2. Native Windows OS Automation
-- Launches, focuses, minimizes, maximizes, and terminates native desktop applications.
-- Master volume, mute, and media key controls (play/pause/next/previous).
-- Real-time hardware telemetry: CPU, RAM, battery, active processes, and disk metrics.
-- Clipboard manipulation (read, copy, paste).
-
-### 3. GUI & Computer-Use (Visual Autopilot)
-- Takes high-resolution screenshots and analyzes active window state using multi-modal AI.
-- Controls mouse cursor (click, right-click, double-click, drag-and-drop, scroll).
-- Keyboard synthesis (natural typing, hotkey shortcuts like `Ctrl+C`, `Alt+Tab`, `Win+D`).
-
-### 4. Web Automation Engine
-- Autonomous browsing with Playwright.
-- Searches Google, extracts web page content, fills forms, navigates dynamic web apps, and downloads files.
-
-### 5. Low-Latency Voice Interface
-- Real-time Voice Activity Detection (VAD) and fast speech-to-text.
-- Microsoft Neural TTS integration (`edge-tts`) providing crisp, human-like voice synthesis with zero subscription cost.
-- Instant verbal acknowledgments during multi-step execution.
-
-### 6. Safety Guardrails & Human-in-the-Loop
-- Hardened protection against catastrophic commands (e.g. `rmdir /s /q C:\`, disk formatting, registry alteration).
-- Configurable approval tiers: safe commands execute autonomously, destructive actions require explicit verbal confirmation.
-
----
-
-## 📁 Project Architecture
-
-```
-TARS/
-├── config/
-│   ├── settings.yaml          # Core configuration (voice, LLM model, thresholds)
-│   └── safety_rules.json      # Command blacklists and confirmation rules
-├── core/
-│   ├── brain.py               # ReAct agent loop, tool routing & reasoning
-│   ├── personality.py         # TARS persona prompt & humor/honesty matrix
-│   ├── memory.py              # Persistent SQLite/JSON episodic memory
-│   ├── voice_listener.py      # Audio input, wake word & STT stream
-│   └── voice_speaker.py       # Asynchronous neural TTS playback
-├── tools/
-│   ├── safety.py              # Security validator for destructive actions
-│   ├── terminal_tools.py      # PowerShell command runner & process manager
-│   ├── os_tools.py            # Windows OS, volume, apps, and hardware telemetry
-│   ├── gui_tools.py           # Mouse, keyboard, and screenshot capture
-│   └── browser_tools.py       # Playwright browser agent & web search
-├── tests/                     # Automated unit and integration tests
-├── main.py                    # Futuristic terminal HUD & runtime entrypoint
-├── requirements.txt           # Python dependencies
-└── README.md                  # Project documentation
+    Execution Engines --> Verify["Observation, Verification & Error Recovery"]
+    Verify --> Context["Task-Scoped Context Memory"]
+    Context --> Speaker["🔊 VoiceSpeaker (SAPI / Neural TTS with Barge-In)"]
 ```
 
 ---
 
-## 🚀 Quickstart Guide
+## 🛠️ Implemented Tool Ecosystem (54 Registered Tools)
 
-### 1. Prerequisites
-- **Operating System:** Windows 10/11 (PowerShell 5.1 or 7+)
-- **Python:** 3.10+ (Tested on Python 3.12)
-- **Microphone & Speakers** for full voice mode
+### 1. Terminal & Execution Security
+- `run_powershell(command, timeout, cwd)`: Executes PowerShell commands with UTF-8 encoding.
+- `run_cmd(command, timeout, cwd)`: Executes classic Windows CMD commands.
+- `run_approved_command(command, shell, timeout)`: Validates commands against `SafetyValidator` before running and caches output.
+- `get_command_output(last_n_chars)`: Retrieves stdout and exit status from the most recent command.
 
-### 2. Installation
+### 2. Windows Desktop & Hardware Control
+- `launch_application(app_name)` / `open_application(app_name)`: Launches applications, drives, or URLs.
+- `kill_process(process_name)`: Safely terminates running Windows processes.
+- `get_system_telemetry()`: Real-time CPU, RAM, disk, and battery statistics.
+- `set_system_volume(level_percent)`: Calibrates Windows master audio via pycaw / COM.
+- `media_control(action)`: Hardware media keys (play/pause, next, prev, volume up/down, mute).
+- `get_running_windows()`: Enumerates visible top-level Windows applications.
+- `minimize_all_windows()`: Clears screen to desktop (`Win+D`).
+- `read_clipboard()` / `write_clipboard(text)`: Windows clipboard integration.
+- `lock_workstation()`: Instantly locks Windows workstation.
+- `system_power(action, delay_sec)`: Sleep, restart, shutdown, and cancellation.
+
+### 3. Windows UI Automation (pywinauto UIA Backend)
+- `get_active_window()`: Identifies foreground window title, class name, and control type.
+- `list_running_applications()`: Enumerates running desktop applications.
+- `get_ui_elements(window_title, control_type)`: Inspects buttons, edit controls, and menus.
+- `click_ui_element(name, window_title)`: Clicks accessible UI controls by name with partial matching.
+- `type_into_ui_element(name, text, window_title)`: Enters text into accessible controls.
+- `wait_for_condition(condition, timeout)`: Polling engine supporting `process:`, `path:`, `window:`, and `seconds:`.
+
+### 4. Web Browser Automation (Playwright with Brave Support)
+- `browser_navigate(url)`: Navigates to web pages and waits for DOM readiness.
+- `browser_search(query, engine)`: Direct search on Google, YouTube, or DuckDuckGo.
+- `browser_click_first_result(intent_filter)`: Locates organic search results, filters out advertisements, clicks the target, and verifies destination.
+- `browser_find_elements(selector, limit)`: Inspects DOM elements.
+- `browser_click_element(selector, index)`: DOM-based element clicking.
+- `browser_extract_text(selector)`: Extracts visible text content.
+- `connect_brave(port)` / `find_brave_executable()`: Native Brave integration via standard paths or CDP.
+- `browser_close()`: Clean browser shutdown with `atexit` registration.
+
+### 5. Filesystem Management & Diagnostics
+- `list_drives()`: Enumerates logical drives (`C:\`, `D:\`, etc.) with partition status and free space.
+- `navigate_to_path(target_path, open_in_explorer)`: Resolves drive/folder paths, validates presence, and provides parent diagnostic recovery if missing.
+- `list_directory(location)`: Distinguishes subdirectories from files, formats sizes and extensions.
+- `read_file(path, max_chars)`: Reads text/code files (`.py`, `.md`, `.txt`, `.json`, etc.) with binary file protection.
+- `get_file_metadata(path)`: Retrieves size, creation time, modified time, and permissions.
+- `search_files(root, pattern, max_results)`: Recursive glob search across approved roots.
+
+### 6. Closed-Loop Verification & Safety
+- `verify_action(check, expected)`: Confirms path existence, process state, or window presence.
+- `cancel_current_task()`: Immediately cancels active multi-step operations.
+- `SafetyValidator`: Blocks destructive sequences (`format`, `diskpart`, `rmdir /s /q C:\Windows`) and enforces confirmation on sensitive commands.
+
+---
+
+## 🎙️ Voice Interface & Interruption System
+
+- **Speech Recognition:** `speech_recognition` with tuned low-latency Voice Activity Detection (0.35s pause threshold) and phonetic normalization (`tap` -> `tab`, `clothes` -> `close`).
+- **Zero-Latency SAPI TTS:** Native Windows speech engine for instant verbal responses (<20ms).
+- **Neural Cloud TTS:** Optional Microsoft Neural TTS (`edge-tts`) with GuyNeural voice.
+- **Acoustic Voice Barge-In:** Background audio energy monitor (`VoiceBargeInMonitor`) automatically detects when the user speaks mid-sentence and cuts off playback.
+- **Console Keyboard Interruption:** Tapping any key (Space, Enter, Esc) cuts off speech instantly.
+- **Silence Commands:** Supported verbal commands: *"stop talking"*, *"be quiet"*, *"shut up"*, *"silence"*, *"can you hear me"*.
+
+---
+
+## 🚀 Setup & Installation
+
+### 1. Requirements
+- **Operating System:** Windows 10/11
+- **Python:** 3.10 to 3.12 (Tested on Python 3.12.10)
+- **Audio:** Microphone and speakers for voice control
+
+### 2. Install Dependencies
 ```powershell
 # Clone the repository
-git clone https://github.com/Shafyydev/TARS.git
-cd TARS
+cd D:\codehub\TARS
 
-# Create and activate virtual environment
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# Install dependencies
+# Install Python dependencies
 pip install -r requirements.txt
+
+# (Optional) Install Playwright Chromium browser if needed
+playwright install chromium
 ```
 
-### 3. Configuration
-Copy `.env.example` to `.env` and provide your API keys:
+### 3. Environment Configuration
+Create or edit `.env` in the project root:
 ```ini
+# Google Gemini API Key (Uses gemini-3.8-flash for multi-modal reasoning and tool-calling)
 GEMINI_API_KEY=your_gemini_api_key_here
-# Optional alternatives:
-OPENAI_API_KEY=
-GROQ_API_KEY=
+
+# Voice settings
+TARS_VOICE=en-US-GuyNeural
+TARS_DEFAULT_MODE=hybrid
 ```
 
-### 4. Running TARS
+---
+
+## 💻 Running TARS
+
 ```powershell
-# Run with interactive terminal HUD & voice synthesis
+# 1. Interactive Hybrid Mode (Type or speak commands):
 python main.py
 
-# Run in text-only debug mode
+# 2. Continuous Hands-Free Voice Control:
+python main.py --voice
+
+# 3. Text-Only Silent Mode (No TTS):
 python main.py --text-only
+
+# 4. Run Hardware & Subsystem Diagnostics:
+python main.py --diagnostics
+
+# 5. List and Benchmark Microphones:
+python main.py --list-mics
+python main.py --test-mic
 ```
 
 ---
 
-## ⚙️ Persona Configuration
+## 🧪 Running Automated Tests
 
-In `config/settings.yaml`, adjust TARS's behavioral matrix on the fly:
-```yaml
-personality:
-  name: "TARS"
-  humor: 0.75        # 0.0 to 1.0
-  honesty: 0.90      # 0.0 to 1.0
-  sarcasm: 0.60      # 0.0 to 1.0
-  verbosity: "concise" # "concise", "normal", "detailed"
+```powershell
+# Run the full test suite (34 unit, integration, and acceptance tests):
+python -m unittest discover tests
+
+# Run master acceptance criteria tests:
+python -m unittest tests/test_agent_acceptance.py
+
+# Run tool & safety tests:
+python -m unittest tests/test_tools.py
 ```
 
 ---
 
-## 🛡️ License
-MIT License. Built by [Shafyydev](https://github.com/Shafyydev).
+## 📋 Tested Command Examples
+
+| Objective | Command |
+|-----------|---------|
+| **Filesystem compound task** | *"TARS, open D drive, go to the CWD folder, and tell me what files are inside"* |
+| **Missing directory recovery** | *"TARS, open D drive, go to the missing_folder directory, and list files"* |
+| **Contextual follow-up** | *"Tell me what you found"* / *"Read the first python file"* |
+| **Browser automation** | *"TARS, search YouTube and open the first relevant result"* |
+| **Application launching** | *"TARS, open Brave"* / *"Open File Explorer"* / *"Open Calculator"* |
+| **System volume** | *"TARS, set volume to 50 percent"* / *"Volume up"* / *"Mute"* |
+| **System telemetry** | *"TARS, system status"* / *"Hardware telemetry"* |
+| **Voice interruption** | *"Stop talking"* / *"Be quiet"* / *"Cancel"* / Tap Spacebar |
+
+---
+
+## 🛡️ License & Attribution
+MIT License. Inspired by TARS from *Interstellar*. Built by Shafyydev.

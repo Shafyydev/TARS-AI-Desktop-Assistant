@@ -17,6 +17,7 @@ load_dotenv()
 
 from core.personality import build_system_prompt
 from core.memory import MemoryStore
+from core.orchestrator import TaskOrchestrator
 import tools
 
 # Safe Math Operators
@@ -72,6 +73,7 @@ class TARSAgent:
         self.config_path = config_path
         self.settings = self._load_config()
         self.memory = MemoryStore()
+        self.orchestrator = TaskOrchestrator(self)
         self.system_prompt = build_system_prompt(self.settings)
         
         # Comprehensive Tool Dispatch Registry
@@ -79,8 +81,11 @@ class TARSAgent:
             # Terminal & Shell
             "run_powershell": tools.run_powershell,
             "run_cmd": tools.run_cmd,
+            "run_approved_command": tools.run_approved_command,
+            "get_command_output": tools.get_command_output,
             # Windows OS Management
             "launch_application": tools.launch_application,
+            "open_application": tools.open_application,
             "kill_process": tools.kill_process,
             "get_system_telemetry": tools.get_system_telemetry,
             "set_system_volume": tools.set_system_volume,
@@ -99,6 +104,7 @@ class TARSAgent:
             "system_power": tools.system_power,
             # GUI & Computer Use
             "take_screenshot": tools.take_screenshot,
+            "inspect_screen": tools.inspect_screen,
             "click_coordinate": tools.click_coordinate,
             "double_click": tools.double_click,
             "right_click": tools.right_click,
@@ -109,18 +115,39 @@ class TARSAgent:
             "type_text": tools.type_text,
             "press_keys": tools.press_keys,
             "scroll_screen": tools.scroll_screen,
+            "scroll_window": tools.scroll_window,
             "switch_window": tools.switch_window,
             "close_active_window": tools.close_active_window,
             "maximize_active_window": tools.maximize_active_window,
             "minimize_active_window": tools.minimize_active_window,
             "get_screen_dimensions": tools.get_screen_dimensions,
+            "get_mouse_position": tools.get_mouse_position,
             # Web Automation & Free Knowledge
             "open_url": tools.open_url,
-            "search_web": tools.search_web,
+            "search_files": tools.search_files,
+            "navigate_to_path": tools.navigate_to_path,
+            "read_file": tools.read_file,
+            "get_file_metadata": tools.get_file_metadata,
+            "list_drives": tools.list_drives,
             "fetch_webpage_summary": tools.fetch_webpage_summary,
             "get_free_knowledge": tools.get_free_knowledge,
-            # Memory
-            "store_memory": self.memory.set_user_preference,
+            "browser_navigate": tools.browser_navigate,
+            "browser_search": tools.browser_search,
+            "browser_click_first_result": tools.browser_click_first_result,
+            "browser_find_elements": tools.browser_find_elements,
+            "browser_click_element": tools.browser_click_element,
+            "browser_extract_text": tools.browser_extract_text,
+            "connect_brave": tools.connect_brave,
+            # UI Automation
+            "get_active_window": tools.get_active_window,
+            "list_running_applications": tools.list_running_applications,
+            "get_ui_elements": tools.get_ui_elements,
+            "click_ui_element": tools.click_ui_element,
+            "type_into_ui_element": tools.type_into_ui_element,
+            "wait_for_condition": tools.wait_for_condition,
+            # Memory & Verification
+            "verify_action": tools.verify_action,
+            "cancel_current_task": tools.cancel_current_task,
         }
 
         # Initialize LLM Client (Optional enhancement, never required)
@@ -151,6 +178,10 @@ class TARSAgent:
     def get_tool_declarations(self) -> List[Any]:
         """Exposes tool functions to the LLM."""
         return list(self.tool_registry.values())
+
+    def run_task(self, request: str, on_status_update: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+        """Runs a multi-step task through the orchestrator."""
+        return self.orchestrator.run_orchestrated_task(request, on_status=on_status_update)
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Executes a registered tool function with error catching."""
@@ -748,6 +779,11 @@ class TARSAgent:
         nav_match = re.match(r"^(?:go to|navigate to|visit|open up|open|launch|start|take me to|show me|bring up)\s+(?:the\s+)?(?:my\s+)?(.+)", p_clean)
         if nav_match:
             target = nav_match.group(1).strip()
+            # If target is a compound multi-step instruction, let the orchestrator handle it
+            if any(conj in target for conj in [" and ", ", and ", ", go to ", ", open ", "then ", "what files are inside", "tell me what", "click"]):
+                return None
+            if len(target.split()) > 5 and not (target.startswith("http") or any(target.endswith(ext) for ext in [".com", ".org", ".net", ".io"])):
+                return None
 
             # Priority 1: Check if target resolves to a drive, folder, or directory
             resolved_p = tools.resolve_system_target(target)
@@ -816,65 +852,55 @@ class TARSAgent:
 
     def run_agent_loop(self, user_prompt: str, on_status_update: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """
-        Executes the autonomous agent loop.
-        Primary: 100% Free Autonomous Local Engine (<1ms response, 0 API keys, 0 quota).
-        Secondary: Optional Cloud LLM with tight timeout fail-safe.
+        Executes the closed-loop autonomous agent cycle:
+        1. Fast Path: Zero-latency (<1ms) local execution for simple OS, GUI, and media hotkeys.
+        2. Knowledge Path: Instant free knowledge retrieval for simple informational queries.
+        3. Orchestration Engine: Multi-step task planner, contextual follow-ups, and ReAct tool-calling loop.
         """
         self.memory.add_message("user", user_prompt)
-        steps_log = []
 
-        # 1. Primary: 100% Free Autonomous Local Execution Engine (<1ms)
+        # 0. Check cancellation request
+        from tools.verification import is_task_cancelled, reset_cancellation
+        if is_task_cancelled():
+            reset_cancellation()
+            resp = "Task was cancelled by user."
+            self.memory.add_message("assistant", resp, [])
+            return {"response": resp, "steps": [], "success": False}
+
+        # 1. Check for multi-step compound tasks or contextual follow-ups first
+        p_lower = user_prompt.strip().lower()
+        if any(kw in p_lower for kw in [" and tell me", " and list", " and click", "what files are inside", "first file", "that file", "what did you find", "first python file"]):
+            orch_res = self.orchestrator.run_orchestrated_task(user_prompt, on_status=on_status_update)
+            if orch_res and orch_res.get("success"):
+                self.memory.add_message("assistant", orch_res.get("response", ""), orch_res.get("steps", []))
+                return orch_res
+
+        # 2. Primary Fast Path: 100% Free Autonomous Local Execution Engine (<1ms)
         local_result = self._autonomous_local_execute(user_prompt)
         if local_result:
-            self.memory.add_message("assistant", local_result["response"], local_result["steps"])
+            self.memory.add_message("assistant", local_result["response"], local_result.get("steps", []))
             return local_result
 
-        # 2. Only check Free Web Knowledge if the prompt is an informational question
+        # 2. Free Web Knowledge for simple informational questions (who/what/when/why)
         p_lower = user_prompt.strip().lower()
-        if re.search(r"^(?:who|what|where|when|why|how|tell me|explain|define|search)\b", p_lower):
+        if re.search(r"^(?:who\s+is|what\s+is|where\s+is|explain|define|tell\s+me\s+about)\b", p_lower) and not any(kw in p_lower for kw in ["folder", "file", "drive", "cwd", "click", "search youtube", "open"]):
             free_kb_ans = tools.get_free_knowledge(user_prompt)
             if free_kb_ans:
                 summary = free_kb_ans[:250] + ("..." if len(free_kb_ans) > 250 else "")
                 self.memory.add_message("assistant", summary, [])
                 return {"response": summary, "steps": [], "success": True}
 
-        # 3. If an API key is available, attempt cloud model with strict 2-second timeout and circuit breaker
-        if self.client and not getattr(self, "_cloud_quota_exceeded", False):
-            import concurrent.futures
-            try:
-                recent_context = self.memory.get_recent_messages(limit=4)
-                preferences = self.memory.get_all_preferences()
-                context_str = f"\nUser Preferences: {json.dumps(preferences)}" if preferences else ""
-                full_system_instruction = self.system_prompt + context_str
+        # 3. Central Task Orchestrator & Multi-Step ReAct Engine
+        orchestrated_res = self.orchestrator.run_orchestrated_task(user_prompt, on_status=on_status_update)
+        if orchestrated_res:
+            self.memory.add_message("assistant", orchestrated_res.get("response", ""), orchestrated_res.get("steps", []))
+            return orchestrated_res
 
-                def _call_gemini():
-                    chat = self.client.chats.create(
-                        model="gemini-2.5-flash",
-                        config={
-                            "system_instruction": full_system_instruction,
-                            "tools": self.get_tool_declarations(),
-                            "temperature": 0.4,
-                        }
-                    )
-                    return chat.send_message(user_prompt)
-
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_call_gemini)
-                    response = future.result(timeout=2.0)
-                    if response:
-                        final_text = response.text or "Command completed."
-                        self.memory.add_message("assistant", final_text, steps_log)
-                        return {"response": final_text, "steps": steps_log, "success": True}
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota exceeded" in err_str or "NOT_FOUND" in err_str:
-                    self._cloud_quota_exceeded = True
-
-        # 4. Universal Immediate Fallback (<1ms)
+        # 4. Universal Fallback
         fallback_reply = f"Standing by. I heard '{user_prompt}'. What is your command?"
-        self.memory.add_message("assistant", fallback_reply, steps_log)
+        self.memory.add_message("assistant", fallback_reply, [])
         return {
             "response": fallback_reply,
-            "steps": steps_log,
+            "steps": [],
             "success": False
         }

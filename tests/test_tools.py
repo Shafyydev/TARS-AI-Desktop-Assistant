@@ -273,6 +273,76 @@ class TestTARS(unittest.TestCase):
             self.assertFalse(monitor.is_triggered())
             monitor.stop()
 
+    def test_filesystem_tools_and_missing_directory(self):
+        from tools.filesystem_tools import list_drives, navigate_to_path, list_directory, read_file
+        # 1. List drives
+        drives = list_drives()
+        self.assertTrue(drives["success"])
+        self.assertGreater(drives["count"], 0)
+
+        # 2. Missing directory diagnostics (Requirement: Test D)
+        missing_res = navigate_to_path(r"D:\non_existent_cwd_12345")
+        self.assertFalse(missing_res["success"])
+        self.assertIn("does not exist", missing_res["error"])
+        self.assertIn("available_folders_in_parent", missing_res)
+
+        # 3. Read valid file (README.md)
+        readme_res = read_file("README.md")
+        self.assertTrue(readme_res["success"])
+        self.assertIn("TARS", readme_res["content"])
+
+        # 4. Binary safety: cannot read binary formats
+        fake_bin_res = read_file("fake_executable.exe")
+        self.assertFalse(fake_bin_res["success"])
+
+    def test_compound_filesystem_orchestration(self):
+        # Master example: "open D drive, go to the CWD folder, and tell me what files are inside"
+        res = self.agent.run_agent_loop("open D drive, go to the CWD folder, and tell me what files are inside")
+        self.assertTrue(res["success"])
+        self.assertIn("folder(s)", res["response"])
+        self.assertIn("file(s)", res["response"])
+
+        # Contextual follow-up: "tell me what you found"
+        follow_up = self.agent.run_agent_loop("tell me what you found")
+        self.assertTrue(follow_up["success"])
+        self.assertIn("found", follow_up["response"])
+
+    def test_cancellation_and_verification_tools(self):
+        from tools.verification import verify_action, cancel_current_task, is_task_cancelled, reset_cancellation
+        # 1. Verification of real path
+        v_real = verify_action("path:D:\\")
+        self.assertTrue(v_real["verified"])
+
+        # 2. Verification of non-existent path
+        v_fake = verify_action(r"path:D:\definitely_missing_path_xyz")
+        self.assertFalse(v_fake["verified"])
+
+        # 3. Cancellation token
+        cancel_res = cancel_current_task()
+        self.assertTrue(cancel_res["cancelled"])
+        self.assertTrue(is_task_cancelled())
+        reset_cancellation()
+        self.assertFalse(is_task_cancelled())
+
+    def test_approved_command_execution(self):
+        from tools.terminal_tools import run_approved_command, get_command_output
+        res = run_approved_command("Write-Output 'TARS_VERIFIED'")
+        self.assertTrue(res["success"])
+        self.assertIn("TARS_VERIFIED", res["stdout"])
+
+        cached = get_command_output()
+        self.assertTrue(cached["success"])
+        self.assertIn("TARS_VERIFIED", cached["stdout"])
+
+    def test_brave_browser_detection(self):
+        from tools.browser_automation import find_brave_executable
+        exe = find_brave_executable()
+        # If Brave is installed on this PC, verify path exists
+        if exe:
+            import os
+            self.assertTrue(os.path.exists(exe))
+            self.assertIn("brave", exe.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

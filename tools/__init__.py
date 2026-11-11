@@ -1,8 +1,9 @@
 """TARS Execution Tools Package."""
 from tools.safety import SafetyValidator
-from tools.terminal_tools import run_powershell, run_cmd
+from tools.terminal_tools import run_powershell, run_cmd, run_approved_command, get_command_output
 from tools.os_tools import (
     launch_application,
+    open_application,
     kill_process,
     get_system_telemetry,
     set_system_volume,
@@ -16,13 +17,13 @@ from tools.os_tools import (
     resolve_system_target,
     create_file_or_folder,
     delete_file_or_folder,
-    list_directory,
     empty_recycle_bin,
     get_network_info,
     system_power
 )
 from tools.gui_tools import (
     take_screenshot,
+    inspect_screen,
     click_coordinate,
     double_click,
     right_click,
@@ -33,19 +34,58 @@ from tools.gui_tools import (
     type_text,
     press_keys,
     scroll_screen,
+    scroll_window,
     get_screen_dimensions,
+    get_mouse_position,
     switch_window,
     close_active_window,
     maximize_active_window,
     minimize_active_window
 )
 from tools.browser_tools import open_url, search_web, fetch_webpage_summary, get_free_knowledge
+from tools.filesystem_tools import (
+    list_drives,
+    navigate_to_path,
+    list_directory,
+    read_file,
+    get_file_metadata,
+    search_files
+)
+from tools.verification import (
+    verify_action,
+    cancel_current_task,
+    request_task_cancellation,
+    is_task_cancelled,
+    reset_cancellation
+)
+from tools.browser_automation import (
+    browser_navigate,
+    browser_search,
+    browser_click_first_result,
+    browser_find_elements,
+    browser_click_element,
+    browser_extract_text,
+    browser_close,
+    connect_brave,
+    find_brave_executable
+)
+from tools.ui_automation import (
+    get_active_window,
+    list_running_applications,
+    get_ui_elements,
+    click_ui_element,
+    type_into_ui_element,
+    wait_for_condition
+)
 
 __all__ = [
     "SafetyValidator",
     "run_powershell",
     "run_cmd",
+    "run_approved_command",
+    "get_command_output",
     "launch_application",
+    "open_application",
     "kill_process",
     "get_system_telemetry",
     "set_system_volume",
@@ -64,6 +104,7 @@ __all__ = [
     "get_network_info",
     "system_power",
     "take_screenshot",
+    "inspect_screen",
     "click_coordinate",
     "double_click",
     "right_click",
@@ -74,7 +115,9 @@ __all__ = [
     "type_text",
     "press_keys",
     "scroll_screen",
+    "scroll_window",
     "get_screen_dimensions",
+    "get_mouse_position",
     "switch_window",
     "close_active_window",
     "maximize_active_window",
@@ -82,5 +125,30 @@ __all__ = [
     "open_url",
     "search_web",
     "fetch_webpage_summary",
-    "get_free_knowledge"
+    "get_free_knowledge",
+    "browser_navigate",
+    "browser_search",
+    "browser_click_first_result",
+    "browser_find_elements",
+    "browser_click_element",
+    "browser_extract_text",
+    "browser_close",
+    "connect_brave",
+    "find_brave_executable",
+    "get_active_window",
+    "list_running_applications",
+    "get_ui_elements",
+    "click_ui_element",
+    "type_into_ui_element",
+    "wait_for_condition",
+    "list_drives",
+    "navigate_to_path",
+    "read_file",
+    "get_file_metadata",
+    "search_files",
+    "verify_action",
+    "cancel_current_task",
+    "request_task_cancellation",
+    "is_task_cancelled",
+    "reset_cancellation"
 ]

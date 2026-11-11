@@ -149,6 +149,29 @@ def scroll_screen(amount: int) -> Dict[str, Any]:
         return {"success": False, "error": f"Scroll failed: {str(e)}"}
 
 
+def scroll_window(amount: int) -> Dict[str, Any]:
+    """Alias for scroll_screen."""
+    return scroll_screen(amount)
+
+
+def inspect_screen() -> Dict[str, Any]:
+    """
+    Captures screen state, resolution, mouse position, and active window metadata.
+    """
+    shot = take_screenshot()
+    dims = get_screen_dimensions()
+    mpos = get_mouse_position()
+    from tools.ui_automation import get_active_window
+    act = get_active_window()
+    return {
+        "success": shot.get("success", True),
+        "screenshot_path": shot.get("filepath"),
+        "dimensions": dims,
+        "mouse_position": mpos,
+        "active_window": act.get("title") if act.get("success") else "Desktop"
+    }
+
+
 def switch_window() -> Dict[str, Any]:
     """Switches active window using Alt+Tab."""
     return press_keys(["alt", "tab"])
