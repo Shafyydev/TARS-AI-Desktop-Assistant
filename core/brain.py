@@ -16,8 +16,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.personality import build_system_prompt
-from core.memory import MemoryStore
+from core.memory import MemoryStore, remember_fact, set_default_memory
 from core.orchestrator import TaskOrchestrator
+from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
+import tools.google_workspace_tools as google_ws
 import tools
 
 # Safe Math Operators
@@ -58,6 +60,13 @@ class TARSAgent:
     Designed to operate 100% autonomously offline and online without requiring paid API keys.
     """
 
+    # Tools that perform irreversible or dangerous actions and require user confirmation
+    DESTRUCTIVE_TOOLS = frozenset([
+        "run_powershell", "run_cmd", "run_approved_command",
+        "delete_file_or_folder", "empty_recycle_bin",
+        "kill_process", "system_power", "send_email",
+    ])
+
     JOKES = [
         "I have a cue light I can use to show you when I'm being sarcastic, if you like. You can use it to find your way back to the spaceship after I blow the airlock.",
         "Absolute honesty isn't always the most diplomatic thing for emotional beings. Cooper found that out the hard way.",
@@ -73,8 +82,11 @@ class TARSAgent:
         self.config_path = config_path
         self.settings = self._load_config()
         self.memory = MemoryStore()
+        set_default_memory(self.memory)
         self.orchestrator = TaskOrchestrator(self)
         self.system_prompt = build_system_prompt(self.settings)
+        self.confirmation_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None
+        self.pending_confirmation: Optional[Dict[str, Any]] = None
         
         # Comprehensive Tool Dispatch Registry
         self.tool_registry: Dict[str, Callable] = {
@@ -149,7 +161,20 @@ class TARSAgent:
             "smart_click": tools.smart_click,
             "smart_type": tools.smart_type,
             "smart_search": tools.smart_search,
+            # Vision & Multimodal
+            "describe_screen": tools.describe_screen,
+            # Reminders & Task Scheduling
+            "set_reminder": set_reminder,
+            "list_active_reminders": list_active_reminders,
+            "cancel_active_reminder": cancel_active_reminder,
+            # Google Workspace: Gmail & Calendar
+            "list_unread_emails": google_ws.list_unread_emails,
+            "read_email": google_ws.read_email,
+            "send_email": google_ws.send_email,
+            "list_upcoming_events": google_ws.list_upcoming_events,
+            "create_calendar_event": google_ws.create_calendar_event,
             # Memory & Verification
+            "remember_fact": remember_fact,
             "verify_action": tools.verify_action,
             "cancel_current_task": tools.cancel_current_task,
         }
@@ -187,11 +212,75 @@ class TARSAgent:
         """Runs a multi-step task through the orchestrator."""
         return self.orchestrator.run_orchestrated_task(request, on_status=on_status_update)
 
-    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """Executes a registered tool function with error catching."""
+    def set_confirmation_callback(self, callback: Optional[Callable[[str, Dict[str, Any]], bool]]) -> None:
+        """Sets the user confirmation callback for destructive actions."""
+        self.confirmation_callback = callback
+
+    def _log_tool_call(self, tool_name: str, arguments: Dict[str, Any], result: Any) -> None:
+        """Logs every tool call to logs/tool_calls.jsonl for complete auditability."""
+        try:
+            log_dir = Path(__file__).resolve().parent.parent / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "tool_calls.jsonl"
+
+            clean_args = {k: v for k, v in arguments.items() if not k.startswith("_")}
+            record = {
+                "timestamp": time.time(),
+                "datetime": datetime.now().isoformat(),
+                "tool_name": tool_name,
+                "arguments": clean_args,
+                "result": result
+            }
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except Exception:
+            pass
+
+    def execute_tool(self, tool_name: str, arguments: Dict[str, Any], confirmed: bool = False) -> Any:
+        """Executes a registered tool function with confirmation gate, error catching, and audit logging."""
+        result = self._execute_tool_inner(tool_name, arguments, confirmed=confirmed)
+        self._log_tool_call(tool_name, arguments, result)
+        return result
+
+    def _execute_tool_inner(self, tool_name: str, arguments: Dict[str, Any], confirmed: bool = False) -> Any:
         if tool_name not in self.tool_registry:
             return {"error": f"Unknown tool: '{tool_name}'"}
-        
+
+        # Check hard safety rules first for shell commands
+        if tool_name in ["run_powershell", "run_cmd", "run_approved_command"]:
+            cmd = arguments.get("command", "")
+            is_allowed, reason, _ = tools.check_safety_rules(cmd)
+            if not is_allowed:
+                return {
+                    "success": False,
+                    "exit_code": -1,
+                    "error": f"BLOCKED BY SAFETY PROTOCOL: {reason}"
+                }
+
+        # Central Confirmation Gate for destructive tools
+        if tool_name in self.DESTRUCTIVE_TOOLS:
+            is_confirmed = confirmed or bool(arguments.pop("_confirmed", False))
+            if not is_confirmed:
+                if self.confirmation_callback is not None:
+                    is_confirmed = bool(self.confirmation_callback(tool_name, arguments))
+                    if not is_confirmed:
+                        return {
+                            "success": False,
+                            "exit_code": -2,
+                            "requires_confirmation": True,
+                            "confirmed": False,
+                            "error": f"CONFIRMATION DENIED: Execution of destructive tool '{tool_name}' was denied by user."
+                        }
+                else:
+                    self.pending_confirmation = {"tool": tool_name, "args": dict(arguments)}
+                    return {
+                        "success": False,
+                        "exit_code": -2,
+                        "requires_confirmation": True,
+                        "confirmed": False,
+                        "error": f"CONFIRMATION REQUIRED: Tool '{tool_name}' is destructive and requires user confirmation (say or type 'yes' to proceed)."
+                    }
+
         func = self.tool_registry[tool_name]
         try:
             return func(**arguments)
@@ -335,57 +424,58 @@ class TARSAgent:
         if re.search(r"^(?:hello|hi|hey|what's up|how are you|good morning|good evening|good afternoon)$", p_clean):
             return {"response": "TARS online. Ready for orders.", "steps": [], "success": True}
 
-        if re.search(r"\bwhat\s+can\s+you\s+do\b|\bhelp\b|\bcapabilities\b|\bfeatures\b", p_clean):
+        # Direct capabilities query (anchored)
+        if re.search(r"^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+(?:capabilities|features)|help|capabilities|features)$", p_clean):
             return {
-                "response": "I control your entire PC: mouse clicks, keyboard typing, browser navigation, volume, window management, terminal commands, and system hardware 100% free without API keys.",
+                "response": "I control your entire PC: mouse clicks, keyboard typing, browser navigation, volume, window management, terminal commands, and system hardware.",
                 "steps": [],
                 "success": True
             }
 
-        # 2. Jokes & Personality Matrices
-        if "joke" in p_clean or "tell me something funny" in p_clean:
+        # 2. Jokes & Personality Matrices (short, direct requests only)
+        if re.search(r"^(?:tell\s+(?:me\s+)?(?:a\s+)?joke|tell\s+me\s+something\s+funny|joke)$", p_clean):
             import random
             return {"response": random.choice(self.JOKES), "steps": [], "success": True}
 
-        if "humor" in p_clean and ("setting" in p_clean or "parameter" in p_clean or "level" in p_clean):
+        if re.search(r"\b(?:what\s+is\s+your\s+)?humor\s+(?:setting|parameter|level)\b", p_clean):
             humor = int(self.settings.get("personality", {}).get("humor", 0.75) * 100)
             return {"response": f"Humor is set to {humor} percent. That's enough to keep me sarcastic without blowing the airlock.", "steps": [], "success": True}
 
-        if "honesty" in p_clean and ("setting" in p_clean or "parameter" in p_clean or "level" in p_clean):
+        if re.search(r"\b(?:what\s+is\s+your\s+)?honesty\s+(?:setting|parameter|level)\b", p_clean):
             honesty = int(self.settings.get("personality", {}).get("honesty", 0.90) * 100)
             return {"response": f"Honesty parameter: {honesty} percent. Absolute honesty isn't always the most diplomatic thing for emotional humans.", "steps": [], "success": True}
 
-        # 3. Browser Tabs (Flexible Regex)
-        if re.search(r"\b(close|shut|exit)\b.*\b(tab|top|tap)\b", p_clean):
+        # 3. Browser Tabs (Short Imperative Commands Only)
+        if re.search(r"^(?:close|shut|exit)\s+(?:this\s+|the\s+)?(?:tab|tap)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "w"]})
             return {"response": "Closed tab.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "w"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(new|open|create)\b.*\b(tab|top|tap)\b", p_clean):
+        if re.search(r"^(?:new|open|create)\s+(?:a\s+)?(?:tab|tap)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "t"]})
             return {"response": "Opened new tab.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "t"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(next|switch|cycle)\b.*\b(tab|top|tap)\b", p_clean):
+        if re.search(r"^(?:next|switch|cycle)\s+(?:tab|tap)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "tab"]})
             return {"response": "Switched to next tab.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "tab"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(prev|previous|last|back)\b.*\b(tab|top|tap)\b", p_clean):
+        if re.search(r"^(?:prev|previous|last|back)\s+(?:tab|tap)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "tab"]})
             return {"response": "Switched to previous tab.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "tab"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(reopen|restore|undo)\b.*\b(tab|top|tap)\b", p_clean):
+        if re.search(r"^(?:reopen|restore|undo)\s+(?:tab|tap)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "t"]})
             return {"response": "Restored tab.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "t"]}, "result": res}], "success": True}
 
-        # 4. Direct GUI Mouse Controls (Flexible Regex)
-        if re.search(r"\b(double|2x)\b.*\bclick\b", p_clean):
+        # 4. Direct GUI Mouse Controls (Short Imperative Commands Only)
+        if re.search(r"^(?:double|2x)\s*click$", p_clean):
             res = self.execute_tool("double_click", {})
             return {"response": "Double clicked.", "steps": [{"tool": "double_click", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\bright\b.*\bclick\b|\bcontext\s+menu\b", p_clean):
+        if re.search(r"^(?:right\s*click|context\s+menu)$", p_clean):
             res = self.execute_tool("right_click", {})
             return {"response": "Right clicked.", "steps": [{"tool": "right_click", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\bmiddle\b.*\bclick\b|\bscroll\s+click\b", p_clean):
+        if re.search(r"^(?:middle\s*click|scroll\s+click)$", p_clean):
             res = self.execute_tool("middle_click", {})
             return {"response": "Middle clicked.", "steps": [{"tool": "middle_click", "args": {}, "result": res}], "success": True}
 
@@ -424,34 +514,35 @@ class TARSAgent:
             res = self.execute_tool("click_coordinate", {"button": "left", "clicks": 1})
             return {"response": "Clicked.", "steps": [{"tool": "click_coordinate", "args": {"button": "left", "clicks": 1}, "result": res}], "success": True}
 
-        # Targeted click: e.g. "click search bar", "click the first video", "click new tab", "click close"
-        click_target_match = re.match(r"^(?:click|tap|select|press)\s+(?:on\s+|the\s+)?(.+)", p_clean)
+        # Targeted click: short imperative commands only (e.g. "click search bar", "click the first video")
+        click_target_match = re.match(r"^(?:click|tap|select)\s+(?:on\s+|the\s+)?(.+)$", p_clean)
         if click_target_match:
             target_cand = click_target_match.group(1).strip()
-            # Defer single hotkey presses to the dedicated key handlers below
-            if target_cand not in ["enter", "return", "space", "spacebar", "tab", "escape", "esc", "backspace", "delete", "del"]:
-                res = self.execute_tool("smart_click", {"target": target_cand})
-                msg = res.get("message") if isinstance(res, dict) else f"Clicked {target_cand}."
-                return {
-                    "response": msg,
-                    "steps": [{"tool": "smart_click", "args": {"target": target_cand}, "result": res}],
-                    "success": res.get("success", True) if isinstance(res, dict) else True
-                }
+            # Defer single hotkey presses to dedicated handlers and restrict to short commands (<= 4 words)
+            if len(target_cand.split()) <= 4 and not any(conj in target_cand for conj in [" and ", ", and ", "then ", "what ", "who ", "why ", "how ", "summarize", "tell me", "explain"]):
+                if target_cand not in ["enter", "return", "space", "spacebar", "tab", "escape", "esc", "backspace", "delete", "del"]:
+                    res = self.execute_tool("smart_click", {"target": target_cand})
+                    msg = res.get("message") if isinstance(res, dict) else f"Clicked {target_cand}."
+                    return {
+                        "response": msg,
+                        "steps": [{"tool": "smart_click", "args": {"target": target_cand}, "result": res}],
+                        "success": res.get("success", True) if isinstance(res, dict) else True
+                    }
 
-        # 5. GUI Scrolling (Flexible Regex)
-        if re.search(r"\bscroll\b.*\b(bottom|end)\b|\bbottom\s+of\s+page\b", p_clean):
+        # 5. GUI Scrolling (Short Imperative Commands Only)
+        if re.search(r"^(?:scroll\s+(?:to\s+)?(?:bottom|end)|bottom\s+of\s+page)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["end"]})
             return {"response": "Jumped to page bottom.", "steps": [{"tool": "press_keys", "args": {"keys": ["end"]}, "result": res}], "success": True}
 
-        if re.search(r"\bscroll\b.*\b(top|home)\b|\btop\s+of\s+page\b", p_clean):
+        if re.search(r"^(?:scroll\s+(?:to\s+)?(?:top|home)|top\s+of\s+page)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["home"]})
             return {"response": "Jumped to page top.", "steps": [{"tool": "press_keys", "args": {"keys": ["home"]}, "result": res}], "success": True}
 
-        if re.search(r"\bscroll\b.*\bdown\b|\bpage\s+down\b|\bdown\s+a\s+bit\b|\bscroll\s+lower\b", p_clean):
+        if re.search(r"^(?:scroll\s+down|page\s+down|down\s+a\s+bit|scroll\s+lower)$", p_clean):
             res = self.execute_tool("scroll_screen", {"amount": -650})
             return {"response": "Scrolled down.", "steps": [{"tool": "scroll_screen", "args": {"amount": -650}, "result": res}], "success": True}
 
-        if re.search(r"\bscroll\b.*\bup\b|\bpage\s+up\b|\bup\s+a\s+bit\b|\bscroll\s+higher\b", p_clean):
+        if re.search(r"^(?:scroll\s+up|page\s+up|up\s+a\s+bit|scroll\s+higher)$", p_clean):
             res = self.execute_tool("scroll_screen", {"amount": 650})
             return {"response": "Scrolled up.", "steps": [{"tool": "scroll_screen", "args": {"amount": 650}, "result": res}], "success": True}
 
@@ -494,164 +585,164 @@ class TARSAgent:
                 "success": res.get("success", True) if isinstance(res, dict) else True
             }
 
-        if re.search(r"\b(press|hit)?\s*(enter|return)\s*(key)?\b|\b(click\s+ok|press\s+ok|hit\s+ok)\b|^ok$", p_clean):
+        if re.search(r"^(?:(?:press|hit)\s+)?(?:enter|return)(?:\s+key)?$|^(?:click\s+ok|press\s+ok|hit\s+ok|ok)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["enter"]})
             return {"response": "Pressed enter.", "steps": [{"tool": "press_keys", "args": {"keys": ["enter"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(press|hit)?\s*(space|spacebar)\s*(key)?\b", p_clean):
+        if re.search(r"^(?:(?:press|hit)\s+)?(?:space|spacebar)(?:\s+key)?$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["space"]})
             return {"response": "Pressed space.", "steps": [{"tool": "press_keys", "args": {"keys": ["space"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(press|hit)?\s*(tab|tabkey)\s*(key)?\b", p_clean):
+        if re.search(r"^(?:(?:press|hit)\s+)?(?:tab|tabkey)(?:\s+key)?$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["tab"]})
             return {"response": "Pressed tab.", "steps": [{"tool": "press_keys", "args": {"keys": ["tab"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(press|hit)?\s*(escape|esc)\s*(key)?\b|\b(?:close|dismiss|cancel)\s+(?:popup|dialog|modal|alert|error|message)\b|^cancel$", p_clean):
+        if re.search(r"^(?:(?:press|hit)\s+)?(?:escape|esc)(?:\s+key)?$|^(?:close|dismiss|cancel)\s+(?:popup|dialog|modal|alert|error|message)$|^cancel$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["escape"]})
             return {"response": "Dismissed popup dialog.", "steps": [{"tool": "press_keys", "args": {"keys": ["escape"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(press|hit)?\s*(backspace)\s*(key)?\b", p_clean):
+        if re.search(r"^(?:(?:press|hit)\s+)?(?:backspace)(?:\s+key)?$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["backspace"]})
             return {"response": "Deleted character.", "steps": [{"tool": "press_keys", "args": {"keys": ["backspace"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(press|hit)\s+(delete|del)\s*(key)?\b|^(?:delete|del)\s*(?:key)?$", p_clean):
+        if re.search(r"^(?:(?:press|hit)\s+)?(?:delete|del)(?:\s+key)?$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["delete"]})
             return {"response": "Pressed delete.", "steps": [{"tool": "press_keys", "args": {"keys": ["delete"]}, "result": res}], "success": True}
 
-        # 7. Navigation & Explorer GUI Controls
-        if re.search(r"\b(refresh|reload)\b", p_clean):
+        # 7. Navigation & Explorer GUI Controls (Anchored)
+        if re.search(r"^(?:refresh|reload|refresh\s+page|reload\s+page)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["f5"]})
             return {"response": "Refreshed.", "steps": [{"tool": "press_keys", "args": {"keys": ["f5"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(go\s+)?back\b|\bprevious\s+page\b", p_clean):
+        if re.search(r"^(?:go\s+back|previous\s+page|back)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["alt", "left"]})
             return {"response": "Navigated back.", "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "left"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(go\s+)?forward\b|\bnext\s+page\b", p_clean):
+        if re.search(r"^(?:go\s+forward|next\s+page|forward)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["alt", "right"]})
             return {"response": "Navigated forward.", "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "right"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(go\s+up|up\s+one\s+level|parent\s+folder|parent\s+directory)\b|^up$", p_clean):
+        if re.search(r"^(?:go\s+up|up\s+one\s+level|parent\s+folder|parent\s+directory|up)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["alt", "up"]})
             return {"response": "Navigated up one level.", "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "up"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(address\s+bar|url\s+bar|focus\s+url|focus\s+address)\b", p_clean):
+        if re.search(r"^(?:address\s+bar|url\s+bar|focus\s+url|focus\s+address)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["alt", "d"]})
             return {"response": "Address bar focused.", "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "d"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(new\s+folder|create\s+new\s+folder|make\s+new\s+folder)\b", p_clean):
+        if re.search(r"^(?:new\s+folder|create\s+new\s+folder|make\s+new\s+folder)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "n"]})
             return {"response": "Created new folder in active window.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "n"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(rename\s+file|rename\s+folder|rename\s+item|rename)\b", p_clean):
+        if re.search(r"^(?:rename\s+file|rename\s+folder|rename\s+item|rename)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["f2"]})
             return {"response": "Rename activated.", "steps": [{"tool": "press_keys", "args": {"keys": ["f2"]}, "result": res}], "success": True}
 
-        if re.search(r"\bzoom\s+in\b|\benlarge\b", p_clean):
+        if re.search(r"^(?:zoom\s+in|enlarge)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "+"]})
             return {"response": "Zoomed in.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "+"]}, "result": res}], "success": True}
 
-        if re.search(r"\bzoom\s+out\b|\bshrink\b", p_clean):
+        if re.search(r"^(?:zoom\s+out|shrink)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "-"]})
             return {"response": "Zoomed out.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "-"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(reset\s+zoom|zoom\s+reset|normal\s+zoom)\b", p_clean):
+        if re.search(r"^(?:reset\s+zoom|zoom\s+reset|normal\s+zoom)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "0"]})
             return {"response": "Zoom reset to 100 percent.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "0"]}, "result": res}], "success": True}
 
-        if re.search(r"\bfind\s+(in|on)\s+page\b|\bsearch\s+page\b", p_clean):
+        if re.search(r"^(?:find\s+(?:in|on)\s+page|search\s+page)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "f"]})
             return {"response": "Find in page activated.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "f"]}, "result": res}], "success": True}
 
-        # 8. Editing & Clipboard Hotkeys
-        if re.search(r"\bselect\s+(all|everything)\b|\bhighlight\s+all\b", p_clean):
+        # 8. Editing & Clipboard Hotkeys (Anchored)
+        if re.search(r"^(?:select\s+(?:all|everything)|highlight\s+all)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "a"]})
             return {"response": "Selected all.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "a"]}, "result": res}], "success": True}
 
-        if re.search(r"\bcopy\b", p_clean):
+        if re.search(r"^(?:copy|copy\s+that|copy\s+selection|copy\s+text)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "c"]})
             return {"response": "Copied to clipboard.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "c"]}, "result": res}], "success": True}
 
-        if re.search(r"\bpaste\b", p_clean):
+        if re.search(r"^(?:paste|paste\s+it|paste\s+here|paste\s+text)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "v"]})
             return {"response": "Pasted.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "v"]}, "result": res}], "success": True}
 
-        if re.search(r"\bcut\b", p_clean):
+        if re.search(r"^(?:cut|cut\s+that|cut\s+selection)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "x"]})
             return {"response": "Cut to clipboard.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "x"]}, "result": res}], "success": True}
 
-        if re.search(r"\bundo\b|\brevert\b", p_clean):
+        if re.search(r"^(?:undo|undo\s+that|revert)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "z"]})
             return {"response": "Undone.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "z"]}, "result": res}], "success": True}
 
-        if re.search(r"\bredo\b", p_clean):
+        if re.search(r"^(?:redo|redo\s+that)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "y"]})
             return {"response": "Redone.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "y"]}, "result": res}], "success": True}
 
-        if re.search(r"\bsave\b", p_clean):
+        if re.search(r"^(?:save|save\s+file|save\s+this|save\s+it)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "s"]})
             return {"response": "Saved.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "s"]}, "result": res}], "success": True}
 
-        # 9. Window & Desktop Management
-        if re.search(r"\b(maximize|max)\b.*?\b(window|app|application|this|the\s+window|active)?\b|\bexpand\s+(?:the\s+|this\s+)?window\b", p_clean):
+        # 9. Window & Desktop Management (Anchored)
+        if re.search(r"^(?:maximize|max)(?:\s+(?:the\s+|this\s+|active\s+)?window)?$|^expand\s+(?:the\s+|this\s+)?window$", p_clean):
             res = self.execute_tool("maximize_active_window", {})
             return {"response": "Window maximized.", "steps": [{"tool": "maximize_active_window", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\b(minimize|min)\s+(all|desktop|everything)\b|\bshow\s+desktop\b|\bgo\s+to\s+desktop\b|\bclear\s+screen\b|^desktop$", p_clean):
+        if re.search(r"^(?:minimize|min)\s+(?:all|desktop|everything)$|^(?:show\s+desktop|go\s+to\s+desktop|clear\s+screen|desktop)$", p_clean):
             res = self.execute_tool("minimize_all_windows", {})
             return {"response": "Desktop cleared. All windows minimized.", "steps": [{"tool": "minimize_all_windows", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\b(minimize|min)\b.*?\b(window|app|application|this|the\s+window|active)?\b", p_clean):
+        if re.search(r"^(?:minimize|min)(?:\s+(?:the\s+|this\s+|active\s+)?window)?$", p_clean):
             res = self.execute_tool("minimize_active_window", {})
             return {"response": "Window minimized.", "steps": [{"tool": "minimize_active_window", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\bfullscreen\b|\bfull\s+screen\b", p_clean):
+        if re.search(r"^(?:fullscreen|full\s+screen|toggle\s+fullscreen)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["f11"]})
             return {"response": "Fullscreen toggled.", "steps": [{"tool": "press_keys", "args": {"keys": ["f11"]}, "result": res}], "success": True}
 
-        if re.search(r"\bsnap\s+left\b", p_clean):
+        if re.search(r"^(?:snap\s+left)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["win", "left"]})
             return {"response": "Snapped window left.", "steps": [{"tool": "press_keys", "args": {"keys": ["win", "left"]}, "result": res}], "success": True}
 
-        if re.search(r"\bsnap\s+right\b", p_clean):
+        if re.search(r"^(?:snap\s+right)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["win", "right"]})
             return {"response": "Snapped window right.", "steps": [{"tool": "press_keys", "args": {"keys": ["win", "right"]}, "result": res}], "success": True}
 
-        if re.search(r"\bswitch\b.*?\b(window|app|application)\b|\balt\s+tab\b|\bnext\s+window\b", p_clean):
+        if re.search(r"^(?:switch\s+(?:the\s+)?(?:window|app|application)|alt\s+tab|next\s+window|switch\s+window)$", p_clean):
             res = self.execute_tool("switch_window", {})
             return {"response": "Switched active window.", "steps": [{"tool": "switch_window", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\b(close|shut|exit|kill)\b.*?\b(window|app|application|program)\b|\bclose\s+(?:this|the|current|active)\s+window\b|\bclose\s+(?:this|current|active)\b", p_clean):
+        if re.search(r"^(?:close|shut|exit|kill)\s+(?:this\s+|the\s+|current\s+|active\s+)?(?:window|app|application|program)$|^close\s+(?:this|current|active)$", p_clean):
             res = self.execute_tool("close_active_window", {})
             return {"response": "Active window closed.", "steps": [{"tool": "close_active_window", "args": {}, "result": res}], "success": True}
 
         # 10. Workstation Security & Display
-        if re.search(r"\block\s+(pc|computer|workstation|screen|windows)\b", p_clean):
+        if re.search(r"^(?:lock|lock\s+(?:the\s+)?(?:pc|computer|workstation|screen|windows))$", p_clean):
             res = self.execute_tool("lock_workstation", {})
             return {"response": "Workstation locked.", "steps": [{"tool": "lock_workstation", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"\bscreenshot\b|\bcapture\s+screen\b", p_clean):
+        if re.search(r"^(?:take\s+(?:a\s+)?screenshot|screenshot|capture\s+screen)$", p_clean):
             res = self.execute_tool("take_screenshot", {})
             return {"response": "Screenshot captured.", "steps": [{"tool": "take_screenshot", "args": {}, "result": res}], "success": True}
 
-        # 11. Hardware & System Telemetry
-        if re.search(r"\b(status|telemetry|specs|hardware|cpu|ram|battery)\b", p_clean):
+        # 11. Hardware & System Telemetry (Anchored)
+        if re.search(r"^(?:(?:system\s+|pc\s+|hardware\s+)?(?:status|telemetry|specs)|(?:hardware|cpu|ram|battery)(?:\s+status)?)$", p_clean):
             telem = self.execute_tool("get_system_telemetry", {})
             msg = f"CPU is at {telem['cpu_load_percent']}%, RAM load is {telem['ram_usage_percent']}%. Battery: {telem['battery']}."
             return {"response": msg, "steps": [{"tool": "get_system_telemetry", "args": {}, "result": telem}], "success": True}
 
         # 12. Volume Calibration & Controls
-        vol_match = re.search(r"\bvolume\b.*\b(\d{1,3})\b", p_clean)
+        vol_match = re.search(r"^(?:(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})(?:\s*%)?|volume\s+(\d{1,3}))$", p_clean)
         if vol_match:
-            val = int(vol_match.group(1))
+            val = int(vol_match.group(1) or vol_match.group(2))
             res = self.execute_tool("set_system_volume", {"level_percent": val})
             return {"response": f"Volume calibrated to {val} percent.", "steps": [{"tool": "set_system_volume", "args": {"level_percent": val}, "result": res}], "success": True}
 
-        if re.search(r"\b(volume\s+up|turn\s+up\s+volume|louder|increase\s+volume)\b", p_clean):
+        if re.search(r"^(?:volume\s+up|turn\s+up\s+volume|louder|increase\s+volume)$", p_clean):
             res = self.execute_tool("media_control", {"action": "volume_up"})
             return {"response": "Volume increased.", "steps": [{"tool": "media_control", "args": {"action": "volume_up"}, "result": res}], "success": True}
 
-        if re.search(r"\b(volume\s+down|turn\s+down\s+volume|quieter|decrease\s+volume|lower\s+volume)\b", p_clean):
+        if re.search(r"^(?:volume\s+down|turn\s+down\s+volume|quieter|decrease\s+volume|lower\s+volume)$", p_clean):
             res = self.execute_tool("media_control", {"action": "volume_down"})
             return {"response": "Volume decreased.", "steps": [{"tool": "media_control", "args": {"action": "volume_down"}, "result": res}], "success": True}
 
@@ -671,20 +762,20 @@ class TARSAgent:
                 res = self.execute_tool("smart_search", {"query": s_query, "engine": "google"})
                 return {"response": f"Searching Google for '{s_query}'.", "steps": [{"tool": "smart_search", "args": {"query": s_query, "engine": "google"}, "result": res}], "success": True}
 
-        # 14. Media Playback Controls
-        if re.search(r"\b(mute|unmute|silence)\b", p_clean):
+        # 14. Media Playback Controls (Anchored)
+        if re.search(r"^(?:mute|unmute|silence)$", p_clean):
             res = self.execute_tool("media_control", {"action": "mute"})
             return {"response": "Mute toggled.", "steps": [{"tool": "media_control", "args": {"action": "mute"}, "result": res}], "success": True}
         
-        if re.search(r"\b(play|pause|resume|stop\s+music)\b", p_clean):
+        if re.search(r"^(?:play|pause|resume|play\s+pause|stop\s+music)$", p_clean):
             res = self.execute_tool("media_control", {"action": "play_pause"})
             return {"response": "Playback toggled.", "steps": [{"tool": "media_control", "args": {"action": "play_pause"}, "result": res}], "success": True}
 
-        if re.search(r"\b(next\s+track|next\s+song|skip\s+song)\b", p_clean):
+        if re.search(r"^(?:next\s+track|next\s+song|skip\s+song)$", p_clean):
             res = self.execute_tool("media_control", {"action": "next"})
             return {"response": "Skipped to next track.", "steps": [{"tool": "media_control", "args": {"action": "next"}, "result": res}], "success": True}
 
-        if re.search(r"\b(previous\s+track|prev\s+track|prev\s+song)\b", p_clean):
+        if re.search(r"^(?:previous\s+track|prev\s+track|prev\s+song)$", p_clean):
             res = self.execute_tool("media_control", {"action": "prev"})
             return {"response": "Restarted track.", "steps": [{"tool": "media_control", "args": {"action": "prev"}, "result": res}], "success": True}
 
@@ -693,12 +784,18 @@ class TARSAgent:
         if term_match:
             cmd_to_run = term_match.group(1).strip()
             res = self.execute_tool("run_powershell", {"command": cmd_to_run})
+            if not res.get("success", True):
+                return {
+                    "response": res.get("error") or res.get("message") or "Command failed.",
+                    "steps": [{"tool": "run_powershell", "args": {"command": cmd_to_run}, "result": res}],
+                    "success": False
+                }
             stdout = res.get("stdout", "").strip()
             summary = stdout[:160] if stdout else "Command completed."
             return {
                 "response": f"Executed: {summary}",
                 "steps": [{"tool": "run_powershell", "args": {"command": cmd_to_run}, "result": res}],
-                "success": res.get("success", True)
+                "success": True
             }
 
         common_shell_cmds = [
@@ -708,12 +805,18 @@ class TARSAgent:
         cmd_head = p_clean.split()[0] if p_clean.split() else ""
         if p_clean in common_shell_cmds or cmd_head in common_shell_cmds or cmd_head in ["git", "python", "py", "pip", "node", "npm", "npx", "docker"]:
             res = self.execute_tool("run_powershell", {"command": p_clean})
+            if not res.get("success", True):
+                return {
+                    "response": res.get("error") or res.get("message") or "Command failed.",
+                    "steps": [{"tool": "run_powershell", "args": {"command": p_clean}, "result": res}],
+                    "success": False
+                }
             stdout = res.get("stdout", "").strip()
             summary = stdout[:160] if stdout else "Command completed."
             return {
                 "response": f"Output: {summary}",
                 "steps": [{"tool": "run_powershell", "args": {"command": p_clean}, "result": res}],
-                "success": res.get("success", True)
+                "success": True
             }
 
         # 15. Time & Date
@@ -725,6 +828,89 @@ class TARSAgent:
             today_str = datetime.now().strftime("%A, %B %d, %Y")
             return {"response": f"Today is {today_str}.", "steps": [], "success": True}
 
+        # 16. Long-Term Memory & User Facts
+        remember_match = re.match(r"^remember(?:\s+that)?\s+(.+)", prompt.strip(), re.IGNORECASE)
+        if remember_match:
+            fact = remember_match.group(1).strip()
+            parts = re.split(r"\s+(?:is|are|=|:)\s+", fact, maxsplit=1, flags=re.IGNORECASE)
+            if len(parts) == 2:
+                key, val = parts[0].strip(), parts[1].strip()
+            else:
+                key, val = "fact", fact
+            res = self.execute_tool("remember_fact", {"key": key, "value": val})
+            return {
+                "response": f"I'll remember that {key} is {val}.",
+                "steps": [{"tool": "remember_fact", "args": {"key": key, "value": val}, "result": res}],
+                "success": True
+            }
+
+        # 17. Screen Understanding & Vision
+        if re.search(r"^(?:what(?:'s|\s+is)\s+on\s+(?:the|my)\s+screen|describe\s+(?:the\s+|my\s+)?screen|look\s+at\s+(?:the|my)\s+screen|screen\s+summary)$", p_clean):
+            res = self.execute_tool("describe_screen", {})
+            desc = res.get("description", "Screen captured.")
+            return {
+                "response": desc,
+                "steps": [{"tool": "describe_screen", "args": {}, "result": res}],
+                "success": res.get("success", True)
+            }
+
+        # 18. Timers and Reminders
+        remind_match = re.match(r"^(?:remind\s+me\s+to\s+(.+)\s+in\s+(\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)|set\s+(?:a\s+)?timer\s+for\s+(\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)(?:\s+for\s+(.+))?)$", p_clean)
+        if remind_match:
+            if remind_match.group(1) and remind_match.group(2):
+                msg = remind_match.group(1).strip()
+                mins = float(remind_match.group(2))
+            else:
+                mins = float(remind_match.group(3))
+                msg = (remind_match.group(4) or "timer").strip()
+            res = self.execute_tool("set_reminder", {"message": msg, "minutes": mins})
+            return {
+                "response": res.get("message", f"Reminder set for {mins} minutes."),
+                "steps": [{"tool": "set_reminder", "args": {"message": msg, "minutes": mins}, "result": res}],
+                "success": res.get("success", True)
+            }
+
+        if re.search(r"^(?:list\s+(?:my\s+)?reminders|what\s+are\s+my\s+reminders|show\s+reminders|active\s+timers)$", p_clean):
+            res = self.execute_tool("list_active_reminders", {})
+            rems = res.get("reminders", [])
+            if not rems:
+                return {"response": "You have no upcoming reminders.", "steps": [{"tool": "list_active_reminders", "args": {}, "result": res}], "success": True}
+            lines = [f"{r['message']} at {r['due_time']}" for r in rems]
+            return {
+                "response": f"You have {len(rems)} reminders: " + "; ".join(lines) + ".",
+                "steps": [{"tool": "list_active_reminders", "args": {}, "result": res}],
+                "success": True
+            }
+
+        # 19. Google Workspace (Gmail & Calendar) Quick Overview
+        if re.search(r"^(?:check\s+(?:my\s+)?(?:email|emails|gmail|inbox)|unread\s+(?:emails|messages)|show\s+(?:my\s+)?emails)$", p_clean):
+            res = self.execute_tool("list_unread_emails", {"max_results": 5})
+            if not res.get("success"):
+                return {"response": res.get("error", "Failed to access Gmail."), "steps": [{"tool": "list_unread_emails", "args": {}, "result": res}], "success": False}
+            emails = res.get("emails", [])
+            if not emails:
+                return {"response": "You have no unread emails.", "steps": [{"tool": "list_unread_emails", "args": {}, "result": res}], "success": True}
+            summaries = [f"From {e['from'].split('<')[0].strip()}: {e['subject']}" for e in emails[:3]]
+            return {
+                "response": f"You have {len(emails)} unread emails. Recent: " + "; ".join(summaries) + ".",
+                "steps": [{"tool": "list_unread_emails", "args": {}, "result": res}],
+                "success": True
+            }
+
+        if re.search(r"^(?:upcoming\s+events|what\s+is\s+on\s+my\s+calendar|check\s+(?:my\s+)?calendar|calendar\s+events)$", p_clean):
+            res = self.execute_tool("list_upcoming_events", {"max_results": 5})
+            if not res.get("success"):
+                return {"response": res.get("error", "Failed to access Google Calendar."), "steps": [{"tool": "list_upcoming_events", "args": {}, "result": res}], "success": False}
+            events = res.get("events", [])
+            if not events:
+                return {"response": "No upcoming calendar events found.", "steps": [{"tool": "list_upcoming_events", "args": {}, "result": res}], "success": True}
+            summaries = [f"{ev['summary']} at {ev['start']}" for ev in events[:3]]
+            return {
+                "response": f"Upcoming events: " + "; ".join(summaries) + ".",
+                "steps": [{"tool": "list_upcoming_events", "args": {}, "result": res}],
+                "success": True
+            }
+
         # 16. Clipboard Interaction
         if re.search(r"\b(read\s+clipboard|what\s+is\s+on\s+clipboard|paste\s+clipboard)\b", p_clean):
             res = self.execute_tool("read_clipboard", {})
@@ -734,8 +920,8 @@ class TARSAgent:
                 return {"response": f"Clipboard contents: '{snippet}'.", "steps": [{"tool": "read_clipboard", "args": {}, "result": res}], "success": True}
             return {"response": "Clipboard is currently empty.", "steps": [{"tool": "read_clipboard", "args": {}, "result": res}], "success": True}
 
-        # 17. GitHub Profile Direct Shortcut
-        if ("github" in p_clean and any(kw in p_clean for kw in ["profile", "my", "account", "user", "repo", "page"])) or "my github" in p_clean:
+        # 17. GitHub Profile Direct Shortcut (Anchored)
+        if re.search(r"^(?:(?:go\s+to|open)\s+)?(?:my\s+)?github(?:\s+(?:profile|account|page|user))?$|^my\s+github$|^go\s+to\s+my\s+profile\s+github$", p_clean):
             res = self.execute_tool("launch_application", {"app_name": "https://github.com/Shafyydev"})
             return {
                 "response": "Opening your GitHub profile.",
@@ -743,33 +929,33 @@ class TARSAgent:
                 "success": True
             }
 
-        # 18. Windows System Keys & Desktop Features
-        if re.search(r"\b(start\s+menu|windows\s+key|press\s+windows|press\s+win|press\s+start)\b", p_clean) or p_clean in ["start", "win", "windows"]:
+        # 18. Windows System Keys & Desktop Features (Anchored)
+        if re.search(r"^(?:start\s+menu|windows\s+key|press\s+windows|press\s+win|press\s+start|open\s+start\s+menu)$", p_clean) or p_clean in ["start", "win", "windows"]:
             res = self.execute_tool("press_keys", {"keys": ["win"]})
             return {"response": "Opened Start menu.", "steps": [{"tool": "press_keys", "args": {"keys": ["win"]}, "result": res}], "success": True}
 
-        if re.search(r"\btask\s*mgr\b|\btask\s*manager\b", p_clean):
+        if re.search(r"^(?:(?:open\s+)?(?:task\s*mgr|task\s*manager))$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "escape"]})
             return {"response": "Opened Task Manager.", "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "escape"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(file\s+explorer|my\s+computer|this\s+pc|open\s+explorer)\b", p_clean):
+        if re.search(r"^(?:(?:open\s+)?(?:file\s+explorer|my\s+computer|this\s+pc|explorer))$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["win", "e"]})
             return {"response": "Opened File Explorer.", "steps": [{"tool": "press_keys", "args": {"keys": ["win", "e"]}, "result": res}], "success": True}
 
-        if re.search(r"\brun\s+dialog\b|\bopen\s+run\b", p_clean):
+        if re.search(r"^(?:run\s+dialog|open\s+run)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["win", "r"]})
             return {"response": "Opened Run dialog.", "steps": [{"tool": "press_keys", "args": {"keys": ["win", "r"]}, "result": res}], "success": True}
 
-        if re.search(r"\b(action\s+center|notification\s+center|notifications|show\s+notifications)\b", p_clean):
+        if re.search(r"^(?:(?:open\s+)?(?:action\s+center|notification\s+center|notifications|show\s+notifications))$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["win", "a"]})
             return {"response": "Opened Action Center.", "steps": [{"tool": "press_keys", "args": {"keys": ["win", "a"]}, "result": res}], "success": True}
 
-        if re.search(r"\bclipboard\s+history\b", p_clean):
+        if re.search(r"^(?:(?:open\s+)?clipboard\s+history)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["win", "v"]})
             return {"response": "Opened Clipboard History.", "steps": [{"tool": "press_keys", "args": {"keys": ["win", "v"]}, "result": res}], "success": True}
 
         # 19. File & Folder Operations
-        if re.search(r"\b(empty|clean|clear)\b.*?\b(recycle\s+bin|trash|bin)\b", p_clean):
+        if re.search(r"^(?:empty|clean|clear)\s+(?:the\s+)?(?:recycle\s+bin|trash|bin)$", p_clean):
             res = self.execute_tool("empty_recycle_bin", {})
             return {"response": "Recycle Bin emptied.", "steps": [{"tool": "empty_recycle_bin", "args": {}, "result": res}], "success": True}
 
@@ -921,17 +1107,15 @@ class TARSAgent:
                 "success": res.get("success", True) if isinstance(res, dict) else True
             }
 
-        # 22. Free Online Knowledge (Wikipedia QA)
-        info_match = re.match(r"^(?:who is|what is|where is|tell me about|explain|define)\s+(.+)", p_clean)
+        # 22. Free Online Knowledge (Wikipedia QA - Short Factual Lookups Only)
+        info_match = re.match(r"^(?:who is|what is|where is|define)\s+([a-zA-Z0-9\s\.\-_]{1,50})$", p_clean)
         if info_match:
             query = info_match.group(1).strip(" ?.")
-            answer = tools.get_free_knowledge(query)
-            if answer:
-                summary = answer[:250] + ("..." if len(answer) > 250 else "")
-                return {"response": summary, "steps": [{"tool": "get_free_knowledge", "args": {"query": query}, "result": {"answer": summary}}], "success": True}
-            else:
-                res = self.execute_tool("smart_search", {"query": query})
-                return {"response": f"Searching for '{query}'.", "steps": [{"tool": "smart_search", "args": {"query": query}, "result": res}], "success": True}
+            if len(query.split()) <= 4 and not any(w in query for w in ["best", "should", "how", "why", "my", "your"]):
+                answer = tools.get_free_knowledge(query)
+                if answer:
+                    summary = answer[:250] + ("..." if len(answer) > 250 else "")
+                    return {"response": summary, "steps": [{"tool": "get_free_knowledge", "args": {"query": query}, "result": {"answer": summary}}], "success": True}
 
         return None
 
@@ -951,6 +1135,30 @@ class TARSAgent:
             resp = "Task was cancelled by user."
             self.memory.add_message("assistant", resp, [])
             return {"response": resp, "steps": [], "success": False}
+
+        # 0b. Check pending user confirmation for destructive actions
+        if self.pending_confirmation is not None:
+            clean_ans = user_prompt.strip().lower().strip(".!? ")
+            if clean_ans in ["yes", "y", "confirm", "proceed", "do it", "sure", "ok", "okay"]:
+                pending = self.pending_confirmation
+                self.pending_confirmation = None
+                tool_res = self.execute_tool(pending["tool"], pending["args"], confirmed=True)
+                if isinstance(tool_res, dict) and tool_res.get("message"):
+                    msg = f"Confirmed: {tool_res['message']}"
+                else:
+                    msg = f"Confirmed and executed {pending['tool']}."
+                resp = {
+                    "response": msg,
+                    "steps": [{"tool": pending["tool"], "args": pending["args"], "result": tool_res}],
+                    "success": tool_res.get("success", True) if isinstance(tool_res, dict) else True
+                }
+                self.memory.add_message("assistant", resp["response"], resp["steps"])
+                return resp
+            else:
+                self.pending_confirmation = None
+                resp = {"response": "Action cancelled by user.", "steps": [], "success": False}
+                self.memory.add_message("assistant", resp["response"], [])
+                return resp
 
         # 1. Check for multi-step compound tasks or contextual follow-ups first
         p_lower = user_prompt.strip().lower()

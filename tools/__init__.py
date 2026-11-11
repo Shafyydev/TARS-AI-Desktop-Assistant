@@ -1,5 +1,5 @@
 """TARS Execution Tools Package."""
-from tools.safety import SafetyValidator
+from tools.safety import SafetyValidator, check_safety_rules
 from tools.terminal_tools import run_powershell, run_cmd, run_approved_command, get_command_output
 from tools.os_tools import (
     launch_application,
@@ -24,6 +24,7 @@ from tools.os_tools import (
 from tools.gui_tools import (
     take_screenshot,
     inspect_screen,
+    describe_screen,
     click_coordinate,
     double_click,
     right_click,
@@ -83,9 +84,29 @@ from tools.interaction_tools import (
     smart_type,
     smart_search
 )
+from core.memory import remember_fact
+from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
+from tools.google_workspace_tools import (
+    list_unread_emails,
+    read_email,
+    send_email,
+    list_upcoming_events,
+    create_calendar_event
+)
 
 __all__ = [
     "SafetyValidator",
+    "check_safety_rules",
+    "remember_fact",
+    "set_reminder",
+    "list_active_reminders",
+    "cancel_active_reminder",
+    "describe_screen",
+    "list_unread_emails",
+    "read_email",
+    "send_email",
+    "list_upcoming_events",
+    "create_calendar_event",
     "run_powershell",
     "run_cmd",
     "run_approved_command",
