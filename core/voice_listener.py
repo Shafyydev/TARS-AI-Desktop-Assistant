@@ -8,6 +8,8 @@ import struct
 import math
 from typing import Optional, Tuple, Callable, Any
 
+from core.wake_word import WakeWordDetector
+
 
 def detect_system_stt_language() -> str:
     """Detects system locale to choose the best Google STT acoustic model (e.g. en-IN, en-US, en-GB)."""
@@ -106,6 +108,7 @@ class VoiceListener:
         self._microphone = None
         self.last_active_time = 0.0
         self.active_dialogue_window_sec = 30.0
+        self.wake_detector = WakeWordDetector(mic_index=self.mic_index)
         self._init_audio()
 
     def _init_audio(self) -> None:
@@ -178,6 +181,19 @@ class VoiceListener:
             return True, clean
 
         return False, clean
+
+    def listen_for_wake_word(self, timeout: Optional[float] = None) -> bool:
+        """
+        Uses dedicated wake-word detector (e.g. Porcupine) if available.
+        Returns True if wake word is detected, False on timeout.
+        """
+        if self.wake_detector and self.wake_detector.is_porcupine_active():
+            detected = self.wake_detector.wait_for_wake_word(timeout=timeout)
+            if detected:
+                self.last_active_time = time.time()
+            return detected
+        return False
+
 
     def listen_once(
         self,
