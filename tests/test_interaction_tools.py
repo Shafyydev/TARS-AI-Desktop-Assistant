@@ -103,8 +103,11 @@ class TestInteractionTools(unittest.TestCase):
         contact = MagicMock()
         search_edit.element_info.name = "Search"
         contact.element_info.name = "Reshma"
+        header = MagicMock()
+        header.element_info.name = "Contacts"
+        contact.descendants.return_value = []
         window.descendants.side_effect = [
-            [search_edit], [], [contact]
+            [search_edit], [header, contact]
         ]
         mock_desktop.return_value.windows.return_value = [window]
 
@@ -112,7 +115,8 @@ class TestInteractionTools(unittest.TestCase):
 
         self.assertTrue(res["success"])
         mock_copy.assert_called_once_with("Reshma")
-        mock_keys.assert_called_with(["ctrl", "v"])
+        mock_keys.assert_any_call(["ctrl", "v"])
+        mock_keys.assert_any_call(["enter"])
         contact.click_input.assert_called_once()
 
     @patch("tools.interaction_tools.smart_type")
@@ -226,15 +230,20 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         self.assertTrue(result["success"])
         mock_minimize.assert_called_once_with()
 
-    def test_agent_requires_confirmation_before_whatsapp_send(self):
+    def test_agent_sends_to_active_whatsapp_chat_without_confirmation(self):
         mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
         self.agent.tool_registry["send_whatsapp_message"] = mock_send
+        self.agent.last_whatsapp_contact = "amma"
 
-        result = self.agent.run_agent_loop("send Shafyy hi")
+        result = self.agent.run_agent_loop("send hello how are you")
 
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with(contact_name="amma", message="hello how are you")
+
+    def test_agent_does_not_send_bare_send_to_llm(self):
+        result = self.agent.run_agent_loop("send")
         self.assertFalse(result["success"])
-        self.assertTrue(result["steps"][0]["result"]["requires_confirmation"])
-        mock_send.assert_not_called()
+        self.assertIn("message to send", result["response"])
 
 
 if __name__ == "__main__":

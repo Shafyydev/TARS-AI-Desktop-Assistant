@@ -492,6 +492,19 @@ class TestConfirmationGate(unittest.TestCase):
         self.assertFalse(res["success"])
         self.assertTrue(res["response"].startswith("LLM unavailable:"))
 
+    def test_ollama_thinking_is_not_returned_to_user(self):
+        from core.llm_provider import LLMProvider
+        content = "internal reasoning\n</think>\nFinal answer"
+        self.assertEqual(LLMProvider._strip_ollama_thinking(content), "Final answer")
+
+    def test_ollama_uses_compact_tool_schema(self):
+        self.agent.orchestrator.llm.provider = "ollama"
+        tools_list = self.agent.orchestrator._tools_for_provider()
+        names = {tool.__name__ for tool in tools_list}
+        self.assertIn("open_whatsapp_chat", names)
+        self.assertIn("smart_click", names)
+        self.assertLess(len(tools_list), len(self.agent.tool_registry))
+
     def test_settings_models_no_duplicates(self):
         from core.llm_provider import DEFAULT_MODELS
         # Verify no duplicates in DEFAULT_MODELS

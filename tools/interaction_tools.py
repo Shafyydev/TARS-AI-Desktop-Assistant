@@ -4,6 +4,7 @@ import sys
 import re
 import time
 import urllib.parse
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pyautogui
@@ -272,43 +273,44 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         time.sleep(1.0)
 
         normalized_contact = contact.casefold()
-        # WhatsApp Desktop renders search results as DataItem/Button controls,
-        # not ListItem controls. Buttons are preferred because they are the
-        # directly actionable contact row.
-        candidates = (
-            window.descendants(control_type="Button")
-            + window.descendants(control_type="DataItem")
-        )
-        named_candidates = [
-            item for item in candidates
-            if (item.element_info.name or "").strip()
-            and (item.element_info.name or "").strip().casefold()
-            not in {"chats", "contacts", "messages", "search results."}
-        ]
-        match = next(
-            (item for item in named_candidates
-             if normalized_contact == (item.element_info.name or "").strip().casefold()),
-            None,
-        )
-        if match is None:
-            match = next(
-                (item for item in named_candidates
-                 if (item.element_info.name or "").strip().casefold().startswith(normalized_contact)),
-                None,
-            )
-        if match is None:
-            match = next(
-                (item for item in named_candidates
-                 if normalized_contact in (item.element_info.name or "").casefold()),
-                None,
-            )
+        # Keep only actual chat/contact rows. WhatsApp also returns historical
+        # message matches; selecting one does not reliably open the chat.
+        section = "chats"
+        candidates = []
+        for item in window.descendants(control_type="DataItem"):
+            name = (item.element_info.name or "").strip()
+            lowered = name.casefold()
+            if lowered in {"chats", "contacts", "messages"}:
+                section = lowered
+                continue
+            if section not in {"chats", "contacts"} or not name:
+                continue
+            buttons = item.descendants(control_type="Button")
+            candidates.append((buttons[0] if buttons else item, name))
+
+        def score(candidate_name: str) -> float:
+            candidate = candidate_name.casefold()
+            if candidate == normalized_contact:
+                return 100.0
+            if normalized_contact in candidate:
+                return 90.0
+            return SequenceMatcher(None, normalized_contact, candidate).ratio() * 100
+
+        match = None
+        if candidates:
+            candidate, candidate_name = max(candidates, key=lambda pair: score(pair[1]))
+            if score(candidate_name) >= 70.0:
+                match = candidate
         if match is None:
             return {
                 "success": False,
-                "error": f"No WhatsApp chat matching '{contact}' was found."
+                "error": f"No WhatsApp chat/contact matching '{contact}' was found. Say the full name shown in WhatsApp."
             }
 
         match.click_input()
+        # Chromium-based WhatsApp sometimes highlights the result after a click
+        # without activating it. Enter commits the selected chat row.
+        gui.press_keys(["enter"])
         return {
             "success": True,
             "contact": contact,
