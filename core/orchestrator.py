@@ -29,6 +29,28 @@ class TaskOrchestrator:
             "last_browser_url": None,
         }
 
+    # A compact local tool set keeps a small CPU-hosted model responsive. The
+    # fast path handles the remaining direct commands without involving an LLM.
+    OLLAMA_TOOL_NAMES = frozenset({
+        "launch_application", "open_application", "get_system_telemetry",
+        "set_system_volume", "media_control", "get_running_windows",
+        "open_folder", "list_directory", "read_file", "search_files",
+        "take_screenshot", "inspect_screen", "click_ui_element",
+        "type_into_ui_element", "smart_click", "smart_type", "smart_search",
+        "open_whatsapp_chat", "send_whatsapp_message", "set_reminder",
+        "list_active_reminders", "cancel_active_reminder", "remember_fact",
+    })
+
+    def _tools_for_provider(self) -> List[Callable]:
+        """Returns tool declarations sized appropriately for the configured LLM."""
+        if self.llm.provider == "ollama":
+            return [
+                self.agent.tool_registry[name]
+                for name in self.OLLAMA_TOOL_NAMES
+                if name in self.agent.tool_registry
+            ]
+        return list(self.agent.tool_registry.values())
+
     def cancel(self) -> None:
         """Signals cancellation of the active task."""
         if self.current_task:
@@ -333,7 +355,7 @@ class TaskOrchestrator:
             if on_status:
                 on_status("Formulating autonomous execution plan...")
 
-            tools_list = list(self.agent.tool_registry.values())
+            tools_list = self._tools_for_provider()
             system_instruction = self.agent.system_prompt
 
             history = self.agent.memory.get_recent_messages(limit=10) if hasattr(self.agent, "memory") else None
@@ -348,7 +370,7 @@ class TaskOrchestrator:
                 user_preferences=user_prefs,
                 on_status=on_status,
                 max_iterations=5,
-                timeout=25.0
+                timeout=10.0 if self.llm.provider == "ollama" else 25.0
             )
 
             if llm_result:
