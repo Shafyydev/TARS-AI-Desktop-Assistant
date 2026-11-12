@@ -142,10 +142,20 @@ Create or edit `.env` in the project root:
 # local OS hotkeys, system telemetry, media keys, audio controls, and UI automation run 100% offline without a key)
 GEMINI_API_KEY=your_gemini_api_key_here
 
+# Optional: dedicated on-device wake-word detection. Create a Windows custom
+# "TARS" .ppn keyword model in the Picovoice Console, then configure its path.
+PICOVOICE_ACCESS_KEY=your_picovoice_access_key_here
+TARS_WAKE_KEYWORD_PATH=C:\path\to\tars_windows.ppn
+
 # Voice settings
 TARS_VOICE=en-US-GuyNeural
 TARS_DEFAULT_MODE=hybrid
 ```
+
+Gemini-powered planning and screen descriptions require `GEMINI_API_KEY`; local
+desktop controls remain available without it. Gmail and Google Calendar also
+require enabling the relevant Google APIs, configuring a desktop OAuth client,
+and saving its `credentials.json` under `config/`.
 
 ---
 
