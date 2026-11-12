@@ -82,7 +82,9 @@ from tools.interaction_tools import (
     get_active_window_context,
     smart_click,
     smart_type,
-    smart_search
+    smart_search,
+    open_whatsapp_chat,
+    send_whatsapp_message
 )
 from core.memory import remember_fact
 from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
@@ -181,5 +183,7 @@ __all__ = [
     "get_active_window_context",
     "smart_click",
     "smart_type",
-    "smart_search"
+    "smart_search",
+    "open_whatsapp_chat",
+    "send_whatsapp_message"
 ]

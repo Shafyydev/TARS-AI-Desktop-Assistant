@@ -222,6 +222,158 @@ def smart_click(target: str) -> Dict[str, Any]:
     return gui.click_coordinate(button="left", clicks=1)
 
 
+def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
+    """Searches the WhatsApp Desktop chat list and opens a matching contact.
+
+    This uses Windows UI Automation rather than interpreting a contact name as an
+    executable or relying on fixed screen coordinates.  It does not send a
+    message; it only selects the requested conversation.
+    """
+    contact = (contact_name or "").strip()
+    if not contact:
+        return {"success": False, "error": "No WhatsApp contact name was provided."}
+
+    try:
+        from pywinauto import Desktop
+
+        windows = Desktop(backend="uia").windows(
+            title_re=".*WhatsApp.*", visible_only=True
+        )
+        if not windows:
+            return {
+                "success": False,
+                "error": "WhatsApp Desktop is not open. Open WhatsApp first, then ask again."
+            }
+
+        window = windows[0]
+        window.set_focus()
+
+        # WhatsApp exposes its chat-search field as an Edit control. Prefer an
+        # explicitly named search field, then fall back to the first visible Edit.
+        edits = window.descendants(control_type="Edit")
+        search_edit = next(
+            (edit for edit in edits if "search" in (edit.element_info.name or "").lower()),
+            edits[0] if edits else None,
+        )
+        if search_edit is None:
+            return {
+                "success": False,
+                "error": "Could not find WhatsApp's chat search field."
+            }
+
+        search_edit.set_focus()
+        search_edit.type_keys("^a{BACKSPACE}")
+        # WhatsApp Desktop is Chromium-based; direct UIA typing is unreliable in
+        # its search field. Clipboard paste delivers the exact contact text.
+        if copy_to_clipboard(contact):
+            gui.press_keys(["ctrl", "v"])
+        else:
+            search_edit.type_keys(contact, with_spaces=True)
+        time.sleep(1.0)
+
+        normalized_contact = contact.casefold()
+        # WhatsApp Desktop renders search results as DataItem/Button controls,
+        # not ListItem controls. Buttons are preferred because they are the
+        # directly actionable contact row.
+        candidates = (
+            window.descendants(control_type="Button")
+            + window.descendants(control_type="DataItem")
+        )
+        named_candidates = [
+            item for item in candidates
+            if (item.element_info.name or "").strip()
+            and (item.element_info.name or "").strip().casefold()
+            not in {"chats", "contacts", "messages", "search results."}
+        ]
+        match = next(
+            (item for item in named_candidates
+             if normalized_contact == (item.element_info.name or "").strip().casefold()),
+            None,
+        )
+        if match is None:
+            match = next(
+                (item for item in named_candidates
+                 if (item.element_info.name or "").strip().casefold().startswith(normalized_contact)),
+                None,
+            )
+        if match is None:
+            match = next(
+                (item for item in named_candidates
+                 if normalized_contact in (item.element_info.name or "").casefold()),
+                None,
+            )
+        if match is None:
+            return {
+                "success": False,
+                "error": f"No WhatsApp chat matching '{contact}' was found."
+            }
+
+        match.click_input()
+        return {
+            "success": True,
+            "contact": contact,
+            "message": f"Opened WhatsApp chat with {contact}."
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Could not open WhatsApp chat '{contact}': {exc}"
+        }
+
+
+def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
+    """Opens a WhatsApp conversation, types a message, and sends it.
+
+    The central agent confirmation gate protects this tool.  This function is
+    deliberately not responsible for deciding whether a message may be sent.
+    """
+    clean_message = (message or "").strip()
+    if not clean_message:
+        return {"success": False, "error": "No WhatsApp message was provided."}
+
+    opened = open_whatsapp_chat(contact_name)
+    if not opened.get("success"):
+        return opened
+
+    try:
+        from pywinauto import Desktop
+
+        windows = Desktop(backend="uia").windows(title_re=".*WhatsApp.*", visible_only=True)
+        window = windows[0]
+        edits = window.descendants(control_type="Edit")
+        message_edit = next(
+            (
+                edit for edit in edits
+                if any(token in (edit.element_info.name or "").casefold()
+                       for token in ("type a message", "message"))
+                and "search" not in (edit.element_info.name or "").casefold()
+            ),
+            None,
+        )
+        if message_edit is None:
+            return {
+                "success": False,
+                "error": "WhatsApp chat opened, but its message field was not found."
+            }
+
+        message_edit.set_focus()
+        if copy_to_clipboard(clean_message):
+            gui.press_keys(["ctrl", "v"])
+        else:
+            message_edit.type_keys(clean_message, with_spaces=True)
+        gui.press_keys(["enter"])
+        return {
+            "success": True,
+            "contact": contact_name,
+            "message": f"Sent WhatsApp message to {contact_name}."
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Could not send WhatsApp message to {contact_name}: {exc}"
+        }
+
+
 def smart_type(text: str, target: Optional[str] = None, press_enter: bool = False) -> Dict[str, Any]:
     """
     Intelligently types text into the appropriate field or active application.

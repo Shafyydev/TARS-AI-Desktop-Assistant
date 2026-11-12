@@ -1,11 +1,30 @@
 """Terminal and PowerShell execution tools for TARS."""
 import subprocess
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Dict, Any, Optional
 from tools.safety import SafetyValidator
 
 _safety = SafetyValidator()
 MAX_OUTPUT_CHARS = 8000
+_central_confirmation_active: ContextVar[bool] = ContextVar(
+    "tars_central_confirmation_active", default=False
+)
+
+
+@contextmanager
+def authorized_execution():
+    """Marks a shell call as having passed TARSAgent's confirmation gate.
+
+    This is intentionally execution context rather than a function parameter: a
+    model-generated function call cannot opt itself into authorization.
+    """
+    token = _central_confirmation_active.set(True)
+    try:
+        yield
+    finally:
+        _central_confirmation_active.reset(token)
 
 _last_command_output = {
     "command": "",
@@ -77,7 +96,7 @@ def run_powershell(command: str, timeout: int = 30, cwd: Optional[str] = None) -
             "requires_confirmation": False
         }
     
-    if req_confirm:
+    if req_confirm and not _central_confirmation_active.get():
         return {
             "success": False,
             "exit_code": -2,
@@ -147,7 +166,7 @@ def run_cmd(command: str, timeout: int = 30, cwd: Optional[str] = None) -> Dict[
             "requires_confirmation": False
         }
 
-    if req_confirm:
+    if req_confirm and not _central_confirmation_active.get():
         return {
             "success": False,
             "exit_code": -2,
