@@ -2,10 +2,14 @@
 import os
 import time
 import logging
+import inspect
+import json
+import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 
 DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-flash-latest"]
+OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 
 # Set up dedicated logger for LLM interactions
 logger = logging.getLogger("TARS.LLM")
@@ -26,6 +30,16 @@ if not logger.handlers:
     logger.addHandler(sh)
 
 
+def _log_provider_exception(message: str, exc: Exception) -> None:
+    """Shows a short console error while retaining the traceback in tars.log."""
+    logger.error("%s: %s", message, exc)
+    try:
+        with open(log_file, "a", encoding="utf-8") as log_handle:
+            log_handle.write(traceback.format_exc())
+    except OSError:
+        pass
+
+
 class LLMProvider:
     """
     Unified AI provider adapter for Google Gemini and extensible providers.
@@ -34,14 +48,20 @@ class LLMProvider:
     """
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
-        self.provider = provider or os.getenv("AI_PROVIDER", "gemini").lower()
-        self.model = model or os.getenv("AI_MODEL", "gemini-3.8-flash")
+        self.provider = provider or os.getenv("AI_PROVIDER", "ollama").lower()
+        default_model = OLLAMA_DEFAULT_MODEL if self.provider == "ollama" else "gemini-3.8-flash"
+        self.model = model or os.getenv("AI_MODEL", default_model)
         self.client = None
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
         self._quota_exhausted_until = 0.0
         self._init_client()
 
     def _init_client(self) -> None:
-        if self.provider == "gemini":
+        if self.provider == "ollama":
+            # The Ollama server is checked lazily in available(), so startup
+            # remains usable even while Ollama is still launching.
+            self.client = object()
+        elif self.provider == "gemini":
             key = os.getenv("GEMINI_API_KEY")
             if key and key != "your_gemini_api_key_here":
                 try:
@@ -57,6 +77,13 @@ class LLMProvider:
         """Returns True if the client is configured and not under an active rate limit pause."""
         if not self.client:
             return False
+        if self.provider == "ollama":
+            try:
+                import requests
+                response = requests.get(f"{self.ollama_url}/api/tags", timeout=1.5)
+                return response.ok
+            except Exception:
+                return False
         if time.time() < self._quota_exhausted_until:
             return False
         return True
@@ -83,7 +110,11 @@ class LLMProvider:
         the final synthesized answer and executed steps.
         """
         if not self.available():
-            reason = "API key not configured or rate limit pause in effect"
+            reason = (
+                "Ollama is not running at " + self.ollama_url
+                if self.provider == "ollama"
+                else "API key not configured or rate limit pause in effect"
+            )
             logger.warning(f"LLM execution skipped: {reason}")
             return {
                 "success": False,
@@ -91,6 +122,12 @@ class LLMProvider:
                 "error": reason,
                 "steps": []
             }
+
+        if self.provider == "ollama":
+            return self._run_ollama_tool_agent_loop(
+                prompt, system_instruction, tools_list, tool_executor,
+                history, user_preferences, on_status, max_iterations, timeout
+            )
 
         from google.genai import types
 
@@ -207,7 +244,7 @@ class LLMProvider:
             except Exception as e:
                 err_msg = str(e)
                 last_error = err_msg
-                logger.error(f"Error during LLM execution with model '{model_name}': {err_msg}", exc_info=True)
+                _log_provider_exception(f"Error during LLM execution with model '{model_name}'", e)
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "Quota exceeded" in err_msg:
                     self.mark_quota_exhausted(45.0)
                     short_reason = "quota exhausted"
@@ -234,4 +271,122 @@ class LLMProvider:
             "error": last_error or "Unknown error",
             "steps": []
         }
+
+    @staticmethod
+    def _ollama_tool_schema(function: Callable) -> Dict[str, Any]:
+        """Converts a registered Python tool into Ollama's function schema."""
+        signature = inspect.signature(function)
+        properties: Dict[str, Any] = {}
+        required: List[str] = []
+        type_map = {int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
+        for name, parameter in signature.parameters.items():
+            if name.startswith("_"):
+                continue
+            annotation = parameter.annotation
+            json_type = type_map.get(annotation, "string")
+            properties[name] = {"type": json_type}
+            if parameter.default is inspect.Parameter.empty:
+                required.append(name)
+        return {
+            "type": "function",
+            "function": {
+                "name": function.__name__,
+                "description": inspect.getdoc(function) or f"Run {function.__name__}.",
+                "parameters": {"type": "object", "properties": properties, "required": required},
+            },
+        }
+
+    @staticmethod
+    def _strip_ollama_thinking(content: str) -> str:
+        """Removes Qwen thinking text when a model emits it despite think=false."""
+        if "</think>" in content:
+            return content.rsplit("</think>", 1)[-1].strip()
+        return content.strip()
+
+    def _run_ollama_tool_agent_loop(
+        self,
+        prompt: str,
+        system_instruction: str,
+        tools_list: List[Callable],
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        history: Optional[List[Dict[str, Any]]],
+        user_preferences: Optional[Dict[str, Any]],
+        on_status: Optional[Callable[[str], None]],
+        max_iterations: int,
+        timeout: float,
+    ) -> Dict[str, Any]:
+        """Runs Ollama's documented multi-turn /api/chat function-call loop."""
+        import requests
+
+        if user_preferences:
+            facts = "\n".join(f"- {key}: {value}" for key, value in user_preferences.items())
+            system_instruction = f"{system_instruction}\n\n[USER PREFERENCES & STORED FACTS]\n{facts}"
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_instruction}]
+        for item in history or []:
+            role = item.get("role", "user")
+            if role in {"assistant", "tars", "model"}:
+                role = "assistant"
+            if role not in {"user", "assistant"}:
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                messages.append({"role": role, "content": content.strip()})
+        if messages[-1].get("role") == "user" and messages[-1].get("content") == prompt:
+            messages.pop()
+        messages.append({"role": "user", "content": prompt})
+
+        tool_schemas = [self._ollama_tool_schema(function) for function in tools_list]
+        steps: List[Dict[str, Any]] = []
+        try:
+            for iteration in range(max_iterations):
+                if on_status and iteration:
+                    on_status(f"Reasoning next step (step {iteration + 1})...")
+                response = requests.post(
+                    f"{self.ollama_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "tools": tool_schemas,
+                        "stream": False,
+                        "think": False,
+                        "keep_alive": "10m",
+                    },
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                assistant_message = response.json().get("message", {})
+                if not assistant_message:
+                    raise RuntimeError("Ollama returned no assistant message")
+                messages.append(assistant_message)
+                tool_calls = assistant_message.get("tool_calls") or []
+                if not tool_calls:
+                    return {
+                        "success": True,
+                        "response": self._strip_ollama_thinking(assistant_message.get("content", "")) or "Task completed.",
+                        "steps": steps,
+                        "model": self.model,
+                    }
+                for call in tool_calls:
+                    function = call.get("function", {})
+                    tool_name = function.get("name", "")
+                    tool_args = function.get("arguments") or {}
+                    if on_status:
+                        on_status(f"Executing: {tool_name}")
+                    result = tool_executor(tool_name, tool_args)
+                    steps.append({"tool": tool_name, "args": tool_args, "result": result})
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": tool_name,
+                        "content": json.dumps(result, default=str),
+                    })
+            return {"success": False, "response": "Ollama stopped after too many tool steps.", "steps": steps}
+        except Exception as exc:
+            _log_provider_exception("Ollama execution failed", exc)
+            return {
+                "success": False,
+                "response": f"LLM unavailable: {str(exc).splitlines()[0][:80]}.",
+                "error": str(exc),
+                "steps": steps,
+            }
 

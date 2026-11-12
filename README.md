@@ -157,6 +157,12 @@ desktop controls remain available without it. Gmail and Google Calendar also
 require enabling the relevant Google APIs, configuring a desktop OAuth client,
 and saving its `credentials.json` under `config/`.
 
+### Optional local Ollama model
+
+Install Ollama and download `qwen3:4b` if you want to experiment with a local
+model. TARS uses Gemini as the fallback for requests its direct local tools do
+not handle; set `AI_PROVIDER=ollama` to use Ollama instead.
+
 ---
 
 ## 💻 Running TARS
