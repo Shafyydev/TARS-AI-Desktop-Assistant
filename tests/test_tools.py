@@ -1,5 +1,6 @@
 """Unit tests for TARS execution tools, voice components, and safety layer."""
 import unittest
+from unittest.mock import MagicMock
 from tools.safety import SafetyValidator
 from tools.terminal_tools import run_powershell
 from tools.os_tools import get_system_telemetry
@@ -392,6 +393,34 @@ class TestConfirmationGate(unittest.TestCase):
         self.assertFalse(res.get("confirmed"))
         self.assertIn("CONFIRMATION REQUIRED", res.get("error", ""))
         self.assertIsNotNone(self.agent.pending_confirmation)
+
+    def test_tool_arguments_cannot_forge_confirmation(self):
+        """An LLM must not bypass the gate by adding an internal-looking field."""
+        destructive = MagicMock(return_value={"success": True})
+        self.agent.tool_registry["delete_file_or_folder"] = destructive
+
+        res = self.agent.execute_tool(
+            "delete_file_or_folder",
+            {"name": "important", "location": "desktop", "_confirmed": True},
+        )
+
+        self.assertTrue(res["requires_confirmation"])
+        destructive.assert_not_called()
+
+    def test_only_yes_executes_pending_destructive_action(self):
+        destructive = MagicMock(return_value={"success": True, "message": "Deleted."})
+        self.agent.tool_registry["delete_file_or_folder"] = destructive
+
+        self.agent.run_agent_loop("delete folder important on desktop")
+        not_yes = self.agent.run_agent_loop("confirm")
+
+        self.assertFalse(not_yes["success"])
+        destructive.assert_not_called()
+
+        self.agent.run_agent_loop("delete folder important on desktop")
+        yes = self.agent.run_agent_loop("yes")
+        self.assertTrue(yes["success"])
+        destructive.assert_called_once_with(name="important", location="desktop")
 
     def test_destructive_tool_denied_by_callback(self):
         self.agent.set_confirmation_callback(lambda tool, args: False)

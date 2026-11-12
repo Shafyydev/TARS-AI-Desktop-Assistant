@@ -94,6 +94,27 @@ class TestInteractionTools(unittest.TestCase):
         self.assertFalse(res["success"])
         self.assertIn("error", res)
 
+    @patch("tools.interaction_tools.gui.press_keys")
+    @patch("tools.interaction_tools.copy_to_clipboard", return_value=True)
+    @patch("pywinauto.Desktop")
+    def test_open_whatsapp_chat_uses_search_and_matching_contact(self, mock_desktop, mock_copy, mock_keys):
+        window = MagicMock()
+        search_edit = MagicMock()
+        contact = MagicMock()
+        search_edit.element_info.name = "Search"
+        contact.element_info.name = "Reshma"
+        window.descendants.side_effect = [
+            [search_edit], [], [contact]
+        ]
+        mock_desktop.return_value.windows.return_value = [window]
+
+        res = it.open_whatsapp_chat("Reshma")
+
+        self.assertTrue(res["success"])
+        mock_copy.assert_called_once_with("Reshma")
+        mock_keys.assert_called_with(["ctrl", "v"])
+        contact.click_input.assert_called_once()
+
     @patch("tools.interaction_tools.smart_type")
     @patch("tools.interaction_tools.get_active_window_context")
     def test_smart_search_in_browser(self, mock_ctx, mock_type):
@@ -148,6 +169,72 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         result = self.agent.run_agent_loop("search for interstellar on youtube")
         self.assertTrue(result["success"])
         mock_search.assert_called_with(query="interstellar", engine="youtube")
+
+    def test_agent_opens_whatsapp_chat_instead_of_launching_contact_name(self):
+        mock_chat = MagicMock(return_value={"success": True, "message": "Opened chat."})
+        self.agent.tool_registry["open_whatsapp_chat"] = mock_chat
+
+        result = self.agent.run_agent_loop("go to Reshma chat")
+
+        self.assertTrue(result["success"])
+        mock_chat.assert_called_once_with(contact_name="reshma")
+
+    def test_agent_searches_whatsapp_instead_of_the_web(self):
+        mock_chat = MagicMock(return_value={"success": True, "message": "Opened chat."})
+        self.agent.tool_registry["open_whatsapp_chat"] = mock_chat
+
+        result = self.agent.run_agent_loop("search Shafi in WhatsApp")
+
+        self.assertTrue(result["success"])
+        mock_chat.assert_called_once_with(contact_name="shafi")
+
+    def test_agent_uses_implicit_contact_name_when_whatsapp_is_running(self):
+        mock_chat = MagicMock(return_value={"success": True, "message": "Opened chat."})
+        self.agent.tool_registry["open_whatsapp_chat"] = mock_chat
+
+        with patch("tools.get_running_windows", return_value=["WhatsApp"]):
+            result = self.agent.run_agent_loop("go to Shafi")
+
+        self.assertTrue(result["success"])
+        mock_chat.assert_called_once_with(contact_name="shafi")
+
+    def test_agent_clicks_named_whatsapp_contact_before_generic_click(self):
+        mock_chat = MagicMock(return_value={"success": True, "message": "Opened chat."})
+        self.agent.tool_registry["open_whatsapp_chat"] = mock_chat
+
+        with patch("tools.get_running_windows", return_value=["WhatsApp"]):
+            result = self.agent.run_agent_loop("click Shafi")
+
+        self.assertTrue(result["success"])
+        mock_chat.assert_called_once_with(contact_name="shafi")
+
+    def test_agent_sets_exact_volume_without_calling_llm(self):
+        mock_volume = MagicMock(return_value={"success": True, "message": "Volume set."})
+        self.agent.tool_registry["set_system_volume"] = mock_volume
+
+        result = self.agent.run_agent_loop("decrease volume to 50%")
+
+        self.assertTrue(result["success"])
+        mock_volume.assert_called_once_with(level_percent=50)
+
+    def test_agent_understands_british_minimise_terminal(self):
+        mock_minimize = MagicMock(return_value={"success": True, "message": "Minimized."})
+        self.agent.tool_registry["minimize_active_window"] = mock_minimize
+
+        result = self.agent.run_agent_loop("minimise terminal")
+
+        self.assertTrue(result["success"])
+        mock_minimize.assert_called_once_with()
+
+    def test_agent_requires_confirmation_before_whatsapp_send(self):
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
+        self.agent.tool_registry["send_whatsapp_message"] = mock_send
+
+        result = self.agent.run_agent_loop("send Shafyy hi")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["steps"][0]["result"]["requires_confirmation"])
+        mock_send.assert_not_called()
 
 
 if __name__ == "__main__":

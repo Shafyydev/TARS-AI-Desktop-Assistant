@@ -169,12 +169,12 @@ def main() -> None:
         if args.voice_mode and speaker and listener:
             speaker.speak(f"Confirmation required. Do you want to execute {tool_name.replace('_', ' ')}? Say yes or no.", blocking=True)
             speech, _ = listener.listen_once(timeout=6, phrase_time_limit=4)
-            if speech and any(aff in speech.lower() for aff in ["yes", "confirm", "proceed", "do it", "sure"]):
+            if speech and speech.strip().lower().strip(".!? ") == "yes":
                 return True
             return False
         else:
             ans = Prompt.ask(f"[bold red]CONFIRMATION REQUIRED[/bold red] - Execute [bold yellow]{tool_name}[/bold yellow] ({arg_summary})? (yes/no)", default="no")
-            return ans.strip().lower() in ["yes", "y"]
+            return ans.strip().lower() == "yes"
 
     agent.set_confirmation_callback(confirm_action)
 
@@ -189,6 +189,10 @@ def main() -> None:
 
     if args.voice_mode:
         console.print("[bold green]🎙️  CONTINUOUS HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")
+        if listener and listener.wake_detector.is_porcupine_active():
+            console.print("[dim cyan]Wake-word engine: Porcupine. Say the configured keyword, then your command.[/dim cyan]")
+        else:
+            console.print("[dim yellow]Wake-word engine is not configured; commands will be transcribed directly. Set PICOVOICE_ACCESS_KEY and TARS_WAKE_KEYWORD_PATH to enable wake-word mode.[/dim yellow]")
         console.print("[white]Speak your command directly anytime. (e.g. [cyan]'open Chrome'[/cyan], [cyan]'open d drive'[/cyan], [cyan]'volume 50'[/cyan], [cyan]'status'[/cyan])[/white]")
         console.print("[dim cyan]⚡ Live Interruption: Tap any key (Space/Enter) or speak anytime to cut off speech instantly.[/dim cyan]")
         console.print("[dim white]Say [bold red]'exit'[/bold red] or [bold red]'disarm'[/bold red] to disarm TARS.[/dim white]\n")
@@ -205,38 +209,58 @@ def main() -> None:
             user_input = None
 
             if args.voice_mode:
-                console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
-                raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=4.5) if listener else (None, "no listener")
-                
-                if status == "timeout":
-                    continue
-                elif status == "unrecognized":
-                    console.print("[dim yellow]⚡ Audio detected, but speech was unclear. Try speaking slightly closer.[/dim yellow]")
-                    continue
-                elif not raw_speech:
-                    time.sleep(0.05)
-                    continue
-
-                # Check if wake word prefix was used, or use speech directly
-                is_ww, clean_command = listener.check_wake_word(raw_speech)
-                
-                # If only wake word alone was said ("TARS"), ask user what they want
-                if is_ww and not clean_command:
-                    console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]{raw_speech}[/bold white]")
-                    if speaker:
-                        speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
-                    console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
-                    follow_speech, _ = listener.listen_once(timeout=5, phrase_time_limit=5)
-                    if not follow_speech:
+                if listener and listener.wake_detector.is_porcupine_active():
+                    console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
+                    if not listener.listen_for_wake_word():
                         continue
-                    clean_command = follow_speech
+                    console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
+                    raw_speech, status = listener.listen_once(timeout=6, phrase_time_limit=6)
+                    if status == "timeout" or not raw_speech:
+                        continue
+                    user_input = raw_speech
+                    console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+                    if speaker and not speaker.fast_voice:
+                        speaker.speak_ack()
+                    # Porcupine already authenticated this interaction; do not run
+                    # transcript substring matching on every microphone capture.
+                    raw_speech = None
 
-                user_input = clean_command if (is_ww and clean_command) else raw_speech
-                console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+                if user_input is not None:
+                    pass
+                else:
+                    console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
+                    raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=4.5) if listener else (None, "no listener")
+                
+                    if status == "timeout":
+                        continue
+                    elif status == "unrecognized":
+                        console.print("[dim yellow]⚡ Audio detected, but speech was unclear. Try speaking slightly closer.[/dim yellow]")
+                        continue
+                    elif not raw_speech:
+                        time.sleep(0.05)
+                        continue
 
-                # If using neural cloud voice, speak an immediate acknowledgment while synthesis begins
-                if speaker and not speaker.fast_voice:
-                    speaker.speak_ack()
+                    # Compatibility path for users who have not configured the
+                    # dedicated Porcupine engine yet.
+                    is_ww, clean_command = listener.check_wake_word(raw_speech)
+                
+                    # If only wake word alone was said ("TARS"), ask user what they want
+                    if is_ww and not clean_command:
+                        console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]{raw_speech}[/bold white]")
+                        if speaker:
+                            speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
+                        console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
+                        follow_speech, _ = listener.listen_once(timeout=5, phrase_time_limit=5)
+                        if not follow_speech:
+                            continue
+                        clean_command = follow_speech
+
+                    user_input = clean_command if (is_ww and clean_command) else raw_speech
+                    console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+
+                    # If using neural cloud voice, speak an immediate acknowledgment while synthesis begins
+                    if speaker and not speaker.fast_voice:
+                        speaker.speak_ack()
 
             else:
                 user_input = Prompt.ask("[bold cyan]TARS >[/bold cyan]")

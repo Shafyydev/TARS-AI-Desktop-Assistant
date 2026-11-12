@@ -23,7 +23,7 @@ class TestPhase2Features(unittest.TestCase):
         """Verify WakeWordDetector initializes without unhandled crashes."""
         detector = WakeWordDetector()
         self.assertIsNotNone(detector)
-        self.assertIn(detector.engine_name, ["porcupine", "acoustic_vad"])
+        self.assertIn(detector.engine_name, ["porcupine", "unavailable"])
         detector.close()
 
     def test_scheduler_reminders_and_persistence(self):
