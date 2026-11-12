@@ -288,7 +288,7 @@ def main() -> None:
                         continue
 
             # Check shutdown commands
-            if user_input.strip().lower() in ["exit", "quit", "disarm", "shutdown", "shut down"]:
+            if user_input.strip().lower() in ["exit", "quit", "disarm", "shutdown", "shut down", "shutdown tars", "shut down tars", "shutdown task", "stop tars"]:
                 if speaker:
                     speaker.speak("Disarming. Goodbye.", blocking=True)
                 console.print("[dim]TARS offline.[/dim]")

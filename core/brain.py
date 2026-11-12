@@ -65,7 +65,6 @@ class TARSAgent:
         "run_powershell", "run_cmd", "run_approved_command",
         "delete_file_or_folder", "empty_recycle_bin",
         "kill_process", "system_power", "send_email",
-        "send_whatsapp_message",
     ])
 
     JOKES = [
@@ -88,6 +87,7 @@ class TARSAgent:
         self.system_prompt = build_system_prompt(self.settings)
         self.confirmation_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None
         self.pending_confirmation: Optional[Dict[str, Any]] = None
+        self.last_whatsapp_contact: Optional[str] = None
         
         # Comprehensive Tool Dispatch Registry
         self.tool_registry: Dict[str, Callable] = {
@@ -322,6 +322,8 @@ class TARSAgent:
                 and contact not in {"ok", "enter", "cancel", "first chat", "first result", "search bar", "search box"}
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+                if res.get("success"):
+                    self.last_whatsapp_contact = contact
                 return {
                     "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
                     "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
@@ -1059,18 +1061,27 @@ class TARSAgent:
             return {"response": "Shutdown aborted.", "steps": [{"tool": "system_power", "args": {"action": "cancel"}, "result": res}], "success": True}
 
         # 22. Application, Folder, Drive, and Website Navigation (Zero-Latency Local Launch)
-        whatsapp_send = re.match(
-            r"^send\s+(?:message\s+to\s+)?(.+?)\s+(?:saying\s+)?(.+)$", p_clean,
+        if p_clean in {"send", "send message", "send a message"}:
+            return {
+                "response": "Tell me the message to send, for example: send hello how are you.",
+                "steps": [],
+                "success": False,
+            }
+
+        explicit_whatsapp_send = re.match(
+            r"^send(?:\s+message)?\s+to\s+(.+?)\s+(?:saying\s+)?(.+)$", p_clean,
         )
-        if whatsapp_send:
-            contact = whatsapp_send.group(1).strip()
-            message = whatsapp_send.group(2).strip()
-            # For concise voice commands such as "send Shafyy hi", the first
-            # word is the contact and the remainder is the message.
-            if not p_clean.startswith("send message to") and " saying " not in p_clean:
+        if explicit_whatsapp_send or p_clean.startswith("send "):
+            if explicit_whatsapp_send:
+                contact = explicit_whatsapp_send.group(1).strip()
+                message = explicit_whatsapp_send.group(2).strip()
+            elif self.last_whatsapp_contact:
+                contact = self.last_whatsapp_contact
+                message = p_clean.removeprefix("send ").strip()
+            else:
                 words = p_clean.removeprefix("send ").split(maxsplit=1)
                 if len(words) != 2:
-                    return {"response": "Say who to message and what to send.", "steps": [], "success": False}
+                    return {"response": "First open a WhatsApp chat, or say 'send message to NAME saying TEXT'.", "steps": [], "success": False}
                 contact, message = words
             res = self.execute_tool("send_whatsapp_message", {"contact_name": contact, "message": message})
             return {
@@ -1096,6 +1107,8 @@ class TARSAgent:
                 and not contact.endswith(" chat")
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+                if res.get("success"):
+                    self.last_whatsapp_contact = contact
                 return {
                     "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
                     "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
@@ -1108,6 +1121,8 @@ class TARSAgent:
         if whatsapp_search:
             contact = whatsapp_search.group(1).strip()
             res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+            if res.get("success"):
+                self.last_whatsapp_contact = contact
             return {
                 "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
                 "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
@@ -1121,6 +1136,8 @@ class TARSAgent:
         if whatsapp_chat:
             contact = whatsapp_chat.group(1).strip()
             res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+            if res.get("success"):
+                self.last_whatsapp_contact = contact
             return {
                 "response": res.get("message") or res.get("error") or f"Could not open WhatsApp chat '{contact}'.",
                 "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
