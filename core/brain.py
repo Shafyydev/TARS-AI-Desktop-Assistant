@@ -65,6 +65,7 @@ class TARSAgent:
         "run_powershell", "run_cmd", "run_approved_command",
         "delete_file_or_folder", "empty_recycle_bin",
         "kill_process", "system_power", "send_email",
+        "send_whatsapp_message",
     ])
 
     JOKES = [
@@ -161,6 +162,8 @@ class TARSAgent:
             "smart_click": tools.smart_click,
             "smart_type": tools.smart_type,
             "smart_search": tools.smart_search,
+            "open_whatsapp_chat": tools.open_whatsapp_chat,
+            "send_whatsapp_message": tools.send_whatsapp_message,
             # Vision & Multimodal
             "describe_screen": tools.describe_screen,
             # Reminders & Task Scheduling
@@ -236,13 +239,18 @@ class TARSAgent:
         except Exception:
             pass
 
-    def execute_tool(self, tool_name: str, arguments: Dict[str, Any], confirmed: bool = False) -> Any:
+    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Executes a registered tool function with confirmation gate, error catching, and audit logging."""
-        result = self._execute_tool_inner(tool_name, arguments, confirmed=confirmed)
+        # Never trust a confirmation flag supplied in tool arguments.  Tool calls are
+        # model-controlled, so only the pending-action flow in ``run_agent_loop`` may
+        # grant confirmation after receiving an explicit user "yes".
+        arguments = dict(arguments)
+        arguments.pop("_confirmed", None)
+        result = self._execute_tool_inner(tool_name, arguments)
         self._log_tool_call(tool_name, arguments, result)
         return result
 
-    def _execute_tool_inner(self, tool_name: str, arguments: Dict[str, Any], confirmed: bool = False) -> Any:
+    def _execute_tool_inner(self, tool_name: str, arguments: Dict[str, Any], confirmation_granted: bool = False) -> Any:
         if tool_name not in self.tool_registry:
             return {"error": f"Unknown tool: '{tool_name}'"}
 
@@ -259,7 +267,7 @@ class TARSAgent:
 
         # Central Confirmation Gate for destructive tools
         if tool_name in self.DESTRUCTIVE_TOOLS:
-            is_confirmed = confirmed or bool(arguments.pop("_confirmed", False))
+            is_confirmed = confirmation_granted
             if not is_confirmed:
                 if self.confirmation_callback is not None:
                     is_confirmed = bool(self.confirmation_callback(tool_name, arguments))
@@ -283,6 +291,13 @@ class TARSAgent:
 
         func = self.tool_registry[tool_name]
         try:
+            # Terminal helpers independently reject sensitive commands unless this
+            # central gate has approved them.  The context is deliberately not part
+            # of a tool's callable schema, so an LLM cannot forge it.
+            if tool_name in ["run_powershell", "run_cmd", "run_approved_command"]:
+                from tools.terminal_tools import authorized_execution
+                with authorized_execution():
+                    return func(**arguments)
             return func(**arguments)
         except Exception as e:
             return {"error": f"Exception executing tool '{tool_name}': {str(e)}"}
@@ -297,6 +312,21 @@ class TARSAgent:
         # Clean conversational prefixes and suffixes
         p_clean = re.sub(r"^(?:can you|could you|please|would you|tars|hey tars|yo tars|ok tars|okay tars)\s+", "", p).strip("?!.,; ")
         p_clean = re.sub(r"\s+(?:tars|please)$", "", p_clean).strip("?!.,; ")
+
+        # Handle a named WhatsApp click before the generic click fast path.
+        whatsapp_click = re.match(r"^click(?:\s+on)?\s+(.+)$", p_clean)
+        if whatsapp_click and any("whatsapp" in title.lower() for title in tools.get_running_windows()):
+            contact = whatsapp_click.group(1).strip()
+            if (
+                1 <= len(contact.split()) <= 4
+                and contact not in {"ok", "enter", "cancel", "first chat", "first result", "search bar", "search box"}
+            ):
+                res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+                return {
+                    "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
+                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                    "success": res.get("success", False),
+                }
 
         # 0. Chained & Compound Action Sequences
         # Compound: "open <app> and (?:type|write|input) <text>"
@@ -688,11 +718,11 @@ class TARSAgent:
             res = self.execute_tool("maximize_active_window", {})
             return {"response": "Window maximized.", "steps": [{"tool": "maximize_active_window", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"^(?:minimize|min)\s+(?:all|desktop|everything)$|^(?:show\s+desktop|go\s+to\s+desktop|clear\s+screen|desktop)$", p_clean):
+        if re.search(r"^(?:minimize|minimise|min)\s+(?:all|desktop|everything)$|^(?:show\s+desktop|go\s+to\s+desktop|clear\s+screen|desktop)$", p_clean):
             res = self.execute_tool("minimize_all_windows", {})
             return {"response": "Desktop cleared. All windows minimized.", "steps": [{"tool": "minimize_all_windows", "args": {}, "result": res}], "success": True}
 
-        if re.search(r"^(?:minimize|min)(?:\s+(?:the\s+|this\s+|active\s+)?window)?$", p_clean):
+        if re.search(r"^(?:minimize|minimise|min)(?:\s+(?:the\s+|this\s+|active\s+)?(?:window|terminal|powershell|command\s+prompt))?$", p_clean):
             res = self.execute_tool("minimize_active_window", {})
             return {"response": "Window minimized.", "steps": [{"tool": "minimize_active_window", "args": {}, "result": res}], "success": True}
 
@@ -732,9 +762,12 @@ class TARSAgent:
             return {"response": msg, "steps": [{"tool": "get_system_telemetry", "args": {}, "result": telem}], "success": True}
 
         # 12. Volume Calibration & Controls
-        vol_match = re.search(r"^(?:(?:set\s+)?volume\s+(?:to\s+)?(\d{1,3})(?:\s*%)?|volume\s+(\d{1,3}))$", p_clean)
+        vol_match = re.search(
+            r"^(?:(?:set|increase|decrease|lower|raise)\s+)?volume\s+(?:to\s+)?(\d{1,3})(?:\s*%)?$",
+            p_clean,
+        )
         if vol_match:
-            val = int(vol_match.group(1) or vol_match.group(2))
+            val = int(vol_match.group(1))
             res = self.execute_tool("set_system_volume", {"level_percent": val})
             return {"response": f"Volume calibrated to {val} percent.", "steps": [{"tool": "set_system_volume", "args": {"level_percent": val}, "result": res}], "success": True}
 
@@ -957,7 +990,8 @@ class TARSAgent:
         # 19. File & Folder Operations
         if re.search(r"^(?:empty|clean|clear)\s+(?:the\s+)?(?:recycle\s+bin|trash|bin)$", p_clean):
             res = self.execute_tool("empty_recycle_bin", {})
-            return {"response": "Recycle Bin emptied.", "steps": [{"tool": "empty_recycle_bin", "args": {}, "result": res}], "success": True}
+            msg = res.get("message") or res.get("error") or "Could not empty the Recycle Bin."
+            return {"response": msg, "steps": [{"tool": "empty_recycle_bin", "args": {}, "result": res}], "success": res.get("success", False)}
 
         cf_match = re.search(r"\bcreate\s+(?:a\s+)?(?:new\s+)?(?:folder|directory|dir)\s+(?:named\s+|called\s+)?([^\s]+)(?:\s+(?:on|in)\s+([^\s]+))?", p_clean)
         if cf_match:
@@ -979,7 +1013,8 @@ class TARSAgent:
             t_name = del_match.group(1).strip()
             t_loc = del_match.group(2).strip() if del_match.group(2) else "desktop"
             res = self.execute_tool("delete_file_or_folder", {"name": t_name, "location": t_loc})
-            return {"response": res.get("message", f"Deleted '{t_name}'."), "steps": [{"tool": "delete_file_or_folder", "args": {"name": t_name, "location": t_loc}, "result": res}], "success": res.get("success", True)}
+            msg = res.get("message") or res.get("error") or f"Could not delete '{t_name}'."
+            return {"response": msg, "steps": [{"tool": "delete_file_or_folder", "args": {"name": t_name, "location": t_loc}, "result": res}], "success": res.get("success", False)}
 
         list_match = re.search(r"\b(?:list|show|view|display|what's\s+in)\s+(?:the\s+)?files?(?:\s+(?:in|on)\s+([^\s]+))?", p_clean)
         if list_match:
@@ -1006,21 +1041,92 @@ class TARSAgent:
         # 21. System Power Management
         if re.search(r"\b(restart|reboot)\s+(?:the\s+|my\s+)?(?:pc|computer|system|windows)\b", p_clean):
             res = self.execute_tool("system_power", {"action": "restart", "delay_sec": 10})
-            return {"response": "System reboot scheduled in 10 seconds. Say 'cancel restart' to abort.", "steps": [{"tool": "system_power", "args": {"action": "restart", "delay_sec": 10}, "result": res}], "success": True}
+            msg = res.get("message") or res.get("error") or "Could not schedule a reboot."
+            return {"response": msg, "steps": [{"tool": "system_power", "args": {"action": "restart", "delay_sec": 10}, "result": res}], "success": res.get("success", False)}
 
         if re.search(r"\b(shut\s*down|power\s+off)\s+(?:the\s+|my\s+)?(?:pc|computer|system|windows)\b", p_clean):
             res = self.execute_tool("system_power", {"action": "shutdown", "delay_sec": 15})
-            return {"response": "System shutdown scheduled in 15 seconds. Say 'cancel shutdown' to abort.", "steps": [{"tool": "system_power", "args": {"action": "shutdown", "delay_sec": 15}, "result": res}], "success": True}
+            msg = res.get("message") or res.get("error") or "Could not schedule shutdown."
+            return {"response": msg, "steps": [{"tool": "system_power", "args": {"action": "shutdown", "delay_sec": 15}, "result": res}], "success": res.get("success", False)}
 
         if re.search(r"\b(sleep|suspend)\s+(?:the\s+|my\s+)?(?:pc|computer|system|windows)\b", p_clean):
             res = self.execute_tool("system_power", {"action": "sleep"})
-            return {"response": "Entering sleep mode.", "steps": [{"tool": "system_power", "args": {"action": "sleep"}, "result": res}], "success": True}
+            msg = res.get("message") or res.get("error") or "Could not put the system to sleep."
+            return {"response": msg, "steps": [{"tool": "system_power", "args": {"action": "sleep"}, "result": res}], "success": res.get("success", False)}
 
         if re.search(r"\b(cancel|abort|stop)\s+(?:the\s+)?(?:shutdown|restart|reboot)\b", p_clean):
             res = self.execute_tool("system_power", {"action": "cancel"})
             return {"response": "Shutdown aborted.", "steps": [{"tool": "system_power", "args": {"action": "cancel"}, "result": res}], "success": True}
 
         # 22. Application, Folder, Drive, and Website Navigation (Zero-Latency Local Launch)
+        whatsapp_send = re.match(
+            r"^send\s+(?:message\s+to\s+)?(.+?)\s+(?:saying\s+)?(.+)$", p_clean,
+        )
+        if whatsapp_send:
+            contact = whatsapp_send.group(1).strip()
+            message = whatsapp_send.group(2).strip()
+            # For concise voice commands such as "send Shafyy hi", the first
+            # word is the contact and the remainder is the message.
+            if not p_clean.startswith("send message to") and " saying " not in p_clean:
+                words = p_clean.removeprefix("send ").split(maxsplit=1)
+                if len(words) != 2:
+                    return {"response": "Say who to message and what to send.", "steps": [], "success": False}
+                contact, message = words
+            res = self.execute_tool("send_whatsapp_message", {"contact_name": contact, "message": message})
+            return {
+                "response": res.get("message") or res.get("error") or "WhatsApp message was not sent.",
+                "steps": [{"tool": "send_whatsapp_message", "args": {"contact_name": contact, "message": message}, "result": res}],
+                "success": res.get("success", False),
+            }
+
+        # If WhatsApp is already running, short "go to <name>" commands
+        # refer to a chat rather than a Windows executable.  Explicit "open X"
+        # commands retain their normal application-launch behavior.
+        whatsapp_running = any(
+            "whatsapp" in title.lower() for title in tools.get_running_windows()
+        )
+        whatsapp_implicit_chat = re.match(
+            r"^(?:go\s+to|select)\s+(.+)$", p_clean,
+        )
+        if whatsapp_running and whatsapp_implicit_chat:
+            contact = whatsapp_implicit_chat.group(1).strip()
+            if (
+                1 <= len(contact.split()) <= 4
+                and contact not in {"ok", "enter", "cancel", "search", "first chat", "first result"}
+                and not contact.endswith(" chat")
+            ):
+                res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+                return {
+                    "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
+                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                    "success": res.get("success", False),
+                }
+
+        whatsapp_search = re.match(
+            r"^(?:search|find)\s+(.+?)\s+(?:in|on)\s+whatsapp$", p_clean,
+        )
+        if whatsapp_search:
+            contact = whatsapp_search.group(1).strip()
+            res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+            return {
+                "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
+                "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                "success": res.get("success", False),
+            }
+
+        whatsapp_chat = re.match(
+            r"^(?:go\s+to|open|show|select)\s+(?:the\s+)?(.+?)\s+(?:whatsapp\s+)?chat$",
+            p_clean,
+        )
+        if whatsapp_chat:
+            contact = whatsapp_chat.group(1).strip()
+            res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+            return {
+                "response": res.get("message") or res.get("error") or f"Could not open WhatsApp chat '{contact}'.",
+                "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                "success": res.get("success", False),
+            }
+
         # Direct Drive navigation (e.g. "open d drive", "go to d drive", "d drive", "drive c", "f:")
         drive_direct = re.search(r"^(?:(?:go\s+to|open|navigate\s+to|show\s+me)\s+)?(?:the\s+)?([a-zA-Z])\s+(?:drive|disk)$|^(?:(?:go\s+to|open|navigate\s+to|show\s+me)\s+)?(?:the\s+)?(?:drive|disk)\s+([a-zA-Z])$|^([a-zA-Z]):\\?$", p_clean)
         if drive_direct:
@@ -1036,6 +1142,12 @@ class TARSAgent:
         nav_match = re.match(r"^(?:go to|navigate to|visit|open up|open|launch|start|take me to|show me|bring up)\s+(?:the\s+)?(?:my\s+)?(.+)", p_clean)
         if nav_match:
             target = nav_match.group(1).strip()
+            if target in {"the", "a", "an"}:
+                return {
+                    "response": "I did not catch which application or chat you want to open.",
+                    "steps": [],
+                    "success": False,
+                }
             # If target is a compound multi-step instruction, let the orchestrator handle it
             if any(conj in target for conj in [" and ", ", and ", ", go to ", ", open ", "then ", "what files are inside", "tell me what", "click"]):
                 return None
@@ -1139,10 +1251,11 @@ class TARSAgent:
         # 0b. Check pending user confirmation for destructive actions
         if self.pending_confirmation is not None:
             clean_ans = user_prompt.strip().lower().strip(".!? ")
-            if clean_ans in ["yes", "y", "confirm", "proceed", "do it", "sure", "ok", "okay"]:
+            if clean_ans == "yes":
                 pending = self.pending_confirmation
                 self.pending_confirmation = None
-                tool_res = self.execute_tool(pending["tool"], pending["args"], confirmed=True)
+                tool_res = self._execute_tool_inner(pending["tool"], pending["args"], confirmation_granted=True)
+                self._log_tool_call(pending["tool"], pending["args"], tool_res)
                 if isinstance(tool_res, dict) and tool_res.get("message"):
                     msg = f"Confirmed: {tool_res['message']}"
                 else:

@@ -25,7 +25,8 @@ class WakeWordDetector:
     ):
         self.access_key = access_key or os.getenv("PICOVOICE_ACCESS_KEY")
         self.keywords = keywords or [os.getenv("TARS_WAKE_KEYWORD", "computer")]
-        self.keyword_paths = keyword_paths
+        configured_path = os.getenv("TARS_WAKE_KEYWORD_PATH")
+        self.keyword_paths = keyword_paths or ([configured_path] if configured_path else None)
         self.sensitivities = sensitivities
         self.mic_index = mic_index or (int(os.getenv("TARS_MIC_INDEX")) if os.getenv("TARS_MIC_INDEX") else None)
 
@@ -37,7 +38,7 @@ class WakeWordDetector:
         self._init_engine()
 
     def _init_engine(self) -> None:
-        """Initializes Porcupine wake word engine if access key is present, else local acoustic fallback."""
+        """Initializes Porcupine when a valid key and keyword are configured."""
         if self.access_key and self.access_key != "your_picovoice_access_key_here":
             try:
                 import pvporcupine
@@ -65,8 +66,10 @@ class WakeWordDetector:
             except Exception as e:
                 logger.warning(f"Porcupine initialization failed: {e}. Falling back to acoustic VAD.")
 
+        # Energy/VAD can only detect sound, not a wake word.  Do not present it as
+        # wake-word detection or use it to activate the assistant.
         self.porcupine = None
-        self.engine_name = "acoustic_vad"
+        self.engine_name = "unavailable"
 
     def is_porcupine_active(self) -> bool:
         """Returns True if the dedicated Porcupine engine is active."""

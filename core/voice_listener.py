@@ -93,7 +93,7 @@ class VoiceListener:
     def __init__(
         self,
         energy_threshold: int = 250,
-        pause_threshold: float = 0.35,
+        pause_threshold: float = 0.7,
         language: Optional[str] = None,
         mic_index: Optional[int] = None
     ):
@@ -117,7 +117,8 @@ class VoiceListener:
             import speech_recognition as sr
             self._recognizer = sr.Recognizer()
             self._recognizer.energy_threshold = self.energy_threshold
-            # Rapid 0.35s end-of-phrase detection (snappy without clipping words)
+            # Keep enough silence for a complete spoken command such as
+            # "open Reshma chat and type ..." rather than splitting it in two.
             self._recognizer.pause_threshold = self.pause_threshold
             self._recognizer.non_speaking_duration = 0.15
             self._recognizer.phrase_threshold = 0.15
