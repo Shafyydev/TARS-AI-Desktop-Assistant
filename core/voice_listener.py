@@ -93,7 +93,7 @@ class VoiceListener:
     def __init__(
         self,
         energy_threshold: int = 250,
-        pause_threshold: float = 0.7,
+        pause_threshold: float = 1.2,
         language: Optional[str] = None,
         mic_index: Optional[int] = None
     ):
@@ -117,17 +117,17 @@ class VoiceListener:
             import speech_recognition as sr
             self._recognizer = sr.Recognizer()
             self._recognizer.energy_threshold = self.energy_threshold
-            # Keep enough silence for a complete spoken command such as
-            # "open Reshma chat and type ..." rather than splitting it in two.
+            # Keep enough silence (1.2s) for natural pauses between clauses and words
             self._recognizer.pause_threshold = self.pause_threshold
-            self._recognizer.non_speaking_duration = 0.15
-            self._recognizer.phrase_threshold = 0.15
-            # Set strict network operation timeout to prevent socket hangs
-            self._recognizer.operation_timeout = 3.5
+            # Standard safe non-speaking duration (0.5s) to avoid mid-sentence cuts
+            self._recognizer.non_speaking_duration = 0.5
+            self._recognizer.phrase_threshold = 0.3
+            # Prevent network timeouts on longer spoken sentences
+            self._recognizer.operation_timeout = 10.0
             # Smooth dynamic adaptation to ambient room sound
             self._recognizer.dynamic_energy_threshold = True
-            self._recognizer.dynamic_energy_adjustment_damping = 0.20
-            self._recognizer.dynamic_energy_ratio = 1.4
+            self._recognizer.dynamic_energy_adjustment_damping = 0.15
+            self._recognizer.dynamic_energy_ratio = 1.5
 
             self._microphone = sr.Microphone(device_index=self.mic_index)
         except Exception as e:
@@ -141,8 +141,8 @@ class VoiceListener:
             try:
                 with self._microphone as source:
                     self._recognizer.adjust_for_ambient_noise(source, duration=duration)
-                # Keep energy floor safe: never drop below 200 (prevents fan noise from triggering)
-                self._recognizer.energy_threshold = max(200, min(1500, self._recognizer.energy_threshold * 1.25))
+                # Keep energy floor safe: never clamp above 800 so end-of-sentence words aren't dropped
+                self._recognizer.energy_threshold = max(150, min(800, self._recognizer.energy_threshold))
                 # Keep dynamic adaptation enabled so background noise doesn't corrupt speech
                 self._recognizer.dynamic_energy_threshold = True
                 return self._recognizer.energy_threshold
@@ -198,12 +198,13 @@ class VoiceListener:
 
     def listen_once(
         self,
-        timeout: int = 4,
-        phrase_time_limit: int = 4,
+        timeout: int = 6,
+        phrase_time_limit: Optional[int] = 15,
         on_listening_start: Optional[Callable[[], None]] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Listens to the microphone with locale-aware STT and phonetic normalization.
+        Supports full sentences without cutting off between natural word pauses.
         """
         if not self._recognizer or not self._microphone:
             return None, "Microphone not initialized"
@@ -221,11 +222,18 @@ class VoiceListener:
                     phrase_time_limit=phrase_time_limit
                 )
 
-            # Fast single STT network call with user's locale (e.g. en-IN)
+            # Locale-aware recognition with automatic en-US fallback
+            text = None
             try:
                 text = self._recognizer.recognize_google(audio, language=self.language)
             except sr.UnknownValueError:
-                return None, "unrecognized"
+                if self.language and self.language != "en-US":
+                    try:
+                        text = self._recognizer.recognize_google(audio, language="en-US")
+                    except Exception:
+                        return None, "unrecognized"
+                else:
+                    return None, "unrecognized"
 
             if text and text.strip():
                 normalized = normalize_voice_command(text.strip())
