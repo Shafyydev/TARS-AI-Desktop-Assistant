@@ -11,6 +11,29 @@ from typing import Dict, Any, List, Optional, Callable
 DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-flash-latest"]
 OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 OPENROUTER_DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
+OMNIROUTE_DEFAULT_MODEL = "auto/best-fast"
+OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
+
+
+def get_omniroute_api_key() -> Optional[str]:
+    """Retrieves OmniRoute API key from environment or local storage.sqlite."""
+    key = os.getenv("OMNIROUTE_API_KEY")
+    if key and key != "your_omniroute_api_key_here":
+        return key
+    try:
+        db_path = Path.home() / ".omniroute" / "storage.sqlite"
+        if db_path.exists():
+            import sqlite3
+            con = sqlite3.connect(str(db_path))
+            cur = con.cursor()
+            row = cur.execute(
+                "SELECT key FROM api_keys WHERE is_active = 1 OR is_active IS NULL LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+    except Exception:
+        pass
+    return None
 
 # Set up dedicated logger for LLM interactions
 logger = logging.getLogger("TARS.LLM")
@@ -60,6 +83,11 @@ class LLMProvider:
             model_env = os.getenv("OPENROUTER_MODEL") or (
                 os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "openrouter" else None
             )
+        elif self.provider == "omniroute":
+            default_model = OMNIROUTE_DEFAULT_MODEL
+            model_env = os.getenv("OMNIROUTE_MODEL") or (
+                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "omniroute" else None
+            )
         else:
             default_model = "gemini-3.8-flash"
             model_env = os.getenv("GEMINI_MODEL") or os.getenv("AI_MODEL")
@@ -68,6 +96,9 @@ class LLMProvider:
         self.client = None
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
         self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+        self.omniroute_base_url = (
+            os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or OMNIROUTE_DEFAULT_URL
+        ).rstrip("/")
         self._quota_exhausted_until = 0.0
         self._init_client()
 
@@ -94,6 +125,21 @@ class LLMProvider:
                     self.client = None
             else:
                 self.client = None
+        elif self.provider == "omniroute":
+            key = get_omniroute_api_key() or "omniroute-default"
+            try:
+                from openai import OpenAI
+                self.client = OpenAI(
+                    base_url=self.omniroute_base_url,
+                    api_key=key,
+                    default_headers={
+                        "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                        "X-Title": "TARS AI Desktop Assistant",
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize OmniRoute client: {e}")
+                self.client = None
         elif self.provider == "gemini":
             key = os.getenv("GEMINI_API_KEY")
             if key and key != "your_gemini_api_key_here":
@@ -115,6 +161,17 @@ class LLMProvider:
                 import requests
                 response = requests.get(f"{self.ollama_url}/api/tags", timeout=1.5)
                 return response.ok
+            except Exception:
+                return False
+        if self.provider == "omniroute":
+            try:
+                import requests
+                base = self.omniroute_base_url.rsplit("/v1", 1)[0]
+                response = requests.get(f"{base}/api/health", timeout=1.5)
+                if response.ok:
+                    return True
+                fallback = requests.get(self.omniroute_base_url, timeout=1.5)
+                return fallback.status_code in (200, 401, 404)
             except Exception:
                 return False
         if time.time() < self._quota_exhausted_until:
@@ -145,6 +202,8 @@ class LLMProvider:
         if not self.available():
             if self.provider == "ollama":
                 reason = "Ollama is not running at " + self.ollama_url
+            elif self.provider == "omniroute":
+                reason = "OmniRoute gateway is not running at " + self.omniroute_base_url
             elif self.provider == "openrouter":
                 reason = "OPENROUTER_API_KEY not configured or rate limit pause in effect"
             else:
@@ -164,6 +223,11 @@ class LLMProvider:
             )
         elif self.provider == "openrouter":
             return self._run_openrouter_tool_agent_loop(
+                prompt, system_instruction, tools_list, tool_executor,
+                history, user_preferences, on_status, max_iterations, timeout
+            )
+        elif self.provider == "omniroute":
+            return self._run_omniroute_tool_agent_loop(
                 prompt, system_instruction, tools_list, tool_executor,
                 history, user_preferences, on_status, max_iterations, timeout
             )
@@ -429,7 +493,7 @@ class LLMProvider:
                 "steps": steps,
             }
 
-    def _run_openrouter_tool_agent_loop(
+    def _run_openai_compatible_loop(
         self,
         prompt: str,
         system_instruction: str,
@@ -440,8 +504,9 @@ class LLMProvider:
         on_status: Optional[Callable[[str], None]] = None,
         max_iterations: int = 5,
         timeout: float = 30.0,
+        provider_name: str = "OpenRouter",
     ) -> Dict[str, Any]:
-        """Runs multi-turn ReAct tool calling loop using OpenRouter (OpenAI-compatible API)."""
+        """Runs multi-turn ReAct tool calling loop using OpenAI-compatible API (OpenRouter/OmniRoute)."""
         if user_preferences:
             facts = "\n".join(f"- {key}: {value}" for key, value in user_preferences.items())
             system_instruction = f"{system_instruction}\n\n[USER PREFERENCES & STORED FACTS]\n{facts}"
@@ -480,7 +545,7 @@ class LLMProvider:
 
                 response = self.client.chat.completions.create(**call_kwargs)
                 if not response.choices:
-                    raise RuntimeError("OpenRouter returned no completion choices")
+                    raise RuntimeError(f"{provider_name} returned no completion choices")
 
                 assistant_msg = response.choices[0].message
                 tool_calls = assistant_msg.tool_calls or []
@@ -555,12 +620,12 @@ class LLMProvider:
 
         except Exception as exc:
             err_msg = str(exc)
-            _log_provider_exception(f"OpenRouter execution failed with model '{self.model}'", exc)
+            _log_provider_exception(f"{provider_name} execution failed with model '{self.model}'", exc)
             if "429" in err_msg or "rate limit" in err_msg.lower():
                 self.mark_quota_exhausted(60.0)
                 short_reason = "rate limit reached"
             elif "401" in err_msg or "auth" in err_msg.lower() or "api key" in err_msg.lower():
-                short_reason = "invalid OpenRouter API key"
+                short_reason = f"invalid {provider_name} API key"
             elif "404" in err_msg or "not found" in err_msg.lower():
                 short_reason = f"model '{self.model}' not found"
             else:
@@ -572,4 +637,42 @@ class LLMProvider:
                 "error": err_msg,
                 "steps": steps,
             }
+
+    def _run_openrouter_tool_agent_loop(
+        self,
+        prompt: str,
+        system_instruction: str,
+        tools_list: List[Callable],
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
+        max_iterations: int = 5,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Runs multi-turn ReAct tool calling loop using OpenRouter."""
+        return self._run_openai_compatible_loop(
+            prompt, system_instruction, tools_list, tool_executor,
+            history, user_preferences, on_status, max_iterations, timeout,
+            provider_name="OpenRouter"
+        )
+
+    def _run_omniroute_tool_agent_loop(
+        self,
+        prompt: str,
+        system_instruction: str,
+        tools_list: List[Callable],
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
+        max_iterations: int = 5,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Runs multi-turn ReAct tool calling loop using OmniRoute gateway."""
+        return self._run_openai_compatible_loop(
+            prompt, system_instruction, tools_list, tool_executor,
+            history, user_preferences, on_status, max_iterations, timeout,
+            provider_name="OmniRoute"
+        )
 
