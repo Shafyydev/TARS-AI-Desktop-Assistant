@@ -178,7 +178,46 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
 
     shot_path = shot.get("filepath")
     api_key = os.getenv("GEMINI_API_KEY")
-    if shot_path and api_key and api_key != "your_gemini_api_key_here":
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    ai_provider = os.getenv("AI_PROVIDER", "gemini").lower()
+    prompt = question or (
+        "Describe what is currently visible on this desktop screen concisely in 2 sentences. "
+        "Highlight active applications, visible windows, websites, or open documents."
+    )
+
+    if shot_path and ai_provider == "openrouter" and openrouter_key and openrouter_key != "your_openrouter_api_key_here":
+        try:
+            import base64
+            from openai import OpenAI
+            with open(shot_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            client = OpenAI(
+                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
+                api_key=openrouter_key,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                    "X-Title": "TARS AI Desktop Assistant",
+                }
+            )
+            model = os.getenv("AI_MODEL", "anthropic/claude-3.5-sonnet")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=300
+            )
+            if resp.choices and resp.choices[0].message.content:
+                description = resp.choices[0].message.content.strip()
+        except Exception as e:
+            description = f"{description} (Vision analysis unavailable: {str(e)[:60]})"
+    elif shot_path and api_key and api_key != "your_gemini_api_key_here":
         try:
             from google import genai
             from google.genai import types
@@ -186,10 +225,6 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
             with open(shot_path, "rb") as f:
                 img_bytes = f.read()
 
-            prompt = question or (
-                "Describe what is currently visible on this desktop screen concisely in 2 sentences. "
-                "Highlight active applications, visible windows, websites, or open documents."
-            )
             resp = client.models.generate_content(
                 model="gemini-3.8-flash",
                 contents=[
