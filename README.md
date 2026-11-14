@@ -138,15 +138,19 @@ playwright install chromium
 ### 3. Environment Configuration
 Create or edit `.env` in the project root:
 ```ini
-# Primary AI Provider: "gemini" | "openrouter" | "ollama"
+# Primary AI Provider: "gemini" | "openrouter" | "omniroute" | "ollama"
 AI_PROVIDER=gemini
 AI_MODEL=gemini-3.8-flash
 
 # Google Gemini API Key (Default cloud provider)
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# OpenRouter API Key (For high-end and fast models e.g. Claude 3.5 Sonnet, GPT-4o, etc.)
+# OpenRouter API Key (For high-end and fast cloud models e.g. Claude 3.5 Sonnet, GPT-4o, etc.)
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+
+# OmniRoute Local Gateway (Multi-model router running at http://localhost:20128/v1)
+OMNIROUTE_URL=http://localhost:20128/v1
+OMNIROUTE_API_KEY=
 
 # Optional local Ollama model
 OLLAMA_URL=http://localhost:11434
@@ -163,10 +167,11 @@ TARS_DEFAULT_MODE=hybrid
 
 ### Supported AI Providers
 
-TARS supports three AI backends with native multi-turn ReAct tool calling:
+TARS supports four AI backends with native multi-turn ReAct tool calling:
 1. **Google Gemini** (`AI_PROVIDER=gemini`): Fast multi-modal reasoning and screen vision via `gemini-3.8-flash`. Requires `GEMINI_API_KEY`.
 2. **OpenRouter** (`AI_PROVIDER=openrouter`): Access to high-end and fast cloud models (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`, `google/gemini-2.5-flash`) via the OpenAI-compatible API with full tool calling and vision support. Requires `OPENROUTER_API_KEY`.
-3. **Ollama** (`AI_PROVIDER=ollama`): Fully offline local model execution (e.g. `qwen3:4b`).
+3. **OmniRoute** (`AI_PROVIDER=omniroute`): Local multi-model AI gateway (e.g. `auto/best-fast`, `auto/best-coding`, `auto/best-reasoning`) running at `http://localhost:20128/v1` with automatic API key discovery from `~/.omniroute/storage.sqlite`.
+4. **Ollama** (`AI_PROVIDER=ollama`): Fully offline local model execution (e.g. `qwen3:4b`).
 
 Local desktop controls (hotkeys, system telemetry, media keys, audio controls, and UI automation) remain available even without cloud API keys. Gmail and Google Calendar require enabling the relevant Google APIs and placing OAuth `credentials.json` under `config/`.
 
