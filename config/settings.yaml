@@ -12,8 +12,8 @@ personality:
   conciseness: true    # Keep spoken answers under 2 sentences unless requested
 
 llm:
-  provider: "gemini"
-  model: "gemini-3.8-flash"
+  provider: "gemini"   # Options: "gemini" | "ollama" | "openrouter"
+  model: "gemini-3.8-flash"  # Gemini: "gemini-3.8-flash" | Ollama: "qwen3:4b" | OpenRouter: "anthropic/claude-3.5-sonnet", "openai/gpt-4o", etc.
   fallback_models: ["gemini-flash-latest"]
   temperature: 0.3
   max_output_tokens: 2048

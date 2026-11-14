@@ -138,9 +138,18 @@ playwright install chromium
 ### 3. Environment Configuration
 Create or edit `.env` in the project root:
 ```ini
-# Google Gemini API Key (Required for multi-modal ReAct planning & autonomous compound reasoning;
-# local OS hotkeys, system telemetry, media keys, audio controls, and UI automation run 100% offline without a key)
+# Primary AI Provider: "gemini" | "openrouter" | "ollama"
+AI_PROVIDER=gemini
+AI_MODEL=gemini-3.8-flash
+
+# Google Gemini API Key (Default cloud provider)
 GEMINI_API_KEY=your_gemini_api_key_here
+
+# OpenRouter API Key (For high-end and fast models e.g. Claude 3.5 Sonnet, GPT-4o, etc.)
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+
+# Optional local Ollama model
+OLLAMA_URL=http://localhost:11434
 
 # Optional: dedicated on-device wake-word detection. Create a Windows custom
 # "TARS" .ppn keyword model in the Picovoice Console, then configure its path.
@@ -152,16 +161,14 @@ TARS_VOICE=en-US-GuyNeural
 TARS_DEFAULT_MODE=hybrid
 ```
 
-Gemini-powered planning and screen descriptions require `GEMINI_API_KEY`; local
-desktop controls remain available without it. Gmail and Google Calendar also
-require enabling the relevant Google APIs, configuring a desktop OAuth client,
-and saving its `credentials.json` under `config/`.
+### Supported AI Providers
 
-### Optional local Ollama model
+TARS supports three AI backends with native multi-turn ReAct tool calling:
+1. **Google Gemini** (`AI_PROVIDER=gemini`): Fast multi-modal reasoning and screen vision via `gemini-3.8-flash`. Requires `GEMINI_API_KEY`.
+2. **OpenRouter** (`AI_PROVIDER=openrouter`): Access to high-end and fast cloud models (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`, `google/gemini-2.5-flash`) via the OpenAI-compatible API with full tool calling and vision support. Requires `OPENROUTER_API_KEY`.
+3. **Ollama** (`AI_PROVIDER=ollama`): Fully offline local model execution (e.g. `qwen3:4b`).
 
-Install Ollama and download `qwen3:4b` if you want to experiment with a local
-model. TARS uses Gemini as the fallback for requests its direct local tools do
-not handle; set `AI_PROVIDER=ollama` to use Ollama instead.
+Local desktop controls (hotkeys, system telemetry, media keys, audio controls, and UI automation) remain available even without cloud API keys. Gmail and Google Calendar require enabling the relevant Google APIs and placing OAuth `credentials.json` under `config/`.
 
 ---
 
