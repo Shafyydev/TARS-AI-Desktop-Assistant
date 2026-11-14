@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Callable
 
 DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-flash-latest"]
 OLLAMA_DEFAULT_MODEL = "qwen3:4b"
+OPENROUTER_DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
 
 # Set up dedicated logger for LLM interactions
 logger = logging.getLogger("TARS.LLM")
@@ -48,11 +49,25 @@ class LLMProvider:
     """
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
-        self.provider = provider or os.getenv("AI_PROVIDER", "ollama").lower()
-        default_model = OLLAMA_DEFAULT_MODEL if self.provider == "ollama" else "gemini-3.8-flash"
-        self.model = model or os.getenv("AI_MODEL", default_model)
+        self.provider = (provider or os.getenv("AI_PROVIDER", "ollama")).lower()
+        if self.provider == "ollama":
+            default_model = OLLAMA_DEFAULT_MODEL
+            model_env = os.getenv("OLLAMA_MODEL") or (
+                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "ollama" else None
+            )
+        elif self.provider == "openrouter":
+            default_model = OPENROUTER_DEFAULT_MODEL
+            model_env = os.getenv("OPENROUTER_MODEL") or (
+                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "openrouter" else None
+            )
+        else:
+            default_model = "gemini-3.8-flash"
+            model_env = os.getenv("GEMINI_MODEL") or os.getenv("AI_MODEL")
+
+        self.model = model or model_env or default_model
         self.client = None
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+        self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
         self._quota_exhausted_until = 0.0
         self._init_client()
 
@@ -61,6 +76,24 @@ class LLMProvider:
             # The Ollama server is checked lazily in available(), so startup
             # remains usable even while Ollama is still launching.
             self.client = object()
+        elif self.provider == "openrouter":
+            key = os.getenv("OPENROUTER_API_KEY")
+            if key and key != "your_openrouter_api_key_here":
+                try:
+                    from openai import OpenAI
+                    self.client = OpenAI(
+                        base_url=self.openrouter_base_url,
+                        api_key=key,
+                        default_headers={
+                            "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                            "X-Title": "TARS AI Desktop Assistant",
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to initialize OpenRouter client: {e}")
+                    self.client = None
+            else:
+                self.client = None
         elif self.provider == "gemini":
             key = os.getenv("GEMINI_API_KEY")
             if key and key != "your_gemini_api_key_here":
@@ -110,11 +143,12 @@ class LLMProvider:
         the final synthesized answer and executed steps.
         """
         if not self.available():
-            reason = (
-                "Ollama is not running at " + self.ollama_url
-                if self.provider == "ollama"
-                else "API key not configured or rate limit pause in effect"
-            )
+            if self.provider == "ollama":
+                reason = "Ollama is not running at " + self.ollama_url
+            elif self.provider == "openrouter":
+                reason = "OPENROUTER_API_KEY not configured or rate limit pause in effect"
+            else:
+                reason = "API key not configured or rate limit pause in effect"
             logger.warning(f"LLM execution skipped: {reason}")
             return {
                 "success": False,
@@ -125,6 +159,11 @@ class LLMProvider:
 
         if self.provider == "ollama":
             return self._run_ollama_tool_agent_loop(
+                prompt, system_instruction, tools_list, tool_executor,
+                history, user_preferences, on_status, max_iterations, timeout
+            )
+        elif self.provider == "openrouter":
+            return self._run_openrouter_tool_agent_loop(
                 prompt, system_instruction, tools_list, tool_executor,
                 history, user_preferences, on_status, max_iterations, timeout
             )
@@ -387,6 +426,150 @@ class LLMProvider:
                 "success": False,
                 "response": f"LLM unavailable: {str(exc).splitlines()[0][:80]}.",
                 "error": str(exc),
+                "steps": steps,
+            }
+
+    def _run_openrouter_tool_agent_loop(
+        self,
+        prompt: str,
+        system_instruction: str,
+        tools_list: List[Callable],
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
+        max_iterations: int = 5,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Runs multi-turn ReAct tool calling loop using OpenRouter (OpenAI-compatible API)."""
+        if user_preferences:
+            facts = "\n".join(f"- {key}: {value}" for key, value in user_preferences.items())
+            system_instruction = f"{system_instruction}\n\n[USER PREFERENCES & STORED FACTS]\n{facts}"
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_instruction}]
+        for item in history or []:
+            role = item.get("role", "user")
+            if role in {"assistant", "tars", "model"}:
+                role = "assistant"
+            if role not in {"user", "assistant"}:
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                messages.append({"role": role, "content": content.strip()})
+
+        if len(messages) > 1 and messages[-1].get("role") == "user" and messages[-1].get("content") == prompt:
+            messages.pop()
+        messages.append({"role": "user", "content": prompt})
+
+        tool_schemas = [self._ollama_tool_schema(function) for function in tools_list] if tools_list else []
+        steps: List[Dict[str, Any]] = []
+
+        try:
+            for iteration in range(max_iterations):
+                if on_status and iteration > 0:
+                    on_status(f"Reasoning next step (step {iteration + 1})...")
+
+                call_kwargs: Dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0.2,
+                    "timeout": timeout,
+                }
+                if tool_schemas:
+                    call_kwargs["tools"] = tool_schemas
+
+                response = self.client.chat.completions.create(**call_kwargs)
+                if not response.choices:
+                    raise RuntimeError("OpenRouter returned no completion choices")
+
+                assistant_msg = response.choices[0].message
+                tool_calls = assistant_msg.tool_calls or []
+
+                # Format assistant message for history
+                assistant_dict: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": assistant_msg.content or "",
+                }
+                if tool_calls:
+                    assistant_dict["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in tool_calls
+                    ]
+                messages.append(assistant_dict)
+
+                if not tool_calls:
+                    final_content = assistant_msg.content or ""
+                    cleaned = self._strip_ollama_thinking(final_content) or "Task completed."
+                    return {
+                        "success": True,
+                        "response": cleaned,
+                        "steps": steps,
+                        "model": self.model,
+                    }
+
+                for tc in tool_calls:
+                    tool_name = tc.function.name
+                    raw_args = tc.function.arguments or "{}"
+                    try:
+                        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        tool_args = {}
+
+                    if on_status:
+                        on_status(f"Executing: {tool_name}")
+
+                    result = tool_executor(tool_name, tool_args)
+                    steps.append({"tool": tool_name, "args": tool_args, "result": result})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": tool_name,
+                        "content": json.dumps(result, default=str),
+                    })
+
+            # Max iterations reached, ask for summary
+            messages.append({
+                "role": "user",
+                "content": "Provide a concise summary of the actions taken and current status.",
+            })
+            summary_resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.2,
+                timeout=timeout,
+            )
+            summary_text = summary_resp.choices[0].message.content or "Completed requested actions."
+            return {
+                "success": True,
+                "response": self._strip_ollama_thinking(summary_text),
+                "steps": steps,
+                "model": self.model,
+            }
+
+        except Exception as exc:
+            err_msg = str(exc)
+            _log_provider_exception(f"OpenRouter execution failed with model '{self.model}'", exc)
+            if "429" in err_msg or "rate limit" in err_msg.lower():
+                self.mark_quota_exhausted(60.0)
+                short_reason = "rate limit reached"
+            elif "401" in err_msg or "auth" in err_msg.lower() or "api key" in err_msg.lower():
+                short_reason = "invalid OpenRouter API key"
+            elif "404" in err_msg or "not found" in err_msg.lower():
+                short_reason = f"model '{self.model}' not found"
+            else:
+                short_reason = err_msg.splitlines()[0][:80]
+
+            return {
+                "success": False,
+                "response": f"LLM unavailable: {short_reason}.",
+                "error": err_msg,
                 "steps": steps,
             }
 
