@@ -313,6 +313,19 @@ class TARSAgent:
         p_clean = re.sub(r"^(?:can you|could you|please|would you|tars|hey tars|yo tars|ok tars|okay tars)\s+", "", p).strip("?!.,; ")
         p_clean = re.sub(r"\s+(?:tars|please)$", "", p_clean).strip("?!.,; ")
 
+        # Spoken commands often arrive wrapped in conversational filler, e.g.
+        # "ok now the task is open brave and search youtube for ttf".  Strip it
+        # so the anchored command patterns below can still match locally instead
+        # of falling through to the LLM.
+        for filler in (
+            "ok now the task is", "okay now the task is", "now the task is", "the task is",
+            "ok now", "okay now", "so now", "hey tars", "yo tars", "ok tars", "okay tars",
+            "can you", "could you", "would you", "please", "tars", "now", "so", "ok", "okay",
+        ):
+            while p_clean.startswith(filler + " "):
+                p_clean = p_clean[len(filler):].strip()
+        p_clean = p_clean.strip("?!.,; ")
+
         # Handle a named WhatsApp click before the generic click fast path.
         whatsapp_click = re.match(r"^click(?:\s+on)?\s+(.+)$", p_clean)
         if whatsapp_click and any("whatsapp" in title.lower() for title in tools.get_running_windows()):
@@ -353,6 +366,26 @@ class TARSAgent:
                 ],
                 "success": True
             }
+
+        # Compound: "open brave search youtube and search for <query>"
+        # Also matches "open youtube and search for <query>", "search youtube and
+        # play <query>", and "open brave and search youtube for <query>".
+        browser_youtube = re.match(
+            r"^(?:(?:open|launch|start)\s+)?"
+            r"(?:(?:the\s+)?(?:brave|chrome|edge|firefox|opera|browser)\s+)?"
+            r"(?:[\s,]+and[\s,]+)?(?:search\s+)?youtube\s+"
+            r"(?:and[\s,]+)?(?:search(?:\s+for)?|play|find|for)\s+(.+)$",
+            p_clean,
+        )
+        if browser_youtube:
+            query = browser_youtube.group(1).strip()
+            if query:
+                res = self.execute_tool("smart_search", {"query": query, "engine": "youtube"})
+                return {
+                    "response": f"Searching YouTube for '{query}'.",
+                    "steps": [{"tool": "smart_search", "args": {"query": query, "engine": "youtube"}, "result": res}],
+                    "success": res.get("success", True) if isinstance(res, dict) else True,
+                }
 
         # Compound: "open <app> and search [for] <query>"
         open_and_search = re.match(r"^(?:open|launch|start)\s+([a-zA-Z0-9\s]+?)\s+and\s+(?:search\s+for|search|look\s+up)\s+(.+)$", p_clean)
@@ -1101,10 +1134,16 @@ class TARSAgent:
         )
         if whatsapp_running and whatsapp_implicit_chat:
             contact = whatsapp_implicit_chat.group(1).strip()
+            # Drives and real folders must keep their normal navigation behavior
+            # even while WhatsApp is open, otherwise "go to d drive" is treated
+            # as a contact name.
+            target_path = tools.resolve_system_target(contact)
+            resolves_to_path = bool(target_path and target_path.exists())
             if (
                 1 <= len(contact.split()) <= 4
                 and contact not in {"ok", "enter", "cancel", "search", "first chat", "first result"}
                 and not contact.endswith(" chat")
+                and not resolves_to_path
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
                 if res.get("success"):

@@ -240,6 +240,27 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         self.assertTrue(result["success"])
         mock_send.assert_called_once_with(contact_name="amma", message="hello how are you")
 
+    def test_agent_handles_filler_prefixed_browser_youtube_search(self):
+        """Spoken filler must not push a browser/YouTube search into the LLM path."""
+        mock_search = MagicMock(return_value={"success": True, "message": "Searching YouTube."})
+        self.agent.tool_registry["smart_search"] = mock_search
+
+        result = self.agent.run_agent_loop(
+            "ok now the task is open brave search YouTube and search for ttf"
+        )
+
+        self.assertTrue(result["success"])
+        mock_search.assert_called_once_with(query="ttf", engine="youtube")
+
+    def test_agent_handles_open_youtube_and_search_for_query(self):
+        mock_search = MagicMock(return_value={"success": True, "message": "Searching YouTube."})
+        self.agent.tool_registry["smart_search"] = mock_search
+
+        result = self.agent.run_agent_loop("open youtube and search for lofi beats")
+
+        self.assertTrue(result["success"])
+        mock_search.assert_called_once_with(query="lofi beats", engine="youtube")
+
     def test_agent_does_not_send_bare_send_to_llm(self):
         result = self.agent.run_agent_loop("send")
         self.assertFalse(result["success"])
