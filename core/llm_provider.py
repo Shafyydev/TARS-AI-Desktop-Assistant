@@ -64,6 +64,33 @@ def _log_provider_exception(message: str, exc: Exception) -> None:
         pass
 
 
+# Hosted gateways and agent products sometimes answer HTTP 200 with a product or
+# upgrade notice ("this version is no longer supported, download the latest
+# build") instead of a completion. Speaking that as TARS's own answer is never
+# useful, so the tool-calling loops treat it as a provider failure.
+_GATEWAY_NOTICE_MARKERS = (
+    "no longer supported",
+    "please download and install the latest version",
+    "to continue using the agent",
+    "unlock our latest models",
+    "unsupported client",
+    "unsupported version",
+)
+
+
+def is_gateway_notice(text: str) -> bool:
+    """True when a completion body is really an upstream product/upgrade notice."""
+    if not text or len(text) > 600:
+        return False
+    lowered = text.casefold()
+    hits = sum(1 for marker in _GATEWAY_NOTICE_MARKERS if marker in lowered)
+    if hits == 0:
+        return False
+    # Require a corroborating signal so an ordinary answer that merely mentions
+    # a version is not discarded.
+    return hits >= 2 or "http" in lowered or "download" in lowered
+
+
 class LLMProvider:
     """
     Unified AI provider adapter for Google Gemini and extensible providers.
@@ -156,6 +183,10 @@ class LLMProvider:
         """Returns True if the client is configured and not under an active rate limit pause."""
         if not self.client:
             return False
+        # Circuit breaker applies to every provider, including gateways whose
+        # health endpoint stays up while the routed model keeps failing.
+        if time.time() < self._quota_exhausted_until:
+            return False
         if self.provider == "ollama":
             try:
                 import requests
@@ -174,8 +205,6 @@ class LLMProvider:
                 return fallback.status_code in (200, 401, 404)
             except Exception:
                 return False
-        if time.time() < self._quota_exhausted_until:
-            return False
         return True
 
     def mark_quota_exhausted(self, duration_sec: float = 60.0) -> None:
@@ -572,6 +601,21 @@ class LLMProvider:
                 if not tool_calls:
                     final_content = assistant_msg.content or ""
                     cleaned = self._strip_ollama_thinking(final_content) or "Task completed."
+                    if is_gateway_notice(cleaned):
+                        logger.warning(
+                            "%s returned an upstream notice instead of a completion for model '%s'",
+                            provider_name, self.model,
+                        )
+                        self.mark_quota_exhausted(60.0)
+                        return {
+                            "success": False,
+                            "response": (
+                                f"LLM unavailable: {provider_name} returned an unsupported-client "
+                                f"notice for model '{self.model}'. Choose a different model."
+                            ),
+                            "error": cleaned,
+                            "steps": steps,
+                        }
                     return {
                         "success": True,
                         "response": cleaned,
@@ -611,9 +655,25 @@ class LLMProvider:
                 timeout=timeout,
             )
             summary_text = summary_resp.choices[0].message.content or "Completed requested actions."
+            cleaned_summary = self._strip_ollama_thinking(summary_text)
+            if is_gateway_notice(cleaned_summary):
+                logger.warning(
+                    "%s returned an upstream notice instead of a summary for model '%s'",
+                    provider_name, self.model,
+                )
+                self.mark_quota_exhausted(60.0)
+                return {
+                    "success": False,
+                    "response": (
+                        f"LLM unavailable: {provider_name} returned an unsupported-client "
+                        f"notice for model '{self.model}'. Choose a different model."
+                    ),
+                    "error": cleaned_summary,
+                    "steps": steps,
+                }
             return {
                 "success": True,
-                "response": self._strip_ollama_thinking(summary_text),
+                "response": cleaned_summary,
                 "steps": steps,
                 "model": self.model,
             }

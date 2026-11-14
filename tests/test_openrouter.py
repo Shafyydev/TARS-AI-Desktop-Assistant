@@ -1,10 +1,59 @@
 """Tests for OpenRouter provider integration in TARS."""
 import os
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from core.llm_provider import LLMProvider, OPENROUTER_DEFAULT_MODEL
+from core.llm_provider import (
+    LLMProvider,
+    OPENROUTER_DEFAULT_MODEL,
+    is_gateway_notice,
+)
 from tools.gui_tools import inspect_screen
+
+
+UPSTREAM_NOTICE = (
+    "This version of Antigravity is no longer supported. Please download and install "
+    "the latest version at https://antigravity.google/download to continue using the "
+    "agent and unlock our latest models."
+)
+
+
+class TestGatewayNoticeFilter(unittest.TestCase):
+    """Upstream gateways can answer 200 with a product notice instead of a completion."""
+
+    def test_detects_unsupported_client_notice(self):
+        self.assertTrue(is_gateway_notice(UPSTREAM_NOTICE))
+
+    def test_ignores_normal_completion(self):
+        self.assertFalse(is_gateway_notice("Opened Brave and searched YouTube for ttf."))
+
+    def test_ignores_empty_and_oversized_text(self):
+        self.assertFalse(is_gateway_notice(""))
+        self.assertFalse(is_gateway_notice("no longer supported " * 100))
+
+    def test_omniroute_notice_is_not_returned_as_answer(self):
+        provider = LLMProvider(provider="omniroute")
+        mock_client = MagicMock()
+        provider.client = mock_client
+        choice = MagicMock()
+        choice.message.content = UPSTREAM_NOTICE
+        choice.message.tool_calls = None
+        mock_client.chat.completions.create.return_value = MagicMock(choices=[choice])
+
+        with patch.object(LLMProvider, "available", return_value=True):
+            result = provider.run_tool_agent_loop(
+                prompt="ok now the task is open brave search YouTube and search for ttf",
+                system_instruction="system",
+                tools_list=[],
+                tool_executor=lambda name, args: None,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("LLM unavailable", result["response"])
+        self.assertIn("unsupported-client", result["response"])
+        self.assertEqual(result["error"], UPSTREAM_NOTICE)
+        self.assertGreater(provider._quota_exhausted_until, time.time())
 
 
 class TestOpenRouterProvider(unittest.TestCase):
