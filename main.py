@@ -161,7 +161,17 @@ def main() -> None:
     agent = TARSAgent()
     use_fast = not args.neural_voice
     speaker = VoiceSpeaker(fast_voice=use_fast) if not args.text_only else None
-    listener = VoiceListener(language=args.language, mic_index=args.mic_index) if (args.voice_mode or not args.text_only) else None
+    v_cfg = agent.settings.get("voice", {})
+    listener = (
+        VoiceListener(
+            energy_threshold=v_cfg.get("stt_energy_threshold", 250),
+            pause_threshold=v_cfg.get("stt_pause_threshold", 1.2),
+            language=args.language,
+            mic_index=args.mic_index
+        )
+        if (args.voice_mode or not args.text_only)
+        else None
+    )
 
     # Wire Central Confirmation Gate for destructive actions
     def confirm_action(tool_name: str, arguments: dict) -> bool:
@@ -182,7 +192,7 @@ def main() -> None:
 
     if listener:
         with console.status("[dim cyan]Calibrating microphone for room acoustics...[/dim cyan]"):
-            listener.calibrate(duration=0.4)
+            listener.calibrate(duration=0.8)
 
     if speaker:
         speaker.speak("TARS operational. All systems online.", blocking=False)
@@ -214,7 +224,7 @@ def main() -> None:
                     if not listener.listen_for_wake_word():
                         continue
                     console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
-                    raw_speech, status = listener.listen_once(timeout=6, phrase_time_limit=6)
+                    raw_speech, status = listener.listen_once(timeout=6, phrase_time_limit=15)
                     if status == "timeout" or not raw_speech:
                         continue
                     user_input = raw_speech
@@ -229,7 +239,7 @@ def main() -> None:
                     pass
                 else:
                     console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
-                    raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=4.5) if listener else (None, "no listener")
+                    raw_speech, status = listener.listen_once(timeout=5, phrase_time_limit=15) if listener else (None, "no listener")
                 
                     if status == "timeout":
                         continue
@@ -250,7 +260,7 @@ def main() -> None:
                         if speaker:
                             speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
                         console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
-                        follow_speech, _ = listener.listen_once(timeout=5, phrase_time_limit=5)
+                        follow_speech, _ = listener.listen_once(timeout=6, phrase_time_limit=15)
                         if not follow_speech:
                             continue
                         clean_command = follow_speech
@@ -276,7 +286,7 @@ def main() -> None:
                 if user_input.strip().lower() in ["v", "voice"]:
                     if listener:
                         console.print("\n[bold yellow]🎙️  Listening... Speak your command clearly.[/bold yellow]")
-                        raw_speech, status = listener.listen_once(timeout=6, phrase_time_limit=8)
+                        raw_speech, status = listener.listen_once(timeout=6, phrase_time_limit=15)
                         if not raw_speech:
                             console.print(f"[dim red]No speech detected ({status}).[/dim red]")
                             continue
