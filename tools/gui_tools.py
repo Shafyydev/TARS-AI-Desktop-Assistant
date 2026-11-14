@@ -185,7 +185,44 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
         "Highlight active applications, visible windows, websites, or open documents."
     )
 
-    if shot_path and ai_provider == "openrouter" and openrouter_key and openrouter_key != "your_openrouter_api_key_here":
+    if shot_path and ai_provider == "omniroute":
+        try:
+            import base64
+            from openai import OpenAI
+            with open(shot_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            from core.llm_provider import get_omniroute_api_key
+            key = get_omniroute_api_key() or "omniroute-default"
+            base_url = (
+                os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or "http://localhost:20128/v1"
+            ).rstrip("/")
+            client = OpenAI(
+                base_url=base_url,
+                api_key=key,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                    "X-Title": "TARS AI Desktop Assistant",
+                }
+            )
+            model = os.getenv("AI_MODEL", "auto/best-vision")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=300
+            )
+            if resp.choices and resp.choices[0].message.content:
+                description = resp.choices[0].message.content.strip()
+        except Exception as e:
+            description = f"{description} (Vision analysis unavailable: {str(e)[:60]})"
+    elif shot_path and ai_provider == "openrouter" and openrouter_key and openrouter_key != "your_openrouter_api_key_here":
         try:
             import base64
             from openai import OpenAI
