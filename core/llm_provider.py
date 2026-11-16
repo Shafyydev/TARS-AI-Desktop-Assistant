@@ -570,6 +570,13 @@ class LLMProvider:
             kwargs["http_options"] = types.HttpOptions(timeout=int(max(1.0, timeout) * 1000))
         except Exception:
             pass
+        # Flash models spend most of their latency on internal reasoning that this
+        # agent does not need: the ReAct loop already supplies the reasoning by
+        # feeding tool results back.  Disabling it roughly halves reply time.
+        try:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
         try:
             return types.GenerateContentConfig(**kwargs)
         except Exception:
