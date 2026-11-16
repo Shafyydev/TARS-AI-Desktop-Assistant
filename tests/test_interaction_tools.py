@@ -230,16 +230,16 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         self.assertTrue(result["success"])
         mock_minimize.assert_called_once_with()
 
-    def test_agent_requires_confirmation_for_whatsapp_send(self):
+    def test_agent_sends_whatsapp_message_without_confirmation(self):
+        """WhatsApp sending is not gated: it goes straight through."""
         mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
         self.agent.tool_registry["send_whatsapp_message"] = mock_send
 
         result = self.agent.run_agent_loop("send message to amma saying hello")
 
-        self.assertFalse(result["success"])
-        step_result = result["steps"][0]["result"]
-        self.assertTrue(step_result.get("requires_confirmation"))
-        mock_send.assert_not_called()
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with(contact_name="amma", message="hello")
+        self.assertIsNone(self.agent.pending_confirmation)
 
     def test_agent_does_not_treat_bare_send_as_whatsapp_message(self):
         """A misheard "send ..." must not turn into a WhatsApp message."""

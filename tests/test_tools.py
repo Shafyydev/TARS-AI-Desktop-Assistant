@@ -412,7 +412,7 @@ class TestConfirmationGate(unittest.TestCase):
         self.agent.tool_registry["delete_file_or_folder"] = destructive
 
         self.agent.run_agent_loop("delete folder important on desktop")
-        not_yes = self.agent.run_agent_loop("confirm")
+        not_yes = self.agent.run_agent_loop("maybe later")
 
         self.assertFalse(not_yes["success"])
         destructive.assert_not_called()
@@ -420,6 +420,17 @@ class TestConfirmationGate(unittest.TestCase):
         self.agent.run_agent_loop("delete folder important on desktop")
         yes = self.agent.run_agent_loop("yes")
         self.assertTrue(yes["success"])
+        destructive.assert_called_once_with(name="important", location="desktop")
+
+    def test_affirmative_phrase_with_extra_words_executes(self):
+        """A real user says more than the bare word yes."""
+        destructive = MagicMock(return_value={"success": True, "message": "Deleted."})
+        self.agent.tool_registry["delete_file_or_folder"] = destructive
+
+        self.agent.run_agent_loop("delete folder important on desktop")
+        res = self.agent.run_agent_loop("yes go ahead and delete it")
+
+        self.assertTrue(res["success"])
         destructive.assert_called_once_with(name="important", location="desktop")
 
     def test_destructive_tool_denied_by_callback(self):
