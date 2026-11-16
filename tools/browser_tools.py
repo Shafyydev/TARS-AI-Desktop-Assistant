@@ -3,9 +3,10 @@ import webbrowser
 import urllib.parse
 import urllib.request
 import json
+import time
 import requests
 from bs4 import BeautifulSoup
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 
 def open_url(url: str) -> Dict[str, Any]:
@@ -22,41 +23,57 @@ def open_url(url: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to open {url}: {str(e)}"}
 
 
+_KNOWLEDGE_CACHE: Dict[str, Tuple[float, Optional[str]]] = {}
+_KNOWLEDGE_TTL = 300.0
+
+
 def get_free_knowledge(query: str) -> Optional[str]:
     """
     100% free knowledge retrieval using DuckDuckGo Instant Answer and Wikipedia REST API.
     Requires ZERO API keys, has zero rate limits, and returns instant answers.
+
+    Results and misses are cached briefly: both endpoints are network calls, and a
+    repeated question must not pay for them again.
     """
     clean_q = query.strip()
     # Strip question preambles
     import re
     clean_q = re.sub(r"^(?:who is|what is|tell me about|explain|where is|search for)\s+", "", clean_q, flags=re.IGNORECASE).strip(" ?.")
 
+    cache_key = clean_q.lower()
+    cached = _KNOWLEDGE_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _KNOWLEDGE_TTL:
+        return cached[1]
+
+    answer: Optional[str] = None
+
     # 1. Try DuckDuckGo Instant Answer API
     try:
         ddg_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote_plus(clean_q)}&format=json&no_html=1&skip_disambig=1"
         req = urllib.request.Request(ddg_url, headers={"User-Agent": "TARS-Agent/1.0"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("AbstractText"):
-                return data["AbstractText"]
-            if data.get("Answer"):
-                return data["Answer"]
+                answer = data["AbstractText"]
+            elif data.get("Answer"):
+                answer = data["Answer"]
     except Exception:
         pass
 
     # 2. Try Wikipedia Summary API
-    try:
-        wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote_plus(clean_q)}"
-        req = urllib.request.Request(wiki_url, headers={"User-Agent": "TARS-Agent/1.0 (contact@tars.local)"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if data.get("extract"):
-                return data["extract"]
-    except Exception:
-        pass
+    if not answer:
+        try:
+            wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote_plus(clean_q)}"
+            req = urllib.request.Request(wiki_url, headers={"User-Agent": "TARS-Agent/1.0 (contact@tars.local)"})
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("extract"):
+                    answer = data["extract"]
+        except Exception:
+            pass
 
-    return None
+    _KNOWLEDGE_CACHE[cache_key] = (time.time(), answer)
+    return answer
 
 
 def search_web(query: str, max_results: int = 5) -> Dict[str, Any]:
