@@ -159,6 +159,12 @@ def main() -> None:
 
     # Initialize TARS Brain & Voice
     agent = TARSAgent()
+
+    llm = agent.orchestrator.llm
+    if llm.available():
+        console.print(f"[dim green]Language model ready:[/dim green] {llm.provider} / {llm.model}")
+    else:
+        console.print(f"[bold red]Language model offline:[/bold red] {llm.unavailable_reason()}")
     use_fast = not args.neural_voice
     speaker = VoiceSpeaker(fast_voice=use_fast) if not args.text_only else None
     v_cfg = agent.settings.get("voice", {})

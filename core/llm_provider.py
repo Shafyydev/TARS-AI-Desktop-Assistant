@@ -9,7 +9,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 
-DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-flash-latest"]
+DEFAULT_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview"]
 OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 OPENROUTER_DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
 OMNIROUTE_DEFAULT_MODEL = "auto/best-fast"
@@ -79,6 +79,26 @@ _GATEWAY_NOTICE_MARKERS = (
 )
 
 
+SETTINGS_PATH = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+
+
+def _load_llm_settings() -> Dict[str, Any]:
+    """
+    Reads the ``llm`` block from config/settings.yaml.
+
+    The file is authoritative for provider and model selection; a missing or
+    unreadable file yields an empty mapping so environment defaults apply.
+    """
+    try:
+        import yaml
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        block = data.get("llm") if isinstance(data, dict) else None
+        return block if isinstance(block, dict) else {}
+    except Exception:
+        return {}
+
+
 def is_gateway_notice(text: str) -> bool:
     """True when a completion body is really an upstream product/upgrade notice."""
     if not text or len(text) > 600:
@@ -100,7 +120,14 @@ class LLMProvider:
     """
 
     def __init__(self, provider: Optional[str] = None, model: Optional[str] = None):
-        self.provider = (provider or os.getenv("AI_PROVIDER", "ollama")).lower()
+        # config/settings.yaml is authoritative for the provider and model.  The
+        # environment only fills a gap, so a stale .env cannot silently swap the
+        # configured provider for an unreachable one.
+        settings_llm = _load_llm_settings()
+        configured_provider = str(settings_llm.get("provider") or "").strip().lower()
+        self.provider = (provider or configured_provider or os.getenv("AI_PROVIDER", "ollama")).lower()
+        settings_model = "" if provider else str(settings_llm.get("model") or "").strip()
+
         if self.provider == "ollama":
             default_model = OLLAMA_DEFAULT_MODEL
             model_env = os.getenv("OLLAMA_MODEL") or (
@@ -120,7 +147,7 @@ class LLMProvider:
             default_model = "gemini-3.8-flash"
             model_env = os.getenv("GEMINI_MODEL") or os.getenv("AI_MODEL")
 
-        self.model = model or model_env or default_model
+        self.model = model or settings_model or model_env or default_model
         self.client = None
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
         self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
@@ -207,6 +234,51 @@ class LLMProvider:
             except Exception:
                 return False
         return True
+
+    def unavailable_reason(self) -> str:
+        """
+        Returns a specific explanation of why this provider cannot run, or an
+        empty string when it is usable.
+
+        ``available()`` only reports a boolean, which made every failure look
+        identical from the outside.
+        """
+        if not self.client:
+            if self.provider == "openrouter":
+                return "OPENROUTER_API_KEY is not configured"
+            if self.provider == "gemini":
+                return "GEMINI_API_KEY is not configured"
+            if self.provider == "omniroute":
+                return f"OmniRoute client could not be created for {self.omniroute_base_url}"
+            return f"client for provider '{self.provider}' could not be created"
+
+        if time.time() < self._quota_exhausted_until:
+            remaining = int(self._quota_exhausted_until - time.time())
+            return f"paused after a rate limit for another {remaining}s"
+
+        if self.provider == "ollama":
+            try:
+                import requests
+                requests.get(f"{self.ollama_url}/api/tags", timeout=1.5)
+                return ""
+            except Exception:
+                return f"Ollama is unreachable at {self.ollama_url}"
+
+        if self.provider == "omniroute":
+            base = self.omniroute_base_url.rsplit("/v1", 1)[0]
+            try:
+                import requests
+                response = requests.get(f"{base}/api/health", timeout=1.5)
+                if response.ok:
+                    return ""
+                fallback = requests.get(self.omniroute_base_url, timeout=1.5)
+                if fallback.status_code in (200, 401, 404):
+                    return ""
+                return f"OmniRoute is unreachable at {base}"
+            except Exception:
+                return f"OmniRoute is unreachable at {base}"
+
+        return ""
 
     def mark_quota_exhausted(self, duration_sec: float = 60.0) -> None:
         """Applies a temporary circuit breaker when API rate limits are reached."""
@@ -338,11 +410,27 @@ class LLMProvider:
                     # If no function calls requested, the model has finished
                     if not function_calls:
                         final_text = " ".join(text_parts).strip() or "Task completed."
+                        if executed_steps:
+                            any_ok = any(
+                                (step.get("result") or {}).get("success") is not False
+                                for step in executed_steps
+                                if isinstance(step.get("result"), dict)
+                            )
+                            return {
+                                "success": any_ok,
+                                "response": final_text,
+                                "steps": executed_steps,
+                                "model": model_name
+                            }
+                        # The model replied without running a single tool.  The
+                        # caller decides whether that is an answer or an action that
+                        # was never carried out, so it must not claim success here.
                         return {
                             "success": True,
                             "response": final_text,
-                            "steps": executed_steps,
-                            "model": model_name
+                            "steps": [],
+                            "model": model_name,
+                            "no_tool_calls": True
                         }
 
                     # Execute each requested tool call
@@ -427,6 +515,14 @@ class LLMProvider:
                             "error": err_msg,
                             "steps": executed_steps
                         }
+                    continue
+                transient = any(
+                    marker in err_msg
+                    for marker in ("503", "UNAVAILABLE", "500", "502", "504", "overloaded")
+                )
+                if transient and not executed_steps:
+                    # Upstream overload: try the next configured model instead of
+                    # failing the whole request.
                     continue
                 short_reason = err_msg.split("\n")[0][:80]
                 return {
@@ -672,6 +768,7 @@ class LLMProvider:
                         "response": self._strip_ollama_thinking(assistant_message.get("content", "")) or "Task completed.",
                         "steps": steps,
                         "model": self.model,
+                        "no_tool_calls": True,
                     }
                 for call in tool_calls:
                     function = call.get("function", {})
@@ -830,6 +927,7 @@ class LLMProvider:
                         "response": cleaned,
                         "steps": steps,
                         "model": self.model,
+                        "no_tool_calls": True,
                     }
 
                 for tc in tool_calls:
