@@ -54,6 +54,28 @@ def safe_math_eval(expr: str) -> Optional[float]:
         return None
 
 
+def is_affirmative(text: str) -> bool:
+    """
+    True when a spoken or typed answer means "go ahead".
+
+    Accepts a bare yes and also "yes send the message", "yeah go ahead" and
+    friends: only the leading word decides, so extra words cannot turn an
+    approval into a denial.
+    """
+    clean = re.sub(r"[^a-z\s]", " ", (text or "").lower())
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return False
+    if clean in TARSAgent.AFFIRMATIVE_WORDS:
+        return True
+    return bool(
+        re.match(
+            r"^(?:yes|yeah|yep|yup|ya|sure|ok|okay|confirm|affirmative|roger)\b",
+            clean,
+        )
+    )
+
+
 class TARSAgent:
     """
     The central intelligence orchestrator for TARS.
@@ -65,8 +87,14 @@ class TARSAgent:
         "run_powershell", "run_cmd", "run_approved_command",
         "delete_file_or_folder", "empty_recycle_bin",
         "kill_process", "system_power", "send_email",
-        "send_whatsapp_message",
     ])
+
+    # Spoken and typed answers that mean "go ahead".  Anything else cancels.
+    AFFIRMATIVE_WORDS = frozenset({
+        "yes", "yeah", "yep", "yup", "ya", "sure", "ok", "okay", "k",
+        "confirm", "confirmed", "affirmative", "roger", "proceed",
+        "go ahead", "do it", "send it", "go on", "please do",
+    })
 
     # Tools that are not destructive by themselves but persist state that is fed back
     # into the system prompt on every later turn.  A model-initiated call is gated;
@@ -405,7 +433,7 @@ class TARSAgent:
                     press_enter = True
                     break
             step1 = self.execute_tool("launch_application", {"app_name": app_target})
-            time.sleep(0.5)
+            time.sleep(0.25)
             step2 = self.execute_tool("smart_type", {"text": text_to_type, "press_enter": press_enter})
             return {
                 "response": f"Opened {app_target} and typed '{text_to_type}'.",
@@ -439,7 +467,7 @@ class TARSAgent:
             app_target = open_and_search.group(1).strip()
             query = open_and_search.group(2).strip()
             step1 = self.execute_tool("launch_application", {"app_name": app_target})
-            time.sleep(0.7)
+            time.sleep(0.3)
             step2 = self.execute_tool("smart_search", {"query": query})
             return {
                 "response": f"Opened {app_target} and searched for '{query}'.",
@@ -493,7 +521,7 @@ class TARSAgent:
                 if sub_res:
                     all_steps.extend(sub_res.get("steps", []))
                     responses.append(sub_res.get("response", ""))
-                    time.sleep(0.3)
+                    time.sleep(0.15)
                 else:
                     all_success = False
             if all_steps:
@@ -1444,8 +1472,7 @@ class TARSAgent:
 
         # 0b. Check pending user confirmation for destructive actions
         if self.pending_confirmation is not None:
-            clean_ans = user_prompt.strip().lower().strip(".!? ")
-            if clean_ans == "yes":
+            if is_affirmative(user_prompt):
                 pending = self.pending_confirmation
                 self.pending_confirmation = None
                 tool_res = self._execute_tool_inner(pending["tool"], pending["args"], confirmation_granted=True)
