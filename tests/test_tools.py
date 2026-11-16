@@ -441,14 +441,24 @@ class TestConfirmationGate(unittest.TestCase):
         self.assertIn("CONFIRMATION REQUIRED", res["stderr"])
 
     def test_two_turn_conversational_confirmation(self):
-        # 1. User requests destructive delete
-        res1 = self.agent.run_agent_loop("delete folder dummy_test on desktop")
-        self.assertIsNotNone(self.agent.pending_confirmation)
+        # 1. Create the target so the confirmed delete really succeeds; a missing
+        #    target must now be reported as a failure instead of "Confirmed".
+        from tools.os_tools import create_file_or_folder, get_real_folder
+        from pathlib import Path
+        import shutil
 
-        # 2. User confirms with 'yes'
-        res2 = self.agent.run_agent_loop("yes")
-        self.assertIsNone(self.agent.pending_confirmation)
-        self.assertIn("Confirmed", res2["response"])
+        target = Path(get_real_folder("desktop")) / "dummy_test"
+        create_file_or_folder("folder", "dummy_test", "desktop")
+        try:
+            res1 = self.agent.run_agent_loop("delete folder dummy_test on desktop")
+            self.assertIsNotNone(self.agent.pending_confirmation)
+
+            # 2. User confirms with 'yes'
+            res2 = self.agent.run_agent_loop("yes")
+            self.assertIsNone(self.agent.pending_confirmation)
+            self.assertIn("Confirmed", res2["response"])
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
 
     def test_two_turn_conversational_cancellation(self):
         # 1. User requests destructive action
