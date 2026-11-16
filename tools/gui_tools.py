@@ -1,5 +1,6 @@
 """GUI and Computer-Use automation tools for mouse, keyboard, and screen capture."""
 import os
+import re
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -302,16 +303,144 @@ def switch_window() -> Dict[str, Any]:
     return press_keys(["alt", "tab"])
 
 
-def close_active_window() -> Dict[str, Any]:
-    """Closes the current active window using Alt+F4."""
+def _find_window_handle(title_or_process: str) -> Optional[int]:
+    """
+    Finds a visible top-level window by title or process name.
+
+    Candidates are ranked so the closest match wins: an exact title, then a title
+    starting with the query, then a whole-word title match, then a substring match,
+    and finally a match on the owning process name.
+    """
+    import psutil
+    import win32gui
+    import win32process
+
+    query = (title_or_process or "").strip().lower()
+    if not query:
+        return None
+
+    ranked: List[tuple] = []
+
+    def _collect(hwnd, _payload):
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = (win32gui.GetWindowText(hwnd) or "").strip()
+            if not title:
+                return
+            title_lower = title.lower()
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                process = psutil.Process(pid).name().lower()
+            except Exception:
+                process = ""
+            proc_base = process[:-4] if process.endswith(".exe") else process
+            # Tie-break equal titles by the owning process: "file explorer" should
+            # close explorer.exe, not an editor tab that merely mentions it.
+            proc_match = bool(proc_base) and (proc_base in query or query in proc_base)
+            proc_rank = 0 if proc_match else 1
+
+            if title_lower == query:
+                rank = 0
+            elif title_lower.startswith(query):
+                rank = 1
+            elif re.search(rf"\b{re.escape(query)}\b", title_lower):
+                rank = 2
+            elif query in title_lower:
+                rank = 3
+            elif proc_match:
+                rank = 4
+            else:
+                return
+            ranked.append((rank, proc_rank, hwnd))
+        except Exception:
+            pass
+
+    win32gui.EnumWindows(_collect, None)
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return ranked[0][2]
+
+
+def focus_window(title_or_process: str) -> Dict[str, Any]:
+    """
+    Brings a named window to the foreground.
+
+    Matches on window title first, then on the owning process name.
+    """
+    query = (title_or_process or "").strip()
+    if not query:
+        return {"success": False, "error": "No window name or process was provided."}
+
+    hwnd = _find_window_handle(query)
+    if hwnd is None:
+        return {
+            "success": False,
+            "error": f"No visible window matching '{query}' was found.",
+        }
+
+    try:
+        import win32con
+        import win32gui
+
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        else:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            # Windows blocks SetForegroundWindow from background processes; the
+            # ALT key trick releases that lock.
+            import pyautogui
+            pyautogui.press("alt")
+            win32gui.SetForegroundWindow(hwnd)
+
+        return {
+            "success": True,
+            "window": win32gui.GetWindowText(hwnd),
+            "message": f"Focused window '{win32gui.GetWindowText(hwnd)}'.",
+        }
+    except Exception as exc:
+        return {"success": False, "error": f"Could not focus '{query}': {exc}"}
+
+
+def close_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
+    """Closes the named window if given, otherwise the active window (Alt+F4)."""
+    if window_name:
+        focused = focus_window(window_name)
+        if not focused.get("success"):
+            return focused
+        result = press_keys(["alt", "f4"])
+        if result.get("success"):
+            result["message"] = f"Closed '{focused.get('window') or window_name}'."
+        return result
     return press_keys(["alt", "f4"])
 
 
-def maximize_active_window() -> Dict[str, Any]:
-    """Maximizes current active window using Win+Up."""
+def maximize_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
+    """Maximizes the named window if given, otherwise the active window (Win+Up)."""
+    if window_name:
+        focused = focus_window(window_name)
+        if not focused.get("success"):
+            return focused
+        result = press_keys(["win", "up"])
+        if result.get("success"):
+            result["message"] = f"Maximized '{focused.get('window') or window_name}'."
+        return result
     return press_keys(["win", "up"])
 
 
-def minimize_active_window() -> Dict[str, Any]:
-    """Minimizes current active window using Win+Down."""
+def minimize_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
+    """Minimizes the named window if given, otherwise the active window (Win+Down)."""
+    if window_name:
+        focused = focus_window(window_name)
+        if not focused.get("success"):
+            return focused
+        result = press_keys(["win", "down"])
+        if result.get("success"):
+            result["message"] = f"Minimized '{focused.get('window') or window_name}'."
+        return result
     return press_keys(["win", "down"])
