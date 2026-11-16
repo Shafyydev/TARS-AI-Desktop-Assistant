@@ -478,23 +478,51 @@ def create_file_or_folder(item_type: str, name: str, location: str = "desktop", 
 def delete_file_or_folder(name: str, location: str = "desktop") -> Dict[str, Any]:
     """
     Safely deletes a file or directory from desktop/documents/downloads.
+    Deletion is recoverable (Recycle Bin) when send2trash is installed, and
+    protected system paths and drive roots are refused.
     """
+    from tools.safety import SafetyValidator
+
     clean_loc = location.strip().lower()
     if clean_loc in ["desktop", "documents", "downloads", "pictures", "videos", "home"]:
         base = get_real_folder(clean_loc)
     else:
         base = Path(location)
 
-    target = base / name
+    target = (base / name).resolve()
     if not target.exists():
         return {"success": False, "message": f"Target '{name}' does not exist in {base}."}
+
+    protected = [p.lower() for p in SafetyValidator().protected_paths]
+    if any(str(target).lower().startswith(p) for p in protected):
+        return {"success": False, "error": f"Refusing to delete protected system path: {target}"}
+    if target == Path(target.anchor) or len(target.parts) <= 2:
+        return {"success": False, "error": "Refusing to delete a drive root or top-level folder."}
+
+    try:
+        from send2trash import send2trash
+        send2trash(str(target))
+        return {
+            "success": True,
+            "recoverable": True,
+            "message": f"Moved '{name}' to the Recycle Bin.",
+        }
+    except ImportError:
+        pass
+    except Exception as e:
+        return {"success": False, "error": f"Delete failed: {e}"}
+
     try:
         import shutil
         if target.is_dir():
             shutil.rmtree(str(target))
         else:
             target.unlink()
-        return {"success": True, "message": f"Deleted '{name}' successfully."}
+        return {
+            "success": True,
+            "recoverable": False,
+            "message": f"Deleted '{name}' permanently (send2trash is not installed).",
+        }
     except Exception as e:
         return {"success": False, "error": f"Delete failed: {e}"}
 
