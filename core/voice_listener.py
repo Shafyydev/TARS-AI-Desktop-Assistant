@@ -93,7 +93,7 @@ class VoiceListener:
     def __init__(
         self,
         energy_threshold: int = 250,
-        pause_threshold: float = 1.2,
+        pause_threshold: float = 0.6,
         language: Optional[str] = None,
         mic_index: Optional[int] = None
     ):

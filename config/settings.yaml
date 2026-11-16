@@ -25,7 +25,7 @@ voice:
   rate: "+5%"
   volume: "+0%"
   stt_energy_threshold: 250
-  stt_pause_threshold: 1.2     # Pause length (in seconds) to wait before considering speech finished
+  stt_pause_threshold: 0.6     # Pause length (in seconds) to wait before considering speech finished
   stt_timeout: 6
   stt_phrase_time_limit: 15    # Maximum duration of a spoken phrase
 
