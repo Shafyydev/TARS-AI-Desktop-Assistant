@@ -141,7 +141,7 @@ def _launch_target_present(token: str) -> bool:
         return False
 
 
-def _wait_for_launch(token: str, timeout: float = 3.0) -> bool:
+def _wait_for_launch(token: str, timeout: float = 1.5) -> bool:
     """Waits up to ``timeout`` seconds for a launched target to appear."""
     deadline = time.time() + timeout
     while True:
@@ -149,7 +149,7 @@ def _wait_for_launch(token: str, timeout: float = 3.0) -> bool:
             return True
         if time.time() >= deadline:
             return False
-        time.sleep(0.2)
+        time.sleep(0.1)
 
 
 def launch_application(app_name: str) -> Dict[str, Any]:
@@ -187,14 +187,14 @@ def launch_application(app_name: str) -> Dict[str, Any]:
     # A shell start returns immediately whether or not the target exists, so the
     # launch is only reported as successful once something matching it appears.
     token = "" if resolved_folder is not None else _launch_token(cmd)
-    if not token or _wait_for_launch(token, timeout=3.0):
+    if not token or _wait_for_launch(token, timeout=1.5):
         return {"success": True, "message": f"Successfully launched {clean_name}."}
 
     return {
         "success": False,
         "error": (
             f"Launched '{clean_name}' but no matching process or window appeared "
-            "within 3 seconds."
+            "within 1.5 seconds."
         ),
     }
 
