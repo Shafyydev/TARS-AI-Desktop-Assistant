@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Callable
 
 from core.task_state import TaskState, TaskStep
 from core.llm_provider import LLMProvider
+from core.personality import build_runtime_context
 from tools.verification import is_task_cancelled, reset_cancellation
 
 
@@ -29,27 +30,57 @@ class TaskOrchestrator:
             "last_browser_url": None,
         }
 
-    # A compact local tool set keeps a small CPU-hosted model responsive. The
-    # fast path handles the remaining direct commands without involving an LLM.
-    OLLAMA_TOOL_NAMES = frozenset({
-        "launch_application", "open_application", "get_system_telemetry",
-        "set_system_volume", "media_control", "get_running_windows",
-        "open_folder", "list_directory", "read_file", "search_files",
-        "take_screenshot", "inspect_screen", "click_ui_element",
-        "type_into_ui_element", "smart_click", "smart_type", "smart_search",
-        "open_whatsapp_chat", "send_whatsapp_message", "set_reminder",
-        "list_active_reminders", "cancel_active_reminder", "remember_fact",
+    # The model-facing tool set.  Deliberately smaller than the full registry:
+    # aliases and overlapping variants only add ambiguity for the model, and the
+    # local fast path already covers the direct commands without any tool call.
+    MODEL_TOOL_NAMES = frozenset({
+        # Shell (confirmation-gated)
+        "run_powershell",
+        # System & hardware
+        "launch_application", "open_folder", "lock_workstation", "get_system_telemetry",
+        "set_system_volume", "media_control", "get_running_windows", "read_clipboard",
+        # Files
+        "list_directory", "search_files", "read_file", "create_file_or_folder",
+        "delete_file_or_folder",
+        # Screen & input
+        "inspect_screen", "click_coordinate", "type_text", "press_keys", "scroll_screen",
+        "switch_window",
+        # Web
+        "browser_navigate", "browser_click_first_result", "browser_extract_text", "smart_search",
+        # Desktop UI
+        "smart_click", "smart_type",
+        # WhatsApp
+        "open_whatsapp_chat", "send_whatsapp_message",
+        # Reminders
+        "set_reminder", "list_active_reminders", "cancel_active_reminder",
+        # Google Workspace
+        "list_unread_emails", "read_email", "send_email", "list_upcoming_events",
+        "create_calendar_event",
+        # Memory & verification
+        "remember_fact", "verify_action", "cancel_current_task",
     })
 
     def _tools_for_provider(self) -> List[Callable]:
-        """Returns tool declarations sized appropriately for the configured LLM."""
-        if self.llm.provider == "ollama":
-            return [
-                self.agent.tool_registry[name]
-                for name in self.OLLAMA_TOOL_NAMES
-                if name in self.agent.tool_registry
-            ]
-        return list(self.agent.tool_registry.values())
+        """Returns the curated tool declarations exposed to the configured LLM."""
+        return [
+            self.agent.tool_registry[name]
+            for name in sorted(self.MODEL_TOOL_NAMES)
+            if name in self.agent.tool_registry
+        ]
+
+    def _llm_tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalizes tool results for the model.
+
+        Several tools return a list or a bare string (get_running_windows,
+        list_running_applications, get_free_knowledge).  The fast path expects
+        those native types, so the wrapping happens here instead of inside
+        TARSAgent.execute_tool.
+        """
+        result = self.agent.execute_tool(name, args)
+        if isinstance(result, dict):
+            return result
+        return {"success": result is not None, "result": result}
 
     def cancel(self) -> None:
         """Signals cancellation of the active task."""
@@ -356,7 +387,7 @@ class TaskOrchestrator:
                 on_status("Formulating autonomous execution plan...")
 
             tools_list = self._tools_for_provider()
-            system_instruction = self.agent.system_prompt
+            system_instruction = f"{self.agent.system_prompt}\n\n{build_runtime_context()}"
 
             history = self.agent.memory.get_recent_messages(limit=10) if hasattr(self.agent, "memory") else None
             user_prefs = self.agent.memory.get_all_preferences() if hasattr(self.agent, "memory") else None
@@ -365,11 +396,11 @@ class TaskOrchestrator:
                 prompt=request,
                 system_instruction=system_instruction,
                 tools_list=tools_list,
-                tool_executor=self.agent.execute_tool,
+                tool_executor=self._llm_tool_executor,
                 history=history,
                 user_preferences=user_prefs,
                 on_status=on_status,
-                max_iterations=5,
+                max_iterations=10,
                 timeout=10.0 if self.llm.provider == "ollama" else 25.0
             )
 
