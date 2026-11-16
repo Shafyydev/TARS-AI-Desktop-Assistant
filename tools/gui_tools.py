@@ -321,13 +321,24 @@ def _find_window_handle(title_or_process: str) -> Optional[int]:
 
     ranked: List[tuple] = []
 
+    # The desktop itself is not an application window: closing it is impossible
+    # and matching it (its title contains "File Explorer" once a folder is open)
+    # hijacks window commands.
+    IGNORED_CLASSES = {"progman", "workerw"}
+    IGNORED_TITLES = {"program manager", ""}
+
     def _collect(hwnd, _payload):
         try:
             if not win32gui.IsWindowVisible(hwnd):
                 return
             title = (win32gui.GetWindowText(hwnd) or "").strip()
-            if not title:
+            if not title or title.lower() in IGNORED_TITLES:
                 return
+            try:
+                if (win32gui.GetClassName(hwnd) or "").lower() in IGNORED_CLASSES:
+                    return
+            except Exception:
+                pass
             title_lower = title.lower()
             try:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
@@ -392,11 +403,46 @@ def focus_window(title_or_process: str) -> Dict[str, Any]:
         try:
             win32gui.SetForegroundWindow(hwnd)
         except Exception:
-            # Windows blocks SetForegroundWindow from background processes; the
-            # ALT key trick releases that lock.
+            # Windows only lets the foreground process hand focus to another
+            # window.  TARS often runs in a background console, so attach to the
+            # current foreground thread, which is what the shell itself does.
             import pyautogui
             pyautogui.press("alt")
-            win32gui.SetForegroundWindow(hwnd)
+            try:
+                import win32api
+                import win32process
+
+                foreground = win32gui.GetForegroundWindow()
+                target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+                current_thread, _ = win32process.GetWindowThreadProcessId(foreground)
+                my_thread = win32api.GetCurrentThreadId()
+                attached = False
+                for thread_id in {current_thread, my_thread}:
+                    try:
+                        win32process.AttachThreadInput(thread_id, target_thread, True)
+                        attached = True
+                        break
+                    except Exception:
+                        continue
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                finally:
+                    if attached:
+                        try:
+                            win32process.AttachThreadInput(thread_id, target_thread, False)
+                        except Exception:
+                            pass
+                return {
+                    "success": True,
+                    "window": win32gui.GetWindowText(hwnd),
+                    "message": f"Focused window '{win32gui.GetWindowText(hwnd)}'.",
+                }
+            except Exception:
+                # Last resort: cycling the window through minimized state makes
+                # Windows treat the next activation as a user action.
+                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
 
         return {
             "success": True,
