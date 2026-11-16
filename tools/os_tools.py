@@ -2,6 +2,7 @@
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import psutil
@@ -11,6 +12,8 @@ COMMON_APPS = {
     "chrome": "start chrome",
     "google chrome": "start chrome",
     "browser": "start chrome",
+    "brave": "start brave:",
+    "brave browser": "start brave:",
     "firefox": "start firefox",
     "edge": "start msedge",
     "code": "code",
@@ -61,11 +64,100 @@ COMMON_APPS = {
 }
 
 
+def _clean_app_target(app_name: str) -> str:
+    """
+    Strips container phrases from a spoken app name.
+
+    "open a new tab in brave browser" is a request to open Brave, not an app
+    literally named "a new tab in brave browser".
+    """
+    clean = (app_name or "").strip()
+    for phrase in (
+        "a new tab in ", "new tab in ", "a tab in ", "tab in ",
+        "a new window in ", "new window in ", "a window in ", "window in ",
+    ):
+        if clean.lower().startswith(phrase):
+            clean = clean[len(phrase):].strip()
+    stripped = re.sub(r"\s+(?:web\s+)?browser$", "", clean, flags=re.IGNORECASE).strip()
+    # "open my browser" must stay "my browser": only drop a trailing "browser"
+    # when what remains is an actual name.
+    if stripped and stripped.lower() not in {"my", "the", "a", "an", "this", "that", "web"}:
+        clean = stripped
+    clean = re.sub(r"^the\s+", "", clean, flags=re.IGNORECASE).strip()
+    return clean or (app_name or "").strip().lower()
+
+
+def clean_app_target(app_name: str) -> str:
+    """Public wrapper for :func:`_clean_app_target`."""
+    return _clean_app_target(app_name)
+
+
+def _launch_token(cmd: str) -> str:
+    """Derives the process/window token to look for after launching ``cmd``."""
+    token = cmd.strip()
+    if token.lower().startswith("start "):
+        token = token[6:].strip()
+    # Drop an empty quoted title, as in: start "" "brave"
+    token = token.replace('""', " ").strip()
+    if token.lower().startswith(("http://", "https://")):
+        return ""
+    token = token.strip("\"'")
+    token = token.replace("\\", "/").rsplit("/", 1)[-1]
+    if token.lower().endswith(".exe"):
+        token = token[:-4]
+    parts = [part.strip("\"'").rstrip(":").strip() for part in token.split()]
+    parts = [part for part in parts if part]
+    token = parts[0] if parts else ""
+    return token.strip().lower()
+
+
+def _launch_target_present(token: str) -> bool:
+    """True when a process or visible window matching ``token`` exists."""
+    if not token:
+        return True
+
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if token in (proc.info.get("name") or "").lower():
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    try:
+        import win32gui
+
+        titles: List[str] = []
+
+        def _collect(hwnd, _payload):
+            try:
+                if win32gui.IsWindowVisible(hwnd):
+                    titles.append(win32gui.GetWindowText(hwnd) or "")
+            except Exception:
+                pass
+
+        win32gui.EnumWindows(_collect, None)
+        return any(token in title.lower() for title in titles)
+    except Exception:
+        return False
+
+
+def _wait_for_launch(token: str, timeout: float = 3.0) -> bool:
+    """Waits up to ``timeout`` seconds for a launched target to appear."""
+    deadline = time.time() + timeout
+    while True:
+        if _launch_target_present(token):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
 def launch_application(app_name: str) -> Dict[str, Any]:
     """
     Launches an application or web destination by common name or executable path.
     """
-    clean_name = app_name.strip().lower()
+    clean_name = _clean_app_target(app_name)
+    resolved_folder = None
 
     # Smart GitHub profile resolution
     if "github" in clean_name and any(kw in clean_name for kw in ["profile", "my", "account", "user"]):
@@ -77,19 +169,34 @@ def launch_application(app_name: str) -> Dict[str, Any]:
         url = clean_name if clean_name.startswith("http") else f"https://{clean_name}"
         cmd = f"start {url}"
     else:
-        # Check if the target is a drive, directory, or known folder before Windows start
-        resolved_folder = resolve_system_target(app_name)
+        # Check if the target is a drive, directory, or known folder before Windows start.
+        # Only single-token targets are resolved: a sentence such as
+        # "a new tab in brave browser" must not be read as a path.
+        resolved_folder = resolve_system_target(clean_name) if " " not in clean_name else None
         if resolved_folder and resolved_folder.exists():
             return open_folder(str(resolved_folder))
 
         # Fallback to direct Windows start
-        cmd = f"start \"\" \"{app_name}\""
+        cmd = f"start \"\" \"{clean_name}\""
 
     try:
         subprocess.Popen(cmd, shell=True)
-        return {"success": True, "message": f"Successfully launched {clean_name}."}
     except Exception as e:
         return {"success": False, "error": f"Failed to launch {app_name}: {str(e)}"}
+
+    # A shell start returns immediately whether or not the target exists, so the
+    # launch is only reported as successful once something matching it appears.
+    token = "" if resolved_folder is not None else _launch_token(cmd)
+    if not token or _wait_for_launch(token, timeout=3.0):
+        return {"success": True, "message": f"Successfully launched {clean_name}."}
+
+    return {
+        "success": False,
+        "error": (
+            f"Launched '{clean_name}' but no matching process or window appeared "
+            "within 3 seconds."
+        ),
+    }
 
 
 def open_application(app_name: str) -> Dict[str, Any]:
@@ -372,6 +479,13 @@ def resolve_system_target(target: str) -> Optional[Path]:
         pass
 
     # 4. Search across priority roots
+    words = clean.split()
+    stopwords = {"a", "an", "the", "in", "on", "of", "to", "for", "and", "my", "is", "at", "with"}
+    if len(words) > 3 and any(word in stopwords for word in words):
+        # A sentence such as "a new tab in brave browser" is a command about an
+        # app, not a folder name; fuzzy-matching it hits random directories.
+        return None
+
     norm_q = re.sub(r"[^a-z0-9]", "", clean)
     if not norm_q:
         return None
