@@ -12,6 +12,7 @@ import pyautogui
 import tools.gui_tools as gui
 import tools.ui_automation as uia
 import tools.browser_automation as browser
+import tools.browser_tools as browser_tools
 import tools.os_tools as os_tools
 
 
@@ -424,10 +425,34 @@ def smart_type(text: str, target: Optional[str] = None, press_enter: bool = Fals
     }
 
 
+SITE_HOMEPAGES = {
+    "youtube": "https://www.youtube.com",
+    "google": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "github": "https://github.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "maps": "https://maps.google.com",
+    "drive": "https://drive.google.com",
+}
+
+
+def _homepage_for(site: str) -> Optional[str]:
+    """Returns the home page URL for a bare site name, or None."""
+    key = (site or "").strip().lower().removesuffix(".com")
+    if key in SITE_HOMEPAGES:
+        return SITE_HOMEPAGES[key]
+    if re.fullmatch(r"[a-z0-9-]{2,30}", key):
+        return f"https://www.{key}.com"
+    return None
+
+
 def smart_search(query: str, engine: str = "google") -> Dict[str, Any]:
     """
     Searches for a query. If a browser is already active, focuses the search/URL bar
     and runs the search in-place; otherwise launches a browser search.
+
+    A query that is only a site name ("search YouTube") opens that site's home
+    page instead of searching for the site's own name.
     """
     clean_q = (query or "").strip()
     if not clean_q:
@@ -438,6 +463,23 @@ def smart_search(query: str, engine: str = "google") -> Dict[str, Any]:
         engine = "youtube"
         # Clean phrases like "on youtube" or "in youtube"
         clean_q = re.sub(r"\b(?:on|in)\s+youtube\b", "", clean_q, flags=re.IGNORECASE).strip()
+
+    if not clean_q or clean_q.lower() in SITE_HOMEPAGES:
+        site = clean_q.lower() or engine.lower()
+        url = _homepage_for(site) or f"https://www.{site}.com"
+        opened = browser_tools.open_url(url)
+        return {
+            "success": opened.get("success", False) if isinstance(opened, dict) else False,
+            "query": clean_q,
+            "engine": engine,
+            "url": url,
+            "message": (
+                opened.get("message")
+                or opened.get("error")
+                or f"Opened {url}."
+            ) if isinstance(opened, dict) else f"Opened {url}.",
+            "method": "site_homepage",
+        }
 
     ctx = get_active_window_context()
 
