@@ -1,5 +1,6 @@
 """Configurable LLM provider adapter with structured multi-turn tool calling for TARS."""
 import os
+import re
 import time
 import logging
 import inspect
@@ -279,7 +280,8 @@ class LLMProvider:
                 text = item.get("content", "")
                 if not text or not isinstance(text, str):
                     continue
-                history_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=text.strip())]))
+                text = self._with_history_summary(text.strip(), item)
+                history_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
 
             # If current prompt was already saved to history, strip it off the end
             if history_contents and history_contents[-1].role == "user" and history_contents[-1].parts:
@@ -293,23 +295,30 @@ class LLMProvider:
 
         last_error = None
         candidate_models = [self.model] + [m for m in DEFAULT_MODELS if m != self.model]
+        from tools.verification import is_task_cancelled
+
+        failed_calls: Dict[str, int] = {}
 
         for model_name in candidate_models:
             executed_steps = []
             try:
+                config = self._gemini_config(system_instruction, tools_list, timeout)
                 chat = self.client.chats.create(
                     model=model_name,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        tools=tools_list,
-                        temperature=0.2
-                    ),
+                    config=config,
                     history=history_contents if history_contents else None
                 )
 
                 current_message: Any = prompt
 
                 for iteration in range(max_iterations):
+                    if is_task_cancelled():
+                        return {
+                            "success": False,
+                            "cancelled": True,
+                            "response": "Task cancelled.",
+                            "steps": executed_steps,
+                        }
                     if on_status and iteration > 0:
                         on_status(f"Reasoning next step (step {iteration + 1})...")
 
@@ -342,6 +351,14 @@ class LLMProvider:
                         tool_name = fc.name
                         tool_args = dict(fc.args or {})
 
+                        if is_task_cancelled():
+                            return {
+                                "success": False,
+                                "cancelled": True,
+                                "response": "Task cancelled.",
+                                "steps": executed_steps,
+                            }
+
                         if on_status:
                             on_status(f"Executing: {tool_name}")
 
@@ -359,6 +376,20 @@ class LLMProvider:
                             response={"result": result}
                         )
                         response_parts.append(response_part)
+
+                        # A repeated identical call that keeps failing is a loop, not progress.
+                        call_key = json.dumps([tool_name, tool_args], sort_keys=True, default=str)
+                        if isinstance(result, dict) and result.get("success") is False:
+                            failed_calls[call_key] = failed_calls.get(call_key, 0) + 1
+                            if failed_calls[call_key] >= 2:
+                                return {
+                                    "success": False,
+                                    "response": f"Tool '{tool_name}' failed twice with the same arguments. Stopping.",
+                                    "error": result.get("error") or result.get("message"),
+                                    "steps": executed_steps,
+                                }
+                        else:
+                            failed_calls.pop(call_key, None)
 
                     # Pass tool execution outputs back to the chat for next turn
                     current_message = response_parts
@@ -387,6 +418,15 @@ class LLMProvider:
                         "steps": executed_steps
                     }
                 if "404" in err_msg or "NOT_FOUND" in err_msg:
+                    # Never fall back after tools have already run: a second model
+                    # would repeat side effects that already happened.
+                    if executed_steps:
+                        return {
+                            "success": False,
+                            "response": "LLM unavailable: model not found after tools already ran.",
+                            "error": err_msg,
+                            "steps": executed_steps
+                        }
                     continue
                 short_reason = err_msg.split("\n")[0][:80]
                 return {
@@ -404,19 +444,104 @@ class LLMProvider:
             "steps": []
         }
 
+    # Fixed value sets for parameters whose tool accepts only specific strings.
+    _ENUM_VALUES: Dict[str, List[str]] = {
+        "media_control.action": [
+            "play_pause", "next", "prev", "stop", "volume_up", "volume_down", "mute",
+        ],
+        "system_power.action": ["sleep", "restart", "shutdown", "cancel"],
+        "smart_search.engine": ["google", "youtube", "duckduckgo"],
+        "browser_search.engine": ["google", "youtube", "duckduckgo"],
+    }
+
     @staticmethod
-    def _ollama_tool_schema(function: Callable) -> Dict[str, Any]:
+    def _gemini_config(system_instruction: str, tools_list: List[Callable], timeout: float) -> Any:
+        """
+        Builds the Gemini GenerateContentConfig.
+
+        The Gemini loop previously ignored its timeout argument entirely; the
+        per-request timeout is applied here when the installed google-genai
+        version exposes HttpOptions.
+        """
+        from google.genai import types
+
+        kwargs: Dict[str, Any] = {
+            "system_instruction": system_instruction,
+            "tools": tools_list,
+            "temperature": 0.2,
+        }
+        try:
+            kwargs["http_options"] = types.HttpOptions(timeout=int(max(1.0, timeout) * 1000))
+        except Exception:
+            pass
+        try:
+            return types.GenerateContentConfig(**kwargs)
+        except Exception:
+            kwargs.pop("http_options", None)
+            return types.GenerateContentConfig(**kwargs)
+
+    @staticmethod
+    def _json_schema_for(annotation: Any) -> Dict[str, Any]:
+        """
+        Maps a Python annotation to a JSON-schema fragment.
+
+        Bare-dict lookups lose parameterised generics: ``List[str]`` and
+        ``Optional[int]`` both degraded to ``"string"``, so models sent a string
+        where the tool expected a list.
+        """
+        import typing
+
+        origin = typing.get_origin(annotation)
+        if origin is typing.Union:
+            args = [a for a in typing.get_args(annotation) if a is not type(None)]
+            return LLMProvider._json_schema_for(args[0]) if args else {"type": "string"}
+        if origin in (list, set, tuple) or annotation in (list, set, tuple):
+            args = typing.get_args(annotation)
+            item = LLMProvider._json_schema_for(args[0]) if args else {"type": "string"}
+            return {"type": "array", "items": item}
+        if origin is dict or annotation is dict:
+            return {"type": "object"}
+        mapping = {int: "integer", float: "number", bool: "boolean", str: "string"}
+        return {"type": mapping.get(annotation, "string")}
+
+    @staticmethod
+    def _arg_descriptions(function: Callable) -> Dict[str, str]:
+        """Extracts per-parameter descriptions from a tool's docstring Args block."""
+        doc = inspect.getdoc(function) or ""
+        descriptions: Dict[str, str] = {}
+        in_args = False
+        for raw_line in doc.splitlines():
+            line = raw_line.strip()
+            if line.lower().startswith("args:"):
+                in_args = True
+                continue
+            if not in_args:
+                continue
+            if line.lower().startswith(("returns:", "raises:", "example", "note:")):
+                break
+            match = re.match(r"^(\*{0,2}\w+)\s*(?:\([^)]*\))?\s*:\s*(.+)$", line)
+            if match:
+                descriptions[match.group(1).lstrip("*")] = match.group(2).strip()
+        return descriptions
+
+    @classmethod
+    def _ollama_tool_schema(cls, function: Callable) -> Dict[str, Any]:
         """Converts a registered Python tool into Ollama's function schema."""
         signature = inspect.signature(function)
         properties: Dict[str, Any] = {}
         required: List[str] = []
-        type_map = {int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
+        descriptions = cls._arg_descriptions(function)
         for name, parameter in signature.parameters.items():
             if name.startswith("_"):
                 continue
-            annotation = parameter.annotation
-            json_type = type_map.get(annotation, "string")
-            properties[name] = {"type": json_type}
+            schema = cls._json_schema_for(parameter.annotation)
+            enum_values = cls._ENUM_VALUES.get(f"{function.__name__}.{name}")
+            if enum_values:
+                schema = {**schema, "enum": enum_values}
+            description = descriptions.get(name)
+            if description:
+                schema = {**schema, "description": description}
+            properties[name] = schema
             if parameter.default is inspect.Parameter.empty:
                 required.append(name)
         return {
@@ -434,6 +559,42 @@ class LLMProvider:
         if "</think>" in content:
             return content.rsplit("</think>", 1)[-1].strip()
         return content.strip()
+
+    @staticmethod
+    def _summarize_steps(steps: Any) -> str:
+        """
+        Compact one-line summary of executed tools.
+
+        History rows keep the tool list separately from the message text, so the
+        model previously could not see which tools it had already run.
+        """
+        if not isinstance(steps, list) or not steps:
+            return ""
+        parts: List[str] = []
+        for step in steps[:6]:
+            if not isinstance(step, dict):
+                continue
+            name = step.get("tool") or step.get("tool_name") or "tool"
+            args = step.get("args") if isinstance(step.get("args"), dict) else {}
+            arg_text = ", ".join(f"{k}={v}" for k, v in list(args.items())[:2])
+            result = step.get("result")
+            if isinstance(result, dict):
+                if result.get("success") is False:
+                    outcome = "failed"
+                else:
+                    outcome = str(result.get("message") or result.get("summary") or "ok")[:60]
+            else:
+                outcome = "ok"
+            parts.append(f"{name}({arg_text}) -> {outcome}")
+        return f"[tools: {'; '.join(parts)}]" if parts else ""
+
+    @staticmethod
+    def _with_history_summary(content: str, item: Dict[str, Any]) -> str:
+        """Appends a compact tool summary to an assistant history entry."""
+        if item.get("role") not in ("assistant", "tars", "model"):
+            return content
+        summary = LLMProvider._summarize_steps(item.get("tool_calls"))
+        return f"{content}\n{summary}" if summary else content
 
     def _run_ollama_tool_agent_loop(
         self,
@@ -463,15 +624,28 @@ class LLMProvider:
                 continue
             content = item.get("content")
             if isinstance(content, str) and content.strip():
-                messages.append({"role": role, "content": content.strip()})
+                messages.append({
+                    "role": role,
+                    "content": self._with_history_summary(content.strip(), item),
+                })
         if messages[-1].get("role") == "user" and messages[-1].get("content") == prompt:
             messages.pop()
         messages.append({"role": "user", "content": prompt})
 
         tool_schemas = [self._ollama_tool_schema(function) for function in tools_list]
         steps: List[Dict[str, Any]] = []
+        from tools.verification import is_task_cancelled
+
+        failed_calls: Dict[str, int] = {}
         try:
             for iteration in range(max_iterations):
+                if is_task_cancelled():
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "response": "Task cancelled.",
+                        "steps": steps,
+                    }
                 if on_status and iteration:
                     on_status(f"Reasoning next step (step {iteration + 1})...")
                 response = requests.post(
@@ -503,6 +677,13 @@ class LLMProvider:
                     function = call.get("function", {})
                     tool_name = function.get("name", "")
                     tool_args = function.get("arguments") or {}
+                    if is_task_cancelled():
+                        return {
+                            "success": False,
+                            "cancelled": True,
+                            "response": "Task cancelled.",
+                            "steps": steps,
+                        }
                     if on_status:
                         on_status(f"Executing: {tool_name}")
                     result = tool_executor(tool_name, tool_args)
@@ -512,6 +693,20 @@ class LLMProvider:
                         "tool_name": tool_name,
                         "content": json.dumps(result, default=str),
                     })
+
+                    # A repeated identical call that keeps failing is a loop, not progress.
+                    call_key = json.dumps([tool_name, tool_args], sort_keys=True, default=str)
+                    if isinstance(result, dict) and result.get("success") is False:
+                        failed_calls[call_key] = failed_calls.get(call_key, 0) + 1
+                        if failed_calls[call_key] >= 2:
+                            return {
+                                "success": False,
+                                "response": f"Tool '{tool_name}' failed twice with the same arguments. Stopping.",
+                                "error": result.get("error") or result.get("message"),
+                                "steps": steps,
+                            }
+                    else:
+                        failed_calls.pop(call_key, None)
             return {"success": False, "response": "Ollama stopped after too many tool steps.", "steps": steps}
         except Exception as exc:
             _log_provider_exception("Ollama execution failed", exc)
@@ -549,7 +744,10 @@ class LLMProvider:
                 continue
             content = item.get("content")
             if isinstance(content, str) and content.strip():
-                messages.append({"role": role, "content": content.strip()})
+                messages.append({
+                    "role": role,
+                    "content": self._with_history_summary(content.strip(), item),
+                })
 
         if len(messages) > 1 and messages[-1].get("role") == "user" and messages[-1].get("content") == prompt:
             messages.pop()
@@ -557,9 +755,20 @@ class LLMProvider:
 
         tool_schemas = [self._ollama_tool_schema(function) for function in tools_list] if tools_list else []
         steps: List[Dict[str, Any]] = []
+        from tools.verification import is_task_cancelled
+
+        failed_calls: Dict[str, int] = {}
 
         try:
             for iteration in range(max_iterations):
+                if is_task_cancelled():
+                    logger.info("%s loop cancelled before iteration %s", provider_name, iteration + 1)
+                    return {
+                        "success": False,
+                        "cancelled": True,
+                        "response": "Task cancelled.",
+                        "steps": steps,
+                    }
                 if on_status and iteration > 0:
                     on_status(f"Reasoning next step (step {iteration + 1})...")
 
@@ -631,6 +840,14 @@ class LLMProvider:
                     except Exception:
                         tool_args = {}
 
+                    if is_task_cancelled():
+                        return {
+                            "success": False,
+                            "cancelled": True,
+                            "response": "Task cancelled.",
+                            "steps": steps,
+                        }
+
                     if on_status:
                         on_status(f"Executing: {tool_name}")
 
@@ -642,6 +859,20 @@ class LLMProvider:
                         "name": tool_name,
                         "content": json.dumps(result, default=str),
                     })
+
+                    # A repeated identical call that keeps failing is a loop, not progress.
+                    call_key = json.dumps([tool_name, tool_args], sort_keys=True, default=str)
+                    if isinstance(result, dict) and result.get("success") is False:
+                        failed_calls[call_key] = failed_calls.get(call_key, 0) + 1
+                        if failed_calls[call_key] >= 2:
+                            return {
+                                "success": False,
+                                "response": f"Tool '{tool_name}' failed twice with the same arguments. Stopping.",
+                                "error": result.get("error") or result.get("message"),
+                                "steps": steps,
+                            }
+                    else:
+                        failed_calls.pop(call_key, None)
 
             # Max iterations reached, ask for summary
             messages.append({
