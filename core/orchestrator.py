@@ -18,6 +18,58 @@ class TaskOrchestrator:
     bounded error recovery, and verification loops.
     """
 
+    # Verbs that turn a request into an action instead of a question.  Used to
+    # refuse reporting success when the model answered without running a tool.
+    ACTION_VERBS = frozenset({
+        "open", "close", "maximize", "maximise", "minimize", "minimise", "launch",
+        "start", "stop", "kill", "terminate", "search", "type", "click", "press",
+        "send", "create", "delete", "remove", "run", "shutdown", "restart", "reboot",
+        "lock", "focus", "switch", "scroll", "set", "change", "play", "pause",
+        "mute", "fullscreen", "snap", "minimize", "expand", "empty", "install",
+        "uninstall", "write", "read", "move", "copy", "rename", "format", "sleep",
+    })
+
+    @classmethod
+    def _is_action_request(cls, request: str) -> bool:
+        """True when the request starts with a verb that must actually do something."""
+        text = (request or "").strip().lower()
+        text = re.sub(
+            r"^(?:please|can\s+you|could\s+you|would\s+you|hey\s+tars|tars|ok|okay|now)\s+",
+            "",
+            text,
+        )
+        first = text.split()[0] if text else ""
+        return first in cls.ACTION_VERBS
+
+    def _honest_llm_result(self, llm_result: Dict[str, Any], request: str) -> Dict[str, Any]:
+        """
+        Rewrites a model reply that ran no tools.
+
+        A question can be answered without tools, but an action request with zero
+        executed steps means nothing happened, so the result must not claim success.
+        """
+        if not llm_result.get("no_tool_calls"):
+            return llm_result
+        if not self._is_action_request(request):
+            return llm_result
+
+        text = (llm_result.get("response") or "").strip()
+        llm_result["success"] = False
+        llm_result.pop("no_tool_calls", None)
+        claims_done = any(
+            word in text.lower()
+            for word in (
+                "done", "opened", "closed", "sent", "created", "deleted", "completed",
+                "maximized", "minimized", "launched", "typed", "pressed", "terminated",
+            )
+        )
+        llm_result["response"] = (
+            "I didn't run anything for that request."
+            if (not text or claims_done)
+            else f"I didn't run anything for that request. {text}"
+        )
+        return llm_result
+
     def __init__(self, agent: Any):
         self.agent = agent
         self.llm = LLMProvider()
@@ -405,10 +457,14 @@ class TaskOrchestrator:
             )
 
             if llm_result:
-                return llm_result
+                return self._honest_llm_result(llm_result, request)
 
-        # 5. Fallback: single tool matching or friendly guidance
-        fallback_msg = f"Standing by. I received '{request}'. Specify an action or application."
+        # 5. Fallback: report why the model is offline, or ask for a clearer command
+        reason = self.llm.unavailable_reason()
+        if reason:
+            fallback_msg = f"My language model is offline: {reason}."
+        else:
+            fallback_msg = f"Standing by. I received '{request}'. Specify an action or application."
         return {
             "success": False,
             "response": fallback_msg,
