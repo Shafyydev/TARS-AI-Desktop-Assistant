@@ -5,7 +5,7 @@ import logging
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("TARS.GoogleWorkspace")
 
@@ -255,11 +255,16 @@ def create_calendar_event(summary: str, start_time: str, end_time: Optional[str]
         from googleapiclient.discovery import build
         service = build("calendar", "v3", credentials=creds)
 
+        if not end_time:
+            # Honour the documented default of one hour after the start time.
+            parsed = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            end_time = (parsed + timedelta(hours=1)).isoformat()
+
         event_body = {
             "summary": summary,
             "description": description or "",
             "start": {"dateTime": start_time},
-            "end": {"dateTime": end_time or start_time}
+            "end": {"dateTime": end_time}
         }
         created = service.events().insert(calendarId="primary", body=event_body).execute()
         return {

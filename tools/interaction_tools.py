@@ -219,8 +219,11 @@ def smart_click(target: str) -> Dict[str, Any]:
     if uia_res.get("success"):
         return uia_res
 
-    # 9. Fallback: Click at current cursor position
-    return gui.click_coordinate(button="left", clicks=1)
+    # 9. No match: report failure instead of clicking the cursor position blindly.
+    return {
+        "success": False,
+        "error": f"Could not find '{clean_target}'. Use inspect_screen to locate it.",
+    }
 
 
 def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
