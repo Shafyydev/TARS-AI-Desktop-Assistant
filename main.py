@@ -11,7 +11,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.prompt import Prompt
 
-from core.brain import TARSAgent
+from core.brain import TARSAgent, is_affirmative
 from core.voice_speaker import VoiceSpeaker
 from core.voice_listener import VoiceListener
 import tools
@@ -171,7 +171,7 @@ def main() -> None:
     listener = (
         VoiceListener(
             energy_threshold=v_cfg.get("stt_energy_threshold", 250),
-            pause_threshold=v_cfg.get("stt_pause_threshold", 1.2),
+            pause_threshold=v_cfg.get("stt_pause_threshold", 0.6),
             language=args.language,
             mic_index=args.mic_index
         )
@@ -190,12 +190,10 @@ def main() -> None:
                 blocking=True,
             )
             speech, _ = listener.listen_once(timeout=6, phrase_time_limit=4)
-            if speech and speech.strip().lower().strip(".!? ") == "yes":
-                return True
-            return False
+            return is_affirmative(speech or "")
         else:
             ans = Prompt.ask(f"[bold red]CONFIRMATION REQUIRED[/bold red] - Execute [bold yellow]{tool_name}[/bold yellow] ({arg_summary})? (yes/no)", default="no")
-            return ans.strip().lower() == "yes"
+            return is_affirmative(ans)
 
     agent.set_confirmation_callback(confirm_action)
 
