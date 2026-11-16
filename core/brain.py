@@ -144,6 +144,7 @@ class TARSAgent:
             "scroll_screen": tools.scroll_screen,
             "scroll_window": tools.scroll_window,
             "switch_window": tools.switch_window,
+            "focus_window": tools.focus_window,
             "close_active_window": tools.close_active_window,
             "maximize_active_window": tools.maximize_active_window,
             "minimize_active_window": tools.minimize_active_window,
@@ -429,11 +430,8 @@ class TARSAgent:
             query = browser_youtube.group(1).strip()
             if query:
                 res = self.execute_tool("smart_search", {"query": query, "engine": "youtube"})
-                return {
-                    "response": f"Searching YouTube for '{query}'.",
-                    "steps": [{"tool": "smart_search", "args": {"query": query, "engine": "youtube"}, "result": res}],
-                    "success": res.get("success", True) if isinstance(res, dict) else True,
-                }
+                msg, ok = self._reply(res, f"Searching YouTube for '{query}'.")
+                return {"response": msg, "steps": [{"tool": "smart_search", "args": {"query": query, "engine": "youtube"}, "result": res}], "success": ok}
 
         # Compound: "open <app> and search [for] <query>"
         open_and_search = re.match(r"^(?:open|launch|start)\s+([a-zA-Z0-9\s]+?)\s+and\s+(?:search\s+for|search|look\s+up)\s+(.+)$", p_clean)
@@ -464,11 +462,8 @@ class TARSAgent:
                     press_enter = True
                     break
             res = self.execute_tool("smart_type", {"text": text_to_type, "target": target, "press_enter": press_enter})
-            return {
-                "response": f"Clicked {target} and typed '{text_to_type}'" + (" and pressed Enter." if press_enter else "."),
-                "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "target": target, "press_enter": press_enter}, "result": res}],
-                "success": res.get("success", True) if isinstance(res, dict) else True
-            }
+            msg, ok = self._reply(res, f"Clicked {target} and typed '{text_to_type}'" + (" and pressed Enter." if press_enter else "."))
+            return {"response": msg, "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "target": target, "press_enter": press_enter}, "result": res}], "success": ok}
 
         # Compound: "create folder <name> [on <loc>] and open it"
         create_and_open = re.match(r"^create\s+(?:a\s+)?(?:new\s+)?folder\s+([^\s]+)(?:\s+(?:on|in)\s+([^\s]+))?\s+and\s+open\s+it$", p_clean)
@@ -651,11 +646,8 @@ class TARSAgent:
                 if target_cand not in ["enter", "return", "space", "spacebar", "tab", "escape", "esc", "backspace", "delete", "del"]:
                     res = self.execute_tool("smart_click", {"target": target_cand})
                     msg = res.get("message") if isinstance(res, dict) else f"Clicked {target_cand}."
-                    return {
-                        "response": msg,
-                        "steps": [{"tool": "smart_click", "args": {"target": target_cand}, "result": res}],
-                        "success": res.get("success", True) if isinstance(res, dict) else True
-                    }
+                    msg, ok = self._reply(res, msg)
+                    return {"response": msg, "steps": [{"tool": "smart_click", "args": {"target": target_cand}, "result": res}], "success": ok}
 
         # 5. GUI Scrolling (Short Imperative Commands Only)
         if re.search(r"^(?:scroll\s+(?:to\s+)?(?:bottom|end)|bottom\s+of\s+page)$", p_clean):
@@ -695,11 +687,8 @@ class TARSAgent:
                     press_enter = True
                     break
             res = self.execute_tool("smart_type", {"text": text_to_type, "target": target_field, "press_enter": press_enter})
-            return {
-                "response": f"Typed '{text_to_type}' into {target_field}" + (" and pressed enter." if press_enter else "."),
-                "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "target": target_field, "press_enter": press_enter}, "result": res}],
-                "success": res.get("success", True) if isinstance(res, dict) else True
-            }
+            msg, ok = self._reply(res, f"Typed '{text_to_type}' into {target_field}" + (" and pressed enter." if press_enter else "."))
+            return {"response": msg, "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "target": target_field, "press_enter": press_enter}, "result": res}], "success": ok}
 
         type_match = re.match(r"^(?:type|write|input)\s+(.+)", p_clean)
         if type_match:
@@ -711,13 +700,10 @@ class TARSAgent:
                     press_enter = True
                     break
             res = self.execute_tool("smart_type", {"text": text_to_type, "press_enter": press_enter})
-            return {
-                "response": f"Typed '{text_to_type}'" + (" and pressed enter." if press_enter else "."),
-                "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "press_enter": press_enter}, "result": res}],
-                "success": res.get("success", True) if isinstance(res, dict) else True
-            }
+            msg, ok = self._reply(res, f"Typed '{text_to_type}'" + (" and pressed enter." if press_enter else "."))
+            return {"response": msg, "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "press_enter": press_enter}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:(?:press|hit)\s+)?(?:enter|return)(?:\s+key)?$|^(?:click\s+ok|press\s+ok|hit\s+ok|ok)$", p_clean):
+        if re.search(r"^(?:(?:press|hit|click)\s+)?(?:enter|return)(?:\s+key)?$|^(?:click\s+ok|press\s+ok|hit\s+ok|ok)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["enter"]})
             msg, ok = self._reply(res, "Pressed enter.")
             return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["enter"]}, "result": res}], "success": ok}
@@ -840,7 +826,19 @@ class TARSAgent:
             return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "s"]}, "result": res}], "success": ok}
 
         # 9. Window & Desktop Management (Anchored)
-        if re.search(r"^(?:maximize|max)(?:\s+(?:the\s+|this\s+|active\s+)?window)?$|^expand\s+(?:the\s+|this\s+)?window$", p_clean):
+        max_match = re.match(
+            r"^(?:maximize|maximise|max)(?:\s+(?:the\s+)?(?:screen|window))?"
+            r"(?:\s+(?:of|for)\s+(.+)|\s+(.+))?$",
+            p_clean,
+        )
+        if max_match:
+            max_target = (max_match.group(1) or max_match.group(2) or "").strip() or None
+            args = {"window_name": max_target} if max_target else {}
+            res = self.execute_tool("maximize_active_window", args)
+            msg, ok = self._reply(res, f"Maximized {max_target}." if max_target else "Window maximized.")
+            return {"response": msg, "steps": [{"tool": "maximize_active_window", "args": args, "result": res}], "success": ok}
+
+        if re.search(r"^expand\s+(?:the\s+|this\s+)?window$", p_clean):
             res = self.execute_tool("maximize_active_window", {})
             msg, ok = self._reply(res, "Window maximized.")
             return {"response": msg, "steps": [{"tool": "maximize_active_window", "args": {}, "result": res}], "success": ok}
@@ -875,10 +873,25 @@ class TARSAgent:
             msg, ok = self._reply(res, "Switched active window.")
             return {"response": msg, "steps": [{"tool": "switch_window", "args": {}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:close|shut|exit|kill)\s+(?:this\s+|the\s+|current\s+|active\s+)?(?:window|app|application|program)$|^close\s+(?:this|current|active)$", p_clean):
-            res = self.execute_tool("close_active_window", {})
-            msg, ok = self._reply(res, "Active window closed.")
-            return {"response": msg, "steps": [{"tool": "close_active_window", "args": {}, "result": res}], "success": ok}
+        close_match = re.match(
+            r"^(?:close|shut|exit|kill|quit)\b"
+            r"(?:\s+(?:the\s+|this\s+|current\s+|active\s+)?(?:window|app|application|program))?"
+            r"(?:\s+(?:of|for)\s+(.+)|\s+(.+))?$",
+            p_clean,
+        )
+        if close_match:
+            close_target = (close_match.group(1) or close_match.group(2) or "").strip() or None
+            # "kill process chrome" belongs to process termination, not window closing.
+            if close_target and close_target.startswith("process"):
+                close_target = None
+                close_match = None
+        if close_match:
+            args = {"window_name": close_target} if close_target else {}
+            res = self.execute_tool("close_active_window", args)
+            msg, ok = self._reply(
+                res, f"Closed {close_target}." if close_target else "Active window closed."
+            )
+            return {"response": msg, "steps": [{"tool": "close_active_window", "args": args, "result": res}], "success": ok}
 
         # 10. Workstation Security & Display
         if re.search(r"^(?:lock|lock\s+(?:the\s+)?(?:pc|computer|workstation|screen|windows))$", p_clean):
@@ -919,7 +932,7 @@ class TARSAgent:
             return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "volume_down"}, "result": res}], "success": ok}
 
         # 13. YouTube & Google Direct Search & Playback (<10ms launch)
-        yt_match = re.match(r"^(?:(?:please|can\s+you|could\s+you)\s+)?(?:search\s+(?:on\s+)?youtube\s+for|search\s+for\s+(.+?)\s+on\s+youtube|play\s+(.+?)\s+on\s+youtube|youtube\s+(?:search\s+for|search)|open\s+youtube\s+and\s+(?:search|play)\s+for?)\s*(.*)", p_clean)
+        yt_match = re.match(r"^(?:(?:please|can\s+you|could\s+you)\s+)?(?:search\s+(?:on\s+)?youtube\s+for|search\s+for\s+(.+?)\s+on\s+youtube|play\s+(.+?)\s+on\s+youtube|youtube\s+(?:search\s+for|search)|open\s+youtube\s+and\s+(?:search|play)\s+for?|search\s+youtube|open\s+youtube)\s*(.*)", p_clean)
         if yt_match:
             yt_q = yt_match.group(1) or yt_match.group(2) or yt_match.group(3) or ""
             yt_q = yt_q.strip(" ?.")
@@ -1029,11 +1042,8 @@ class TARSAgent:
         if re.search(r"^(?:what(?:'s|\s+is)\s+on\s+(?:the|my)\s+screen|describe\s+(?:the\s+|my\s+)?screen|look\s+at\s+(?:the|my)\s+screen|screen\s+summary)$", p_clean):
             res = self.execute_tool("describe_screen", {})
             desc = res.get("description", "Screen captured.")
-            return {
-                "response": desc,
-                "steps": [{"tool": "describe_screen", "args": {}, "result": res}],
-                "success": res.get("success", True)
-            }
+            msg, ok = self._reply(res, desc)
+            return {"response": msg, "steps": [{"tool": "describe_screen", "args": {}, "result": res}], "success": ok}
 
         # 18. Timers and Reminders
         remind_match = re.match(r"^(?:remind\s+me\s+to\s+(.+)\s+in\s+(\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)|set\s+(?:a\s+)?timer\s+for\s+(\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)(?:\s+for\s+(.+))?)$", p_clean)
@@ -1045,11 +1055,8 @@ class TARSAgent:
                 mins = float(remind_match.group(3))
                 msg = (remind_match.group(4) or "timer").strip()
             res = self.execute_tool("set_reminder", {"message": msg, "minutes": mins})
-            return {
-                "response": res.get("message", f"Reminder set for {mins} minutes."),
-                "steps": [{"tool": "set_reminder", "args": {"message": msg, "minutes": mins}, "result": res}],
-                "success": res.get("success", True)
-            }
+            msg, ok = self._reply(res, res.get("message", f"Reminder set for {mins} minutes."))
+            return {"response": msg, "steps": [{"tool": "set_reminder", "args": {"message": msg, "minutes": mins}, "result": res}], "success": ok}
 
         if re.search(r"^(?:list\s+(?:my\s+)?reminders|what\s+are\s+my\s+reminders|show\s+reminders|active\s+timers)$", p_clean):
             res = self.execute_tool("list_active_reminders", {})
@@ -1238,17 +1245,22 @@ class TARSAgent:
                 "success": False,
             }
 
-        explicit_whatsapp_send = re.match(
-            r"^send(?:\s+message)?\s+to\s+(.+?)\s+(?:saying\s+)?(.+)$", p_clean,
+        whatsapp_send = re.match(
+            r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
+            r"(?:send\s+(?:a\s+)?message\s+to|message\s+to|message)\s+(.+?)\s+saying\s+(.+)$",
+            p_clean,
         )
-        if explicit_whatsapp_send:
-            contact = explicit_whatsapp_send.group(1).strip()
-            message = explicit_whatsapp_send.group(2).strip()
+        if whatsapp_send:
+            contact = whatsapp_send.group(1).strip()
+            message = re.sub(
+                r"\s+in\s+whatsapp$", "", whatsapp_send.group(2).strip(), flags=re.IGNORECASE
+            )
             res = self.execute_tool("send_whatsapp_message", {"contact_name": contact, "message": message})
+            msg, ok = self._reply(res, f"Sent WhatsApp message to {contact}.")
             return {
-                "response": res.get("message") or res.get("error") or "WhatsApp message was not sent.",
+                "response": msg,
                 "steps": [{"tool": "send_whatsapp_message", "args": {"contact_name": contact, "message": message}, "result": res}],
-                "success": res.get("success", False),
+                "success": ok,
             }
 
         # If WhatsApp is already running, short "go to <name>" commands
@@ -1327,6 +1339,9 @@ class TARSAgent:
         nav_match = re.match(r"^(?:go to|navigate to|visit|open up|open|launch|start|take me to|show me|bring up)\s+(?:the\s+)?(?:my\s+)?(.+)", p_clean)
         if nav_match:
             target = nav_match.group(1).strip()
+            # "open a new tab in brave browser" targets Brave, not a literal app
+            # name; clean it before the compound/length guards below.
+            target = tools.clean_app_target(target)
             if target in {"the", "a", "an"}:
                 return {
                     "response": "I did not catch which application or chat you want to open.",
@@ -1344,11 +1359,8 @@ class TARSAgent:
             if resolved_p and resolved_p.exists():
                 res = self.execute_tool("open_folder", {"folder_path": str(resolved_p)})
                 folder_name = resolved_p.name if resolved_p.name else str(resolved_p)
-                return {
-                    "response": f"Opened {folder_name} in File Explorer.",
-                    "steps": [{"tool": "open_folder", "args": {"folder_path": str(resolved_p)}, "result": res}],
-                    "success": res.get("success", True)
-                }
+                msg, ok = self._reply(res, f"Opened {folder_name} in File Explorer.")
+                return {"response": msg, "steps": [{"tool": "open_folder", "args": {"folder_path": str(resolved_p)}, "result": res}], "success": ok}
 
             # Priority 2: Standard application or website launch
             res = self.execute_tool("launch_application", {"app_name": target})
@@ -1366,11 +1378,8 @@ class TARSAgent:
                 if resolved_p and resolved_p.exists():
                     res = self.execute_tool("open_folder", {"folder_path": str(resolved_p)})
                     folder_name = resolved_p.name if resolved_p.name else str(resolved_p)
-                    return {
-                        "response": f"Opened {folder_name} in File Explorer.",
-                        "steps": [{"tool": "open_folder", "args": {"folder_path": str(resolved_p)}, "result": res}],
-                        "success": res.get("success", True)
-                    }
+                    msg, ok = self._reply(res, f"Opened {folder_name} in File Explorer.")
+                    return {"response": msg, "steps": [{"tool": "open_folder", "args": {"folder_path": str(resolved_p)}, "result": res}], "success": ok}
 
         # 19. App Terminating (e.g. "kill chrome", "close notepad", "exit spotify")
         kill_match = re.match(r"^(?:kill|terminate)\s+(?:the\s+)?(?:app\s+)?(.+)", p_clean)
@@ -1399,12 +1408,10 @@ class TARSAgent:
             # Check if query contains "on youtube" or "in youtube"
             engine = "youtube" if "youtube" in p_clean else "google"
             res = self.execute_tool("smart_search", {"query": raw_query, "engine": engine})
-            msg = res.get("message") if isinstance(res, dict) else f"Searching for '{raw_query}'."
-            return {
-                "response": msg,
-                "steps": [{"tool": "smart_search", "args": {"query": raw_query, "engine": engine}, "result": res}],
-                "success": res.get("success", True) if isinstance(res, dict) else True
-            }
+            fallback_msg = f"Searching for '{raw_query}'."
+            msg = (res.get("message") if isinstance(res, dict) else None) or fallback_msg
+            msg, ok = self._reply(res, msg)
+            return {"response": msg, "steps": [{"tool": "smart_search", "args": {"query": raw_query, "engine": engine}, "result": res}], "success": ok}
 
         # 22. Free Online Knowledge (Wikipedia QA - Short Factual Lookups Only)
         info_match = re.match(r"^(?:who is|what is|where is|define)\s+([a-zA-Z0-9\s\.\-_]{1,50})$", p_clean)
@@ -1443,14 +1450,23 @@ class TARSAgent:
                 self.pending_confirmation = None
                 tool_res = self._execute_tool_inner(pending["tool"], pending["args"], confirmation_granted=True)
                 self._log_tool_call(pending["tool"], pending["args"], tool_res)
-                if isinstance(tool_res, dict) and tool_res.get("message"):
+                ok = tool_res.get("success", False) if isinstance(tool_res, dict) else False
+                if not ok:
+                    # The user approved the action, but it still failed; report the
+                    # failure instead of claiming the action was carried out.
+                    msg = (
+                        tool_res.get("error")
+                        or tool_res.get("message")
+                        or f"Action '{pending['tool']}' failed."
+                    )
+                elif isinstance(tool_res, dict) and tool_res.get("message"):
                     msg = f"Confirmed: {tool_res['message']}"
                 else:
                     msg = f"Confirmed and executed {pending['tool']}."
                 resp = {
                     "response": msg,
                     "steps": [{"tool": pending["tool"], "args": pending["args"], "result": tool_res}],
-                    "success": tool_res.get("success", True) if isinstance(tool_res, dict) else True
+                    "success": ok
                 }
                 self.memory.add_message("assistant", resp["response"], resp["steps"])
                 return resp
