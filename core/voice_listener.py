@@ -251,24 +251,44 @@ class VoiceListener:
         """Creates a barge-in audio energy monitor calibrated to current room acoustics."""
         if not self._recognizer or not self._microphone:
             return None
-        # Safe threshold: at least 500 and 2.0x current energy threshold to reject speaker bleed
-        thresh = max(500, int(self._recognizer.energy_threshold * 2.0))
-        return VoiceBargeInMonitor(self._recognizer, self._microphone, energy_threshold=thresh)
+        # Safe threshold: well above the measured noise floor and above TARS's own
+        # playback level, so the assistant does not interrupt itself.
+        thresh = max(900, int(self._recognizer.energy_threshold * 3.0))
+        return VoiceBargeInMonitor(
+            self._recognizer,
+            self._microphone,
+            energy_threshold=thresh,
+            grace_period=0.8,
+        )
 
 
 class VoiceBargeInMonitor:
     """
     Lightweight audio energy monitor that listens to the microphone
     during TTS speech playback to trigger instant voice barge-in.
+
+    A grace period at the start of playback ignores TARS's own speaker output,
+    and sustained speech is required before a barge-in is accepted, so the
+    monitor does not fire on its own voice or on a single stray sample.
     """
 
-    def __init__(self, recognizer: Any, microphone: Any, energy_threshold: int = 500):
+    def __init__(
+        self,
+        recognizer: Any,
+        microphone: Any,
+        energy_threshold: int = 900,
+        grace_period: float = 0.8,
+        required_frames: int = 4,
+    ):
         self.recognizer = recognizer
         self.microphone = microphone
         self.energy_threshold = energy_threshold
+        self.grace_period = grace_period
+        self.required_frames = required_frames
         self._stop_event = threading.Event()
         self._triggered = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._started_at = 0.0
 
     def start(self) -> None:
         """Starts background monitoring."""
@@ -276,6 +296,7 @@ class VoiceBargeInMonitor:
             return
         self._stop_event.clear()
         self._triggered.clear()
+        self._started_at = time.time()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -298,14 +319,20 @@ class VoiceBargeInMonitor:
                         raw = source.stream.read(source.CHUNK)
                         if not raw:
                             continue
+                        # Ignore everything recorded while TARS's own voice is
+                        # still ramping up at the start of playback.
+                        if (time.time() - self._started_at) < self.grace_period:
+                            consecutive = 0
+                            continue
                         count = len(raw) // 2
                         shorts = struct.unpack(f"{count}h", raw)
                         sum_squares = sum(s * s for s in shorts)
                         rms = int(math.sqrt(sum_squares / max(1, count)))
                         if rms >= self.energy_threshold:
                             consecutive += 1
-                            # 2 consecutive frames (~80ms) above threshold confirms speech
-                            if consecutive >= 2:
+                            # Sustained speech only: a single loud frame is not a
+                            # person talking.
+                            if consecutive >= self.required_frames:
                                 self._triggered.set()
                                 break
                         else:

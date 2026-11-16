@@ -232,6 +232,22 @@ class VoiceSpeaker:
         ack = random.choice(self.ACKNOWLEDGMENTS)
         self._speak_sapi(ack, async_mode=True)
 
+    @staticmethod
+    def _drain_keyboard() -> None:
+        """
+        Discards keystrokes typed before playback.
+
+        The key that submitted a command (usually Enter) is still in the console
+        buffer when TARS starts speaking, and the playback monitor treats any
+        pending key as an interrupt, which produced a false "speech interrupted".
+        """
+        try:
+            import msvcrt
+            while msvcrt.kbhit():
+                msvcrt.getch()
+        except Exception:
+            pass
+
     def speak(
         self,
         text: str,
@@ -258,6 +274,7 @@ class VoiceSpeaker:
 
         self._stop_requested = False
         self._is_speaking = True
+        self._drain_keyboard()
 
         # Fast native Windows SAPI mode
         if self.fast_voice:
