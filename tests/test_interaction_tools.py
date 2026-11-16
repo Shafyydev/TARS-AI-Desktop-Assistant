@@ -230,15 +230,27 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         self.assertTrue(result["success"])
         mock_minimize.assert_called_once_with()
 
-    def test_agent_sends_to_active_whatsapp_chat_without_confirmation(self):
+    def test_agent_requires_confirmation_for_whatsapp_send(self):
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
+        self.agent.tool_registry["send_whatsapp_message"] = mock_send
+
+        result = self.agent.run_agent_loop("send message to amma saying hello")
+
+        self.assertFalse(result["success"])
+        step_result = result["steps"][0]["result"]
+        self.assertTrue(step_result.get("requires_confirmation"))
+        mock_send.assert_not_called()
+
+    def test_agent_does_not_treat_bare_send_as_whatsapp_message(self):
+        """A misheard "send ..." must not turn into a WhatsApp message."""
         mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
         self.agent.tool_registry["send_whatsapp_message"] = mock_send
         self.agent.last_whatsapp_contact = "amma"
 
         result = self.agent.run_agent_loop("send hello how are you")
 
-        self.assertTrue(result["success"])
-        mock_send.assert_called_once_with(contact_name="amma", message="hello how are you")
+        self.assertFalse(result["success"])
+        mock_send.assert_not_called()
 
     def test_agent_handles_filler_prefixed_browser_youtube_search(self):
         """Spoken filler must not push a browser/YouTube search into the LLM path."""

@@ -175,9 +175,14 @@ def main() -> None:
 
     # Wire Central Confirmation Gate for destructive actions
     def confirm_action(tool_name: str, arguments: dict) -> bool:
-        arg_summary = ", ".join(f"{k}={v}" for k, v in arguments.items())
+        # Speak the tool and its arguments, not just the tool name, so a voice
+        # approval is informed rather than reflexive.
+        arg_summary = ", ".join(f"{k} {str(v)[:120]}" for k, v in arguments.items()) or "no arguments"
         if args.voice_mode and speaker and listener:
-            speaker.speak(f"Confirmation required. Do you want to execute {tool_name.replace('_', ' ')}? Say yes or no.", blocking=True)
+            speaker.speak(
+                f"Confirmation required. {tool_name.replace('_', ' ')} with {arg_summary}. Say yes or no.",
+                blocking=True,
+            )
             speech, _ = listener.listen_once(timeout=6, phrase_time_limit=4)
             if speech and speech.strip().lower().strip(".!? ") == "yes":
                 return True
@@ -323,7 +328,9 @@ def main() -> None:
                 step_table.add_column("Tool", style="yellow")
                 step_table.add_column("Status", style="green")
                 for s in result["steps"]:
-                    status = "OK" if s.get("result", {}).get("success", True) else "FAILED"
+                    step_result = s.get("result")
+                    ok = step_result.get("success", True) if isinstance(step_result, dict) else True
+                    status = "OK" if ok else "FAILED"
                     step_table.add_row(s["tool"], status)
                 console.print(step_table)
 
