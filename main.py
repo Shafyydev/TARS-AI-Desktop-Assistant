@@ -134,8 +134,9 @@ def run_diagnostics() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="TARS Autonomous Voice-Driven OS Control Agent")
-    parser.add_argument("--text-only", action="store_true", help="Run in silent text-only mode (no audio output)")
-    parser.add_argument("--voice", "--voice-only", dest="voice_mode", action="store_true", help="Run in continuous hands-free voice loop")
+    parser.add_argument("--text-only", action="store_true", help="Silent typed mode: no microphone and no spoken replies")
+    parser.add_argument("--voice", "--voice-only", dest="voice_mode", action="store_true", help="Hands-free voice loop (this is the default)")
+    parser.add_argument("--text", "--typed", dest="text_mode", action="store_true", help="Type commands instead of speaking (disables the hands-free loop)")
     parser.add_argument("--neural-voice", action="store_true", help="Use cloud neural Edge-TTS voice (higher fidelity, but slower network latency)")
     parser.add_argument("--fast-voice", action="store_true", default=True, help="Use zero-latency native Windows voice for maximum speed (default)")
     parser.add_argument("--language", type=str, default=None, help="Set STT language code (default auto-detected e.g. en-IN or en-US)")
@@ -144,6 +145,9 @@ def main() -> None:
     parser.add_argument("--test-mic", action="store_true", help="Test microphone input and speech recognition")
     parser.add_argument("--diagnostics", action="store_true", help="Run hardware and tool diagnostics")
     args = parser.parse_args()
+
+    # Hands-free voice is the default; --text (or --text-only) switches to typed commands.
+    voice_mode = not (args.text_mode or args.text_only)
 
     if args.list_mics:
         list_microphones()
@@ -186,7 +190,7 @@ def main() -> None:
             language=args.language,
             mic_index=args.mic_index
         )
-        if (args.voice_mode or not args.text_only)
+        if (voice_mode or not args.text_only)
         else None
     )
 
@@ -195,7 +199,7 @@ def main() -> None:
         # Speak the tool and its arguments, not just the tool name, so a voice
         # approval is informed rather than reflexive.
         arg_summary = ", ".join(f"{k} {str(v)[:120]}" for k, v in arguments.items()) or "no arguments"
-        if args.voice_mode and speaker and listener:
+        if voice_mode and speaker and listener:
             speaker.speak(
                 f"Confirmation required. {tool_name.replace('_', ' ')} with {arg_summary}. Say yes or no.",
                 blocking=True,
@@ -217,20 +221,20 @@ def main() -> None:
     if speaker:
         speaker.speak("TARS operational. All systems online.", blocking=False)
 
-    if args.voice_mode:
-        console.print("[bold green]🎙️  CONTINUOUS HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")
+    if voice_mode:
+        console.print("[bold green]🎙️  HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")
         if listener and listener.wake_detector.is_porcupine_active():
             console.print("[dim cyan]Wake-word engine: Porcupine. Say the configured keyword, then your command.[/dim cyan]")
         else:
-            console.print("[dim yellow]Wake-word engine is not configured; commands will be transcribed directly. Set PICOVOICE_ACCESS_KEY and TARS_WAKE_KEYWORD_PATH to enable wake-word mode.[/dim yellow]")
-        console.print("[white]Speak your command directly anytime. (e.g. [cyan]'open Chrome'[/cyan], [cyan]'open d drive'[/cyan], [cyan]'volume 50'[/cyan], [cyan]'status'[/cyan])[/white]")
-        console.print("[dim cyan]⚡ Live Interruption: Tap any key (Space/Enter) or speak anytime to cut off speech instantly.[/dim cyan]")
-        console.print("[dim white]Say [bold red]'exit'[/bold red] or [bold red]'disarm'[/bold red] to disarm TARS.[/dim white]\n")
+            console.print("[dim yellow]Wake-word engine is not configured; commands are transcribed directly. Set PICOVOICE_ACCESS_KEY and TARS_WAKE_KEYWORD_PATH to enable wake-word mode.[/dim yellow]")
+        console.print("[white]Just speak. (e.g. [cyan]'open Chrome'[/cyan], [cyan]'open d drive'[/cyan], [cyan]'volume 50'[/cyan], [cyan]'status'[/cyan])[/white]")
+        console.print("[dim cyan]⚡ Live Interruption: speak anytime, or tap any key, to cut off speech instantly.[/dim cyan]")
+        console.print("[dim white]Say [bold red]'exit'[/bold red] or [bold red]'disarm'[/bold red] to disarm TARS. Add [bold green]--text[/bold green] to type instead.[/dim white]\n")
     else:
-        console.print("\n[bold white]Modes available:[/bold white]")
+        console.print("\n[bold white]Typed mode:[/bold white]")
         console.print(" • Type your instructions directly.")
         console.print(" • Type [bold cyan]'v'[/bold cyan] or [bold cyan]'voice'[/bold cyan] to speak a single command via microphone.")
-        console.print(" • Run with [bold green]python main.py --voice[/bold green] for continuous hands-free voice control.")
+        console.print(" • Run [bold green]python main.py[/bold green] (no flags) for hands-free voice control.")
         console.print(" • Zero-latency native speech is active by default. (Add [bold green]--neural-voice[/bold green] for cloud Edge-TTS).")
         console.print(" • Type [bold cyan]'exit'[/bold cyan] or [bold cyan]'quit'[/bold cyan] to disarm TARS.\n")
 
@@ -238,7 +242,7 @@ def main() -> None:
         try:
             user_input = None
 
-            if args.voice_mode:
+            if voice_mode:
                 if listener and listener.wake_detector.is_porcupine_active():
                     console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
                     if not listener.listen_for_wake_word():
@@ -353,12 +357,12 @@ def main() -> None:
             if speaker and result.get("response"):
                 interrupted = speaker.speak(
                     result["response"],
-                    blocking=args.voice_mode,
-                    listener=listener if args.voice_mode else None
+                    blocking=voice_mode,
+                    listener=listener if voice_mode else None
                 )
                 if interrupted:
                     console.print("[dim yellow]⚡ Speech interrupted by user. Standing by...[/dim yellow]")
-                elif args.voice_mode:
+                elif voice_mode:
                     # Prevent acoustic feedback: clear audio device buffers before listening again
                     time.sleep(0.15)
 
