@@ -14,6 +14,19 @@ OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-flash"
 OMNIROUTE_DEFAULT_MODEL = "auto/best-fast"
 OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
+NVIDIA_DEFAULT_MODEL = "meta/llama-3.1-8b-instruct"
+NVIDIA_DEFAULT_URL = "https://integrate.api.nvidia.com/v1"
+
+# Leading words that mean "send X Y" is not a real WhatsApp contact.  Mirrors
+# TARSAgent.WHATSAPP_SEND_STOPWORDS so the LLM loop can reject a misheard
+# bare-send before it fires a message at a non-existent contact.
+_BARE_SEND_STOPWORDS = frozenset({
+    "a", "an", "the", "this", "that", "it", "my", "your", "hello", "hi",
+    "hey", "message", "msg", "messg", "mesg", "text", "email", "mail",
+    "file", "files", "attachment", "photo", "image", "doc", "document",
+    "report", "link", "invite", "reminder", "thanks", "please", "another",
+    "one", "us", "me", "you", "them", "him", "her",
+})
 
 
 def get_omniroute_api_key() -> Optional[str]:
@@ -188,6 +201,11 @@ class LLMProvider:
             model_env = os.getenv("OMNIROUTE_MODEL") or (
                 os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "omniroute" else None
             )
+        elif self.provider == "nvidia":
+            default_model = NVIDIA_DEFAULT_MODEL
+            model_env = os.getenv("NVIDIA_MODEL") or (
+                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "nvidia" else None
+            )
         else:
             default_model = DEFAULT_MODELS[0]
             model_env = os.getenv("GEMINI_MODEL") or (
@@ -201,6 +219,7 @@ class LLMProvider:
         self.omniroute_base_url = (
             os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or OMNIROUTE_DEFAULT_URL
         ).rstrip("/")
+        self.nvidia_base_url = os.getenv("NVIDIA_BASE_URL", NVIDIA_DEFAULT_URL).rstrip("/")
         self._quota_exhausted_until = 0.0
         # model name -> epoch seconds until which that model is skipped
         self._model_pause_until: Dict[str, float] = {}
@@ -244,6 +263,24 @@ class LLMProvider:
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize OmniRoute client: {e}")
+                self.client = None
+        elif self.provider == "nvidia":
+            key = os.getenv("NVIDIA_API_KEY")
+            if key and key != "your_nvidia_api_key_here":
+                try:
+                    from openai import OpenAI
+                    self.client = OpenAI(
+                        base_url=self.nvidia_base_url,
+                        api_key=key,
+                        default_headers={
+                            "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                            "X-Title": "TARS AI Desktop Assistant",
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to initialize NVIDIA client: {e}")
+                    self.client = None
+            else:
                 self.client = None
         elif self.provider == "gemini":
             key = os.getenv("GEMINI_API_KEY")
@@ -300,6 +337,8 @@ class LLMProvider:
                 return "GEMINI_API_KEY is not configured"
             if self.provider == "omniroute":
                 return f"OmniRoute client could not be created for {self.omniroute_base_url}"
+            if self.provider == "nvidia":
+                return "NVIDIA_API_KEY is not configured"
             return f"client for provider '{self.provider}' could not be created"
 
         if time.time() < self._quota_exhausted_until:
@@ -436,6 +475,8 @@ class LLMProvider:
                 reason = "OmniRoute gateway is not running at " + self.omniroute_base_url
             elif self.provider == "openrouter":
                 reason = "OPENROUTER_API_KEY not configured or rate limit pause in effect"
+            elif self.provider == "nvidia":
+                reason = "NVIDIA_API_KEY not configured or rate limit pause in effect"
             else:
                 reason = "API key not configured or rate limit pause in effect"
             logger.warning(f"LLM execution skipped: {reason}")
@@ -458,6 +499,11 @@ class LLMProvider:
             )
         elif self.provider == "omniroute":
             return self._run_omniroute_tool_agent_loop(
+                prompt, system_instruction, tools_list, tool_executor,
+                history, user_preferences, on_status, max_iterations, timeout
+            )
+        elif self.provider == "nvidia":
+            return self._run_nvidia_tool_agent_loop(
                 prompt, system_instruction, tools_list, tool_executor,
                 history, user_preferences, on_status, max_iterations, timeout
             )
@@ -1150,6 +1196,34 @@ class LLMProvider:
                     if on_status:
                         on_status(f"Executing: {tool_name}")
 
+                    # An ambiguous bare "send <greeting> ..." (e.g. a misheard
+                    # "send hello how are you") has no real contact.  A capable
+                    # model may still fire send_whatsapp_message; refuse so the
+                    # user is asked for a name instead of messaging the void.
+                    if tool_name == "send_whatsapp_message":
+                        import re as _re
+                        bare = _re.match(
+                            r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?send\s+"
+                            r"([a-z][a-z0-9._'-]{1,30})\s+.+$",
+                            prompt or "",
+                            _re.IGNORECASE,
+                        )
+                        if bare and bare.group(1).lower() in _BARE_SEND_STOPWORDS:
+                            result = {
+                                "success": False,
+                                "error": (
+                                    f"'{bare.group(1)}' is not a valid contact name. "
+                                    "Ask the user who to message."
+                                ),
+                            }
+                            steps.append({"tool": tool_name, "args": tool_args, "result": result})
+                            messages.append({
+                                "role": "tool",
+                                "tool_name": tool_name,
+                                "content": json.dumps(result, default=str),
+                            })
+                            continue
+
                     result = tool_executor(tool_name, tool_args)
                     steps.append({"tool": tool_name, "args": tool_args, "result": result})
                     messages.append({
@@ -1272,5 +1346,24 @@ class LLMProvider:
             prompt, system_instruction, tools_list, tool_executor,
             history, user_preferences, on_status, max_iterations, timeout,
             provider_name="OmniRoute"
+        )
+
+    def _run_nvidia_tool_agent_loop(
+        self,
+        prompt: str,
+        system_instruction: str,
+        tools_list: List[Callable],
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
+        max_iterations: int = 5,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Runs multi-turn ReAct tool calling loop using the NVIDIA NIM API."""
+        return self._run_openai_compatible_loop(
+            prompt, system_instruction, tools_list, tool_executor,
+            history, user_preferences, on_status, max_iterations, timeout,
+            provider_name="NVIDIA"
         )
 

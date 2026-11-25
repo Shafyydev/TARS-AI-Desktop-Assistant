@@ -48,7 +48,7 @@ class TaskOrchestrator:
     # Per-request budget.  A Gemini flash call that has not answered in 15s is a
     # dead request (504 DEADLINE_EXCEEDED) rather than slow thinking, so a long
     # budget only adds dead air before the failover kicks in.
-    LLM_TIMEOUTS = {"gemini": 10.0, "ollama": 10.0, "openrouter": 20.0, "omniroute": 20.0}
+    LLM_TIMEOUTS = {"gemini": 10.0, "ollama": 10.0, "openrouter": 20.0, "omniroute": 20.0, "nvidia": 20.0}
 
     @classmethod
     def _llm_timeout(cls, provider: Optional[str]) -> float:
@@ -214,6 +214,16 @@ class TaskOrchestrator:
         those native types, so the wrapping happens here instead of inside
         TARSAgent.execute_tool.
         """
+        # A greeting or common word is not a real contact.  A capable model may
+        # still try to "send hello ..." to a contact literally named "hello";
+        # refuse and ask for a real name instead of firing a message into the void.
+        if name == "send_whatsapp_message":
+            contact = str(args.get("contact_name", "")).strip().lower()
+            if contact in self.agent.WHATSAPP_SEND_STOPWORDS or contact in self.agent.WHATSAPP_CONTACT_PLACEHOLDERS:
+                return {
+                    "success": False,
+                    "error": f"'{args.get('contact_name')}' is not a valid contact name. Ask the user who to message.",
+                }
         result = self.agent.execute_tool(name, args)
         if isinstance(result, dict):
             return result
@@ -516,7 +526,7 @@ class TaskOrchestrator:
         if not isinstance(self.llm, LLMProvider) or os.getenv("TARS_DISABLE_PROVIDER_FAILOVER") == "1":
             return []
 
-        order = ("openrouter", "gemini", "omniroute", "ollama")
+        order = ("nvidia", "gemini", "openrouter", "omniroute", "ollama")
         candidates: List[LLMProvider] = []
         for prov_name in order:
             if prov_name == self.llm.provider:

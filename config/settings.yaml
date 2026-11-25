@@ -12,9 +12,9 @@ personality:
   conciseness: true    # Keep spoken answers under 2 sentences unless requested
 
 llm:
-  provider: "omniroute"   # Options: "gemini" | "ollama" | "openrouter" | "omniroute"
-  model: "gemini/gemini-flash-lite-latest"  # OmniRoute model (verified serving with system role). Fallbacks are same-provider OmniRoute ids. Gemini direct: "gemini-flash-lite-latest" | Ollama: "qwen3:4b"
-  fallback_models: ["gemini/gemini-3-flash-preview", "gemini/gemini-3.1-flash-lite"]
+  provider: "nvidia"   # Options: "gemini" | "ollama" | "openrouter" | "omniroute" | "nvidia"
+  model: "nvidia/nemotron-3.5-lightning-30b-a3b"  # NVIDIA NIM (direct, free). Verified serving + tool-calling. Other: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning" | "minimaxai/minimax-m3.1-flash"
+  fallback_models: ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "minimaxai/minimax-m3.1-flash"]
   temperature: 0.3
   max_output_tokens: 2048
 
