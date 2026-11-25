@@ -45,6 +45,15 @@ class TaskOrchestrator:
         first = text.split()[0] if text else ""
         return first in cls.ACTION_VERBS
 
+    # Per-request budget.  A Gemini flash call that has not answered in 15s is a
+    # dead request (504 DEADLINE_EXCEEDED) rather than slow thinking, so a long
+    # budget only adds dead air before the failover kicks in.
+    LLM_TIMEOUTS = {"gemini": 15.0, "ollama": 10.0, "openrouter": 20.0, "omniroute": 20.0}
+
+    @classmethod
+    def _llm_timeout(cls, provider: Optional[str]) -> float:
+        return cls.LLM_TIMEOUTS.get((provider or "").lower(), 20.0)
+
     def _honest_llm_result(self, llm_result: Dict[str, Any], request: str) -> Dict[str, Any]:
         """
         Rewrites a model reply that ran no tools.
@@ -78,14 +87,25 @@ class TaskOrchestrator:
                 "shutting down",
             )
         )
-        if not self._is_action_request(request) and not claims_done:
+        # Narrating an action in the present tense is the same lie as claiming it
+        # finished: "Searching for 'ttf' on YouTube now..." with zero tool calls.
+        claims_progress = not is_question_or_prompt and any(
+            re.search(rf"\b{re.escape(word)}\b", lower)
+            for word in (
+                "searching", "opening", "launching", "clicking", "typing", "playing",
+                "sending", "closing", "maximizing", "minimizing", "creating", "deleting",
+                "i'll", "i will", "let me", "one moment", "working on it",
+            )
+        )
+        if not self._is_action_request(request) and not claims_done and not claims_progress:
             return llm_result
 
         llm_result["success"] = False
         llm_result.pop("no_tool_calls", None)
+        silent = (not text) or claims_done or claims_progress
         llm_result["response"] = (
             "I didn't run anything for that request."
-            if (not text or claims_done)
+            if silent
             else f"I didn't run anything for that request. {text}"
         )
         return llm_result
@@ -552,7 +572,7 @@ class TaskOrchestrator:
                 user_preferences=user_prefs,
                 on_status=on_status,
                 max_iterations=10,
-                timeout=10.0 if self.llm.provider == "ollama" else 25.0
+                timeout=self._llm_timeout(self.llm.provider)
             )
 
             if llm_result:
@@ -576,7 +596,7 @@ class TaskOrchestrator:
                 user_preferences=user_prefs,
                 on_status=on_status,
                 max_iterations=10,
-                timeout=10.0 if fallback.provider == "ollama" else 25.0,
+                timeout=self._llm_timeout(fallback.provider),
             )
             if fb_result and (fb_result.get("success") or fb_result.get("cancelled") or fb_result.get("steps")):
                 return self._honest_llm_result(fb_result, request)
