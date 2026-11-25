@@ -23,6 +23,7 @@ edge-tts>=6.1.12
 pygame>=2.5.2
 SpeechRecognition>=3.10.4
 openai-whisper>=20250625
+faster-whisper>=1.2.1
 pyaudio>=0.2.14
 pvporcupine>=4.0.0
 

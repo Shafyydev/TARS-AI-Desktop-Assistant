@@ -107,6 +107,7 @@ class VoiceListener:
         self._recognizer = None
         self._microphone = None
         self._whisper_model = None
+        self._fw_model = None
         self._whisper_failed = False
         self.stt_engine = os.getenv("TARS_STT_ENGINE", "whisper").strip().lower()
         self.whisper_model_name = os.getenv("TARS_STT_MODEL", "base").strip()
@@ -202,22 +203,36 @@ class VoiceListener:
 
     def _transcribe_whisper(self, audio) -> Optional[str]:
         """
-        Transcribes a speech_recognition.AudioData object locally with Whisper.
+        Transcribes a speech_recognition.AudioData object locally.
 
-        Returns the transcript text, or None if Whisper is unavailable or fails
-        (the caller then falls back to Google STT).
+        Prefers faster-whisper (CTranslate2, 2-4x faster than openai-whisper,
+        int8 quantized on CPU) and falls back to openai-whisper, then Google.
         """
         if self._whisper_failed:
             return None
         try:
-            if self._whisper_model is None:
-                import whisper
-                # First use downloads the model (~150MB for base) and caches it.
-                self._whisper_model = whisper.load_model(self.whisper_model_name)
-            # Whisper expects a float32 mono array at 16 kHz.
             import numpy as np
             raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
             samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+            # faster-whisper first (preferred: speed + accuracy)
+            try:
+                if getattr(self, "_fw_model", None) is None:
+                    from faster_whisper import WhisperModel
+                    self._fw_model = WhisperModel(
+                        self.whisper_model_name, device="cpu", compute_type="int8"
+                    )
+                segments, _ = self._fw_model.transcribe(samples, beam_size=5)
+                text = " ".join(s.text for s in segments).strip()
+                if text:
+                    return text
+            except Exception:
+                pass
+
+            # openai-whisper fallback
+            if self._whisper_model is None:
+                import whisper
+                self._whisper_model = whisper.load_model(self.whisper_model_name)
             result = self._whisper_model.transcribe(samples, fp16=False)
             text = (result.get("text") or "").strip()
             return text or None
