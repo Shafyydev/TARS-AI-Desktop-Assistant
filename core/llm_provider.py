@@ -55,6 +55,44 @@ if not logger.handlers:
     logger.addHandler(sh)
 
 
+def _loop_guard(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    result: Any,
+    tool_fails: Dict[str, int],
+) -> Optional[Dict[str, Any]]:
+    """
+    Returns a stop-result when the model is spinning instead of making progress.
+
+    Two triggers: a tool that needs user confirmation (the model cannot answer it,
+    so further turns only add latency), and one tool that keeps failing.
+    """
+    if isinstance(result, dict) and result.get("requires_confirmation"):
+        return {
+            "success": False,
+            "response": (
+                result.get("error")
+                or result.get("message")
+                or f"Tool '{tool_name}' needs confirmation."
+            ),
+            "error": "confirmation required",
+            "requires_confirmation": True,
+            "tool": tool_name,
+            "args": tool_args,
+        }
+    if isinstance(result, dict) and result.get("success") is False:
+        tool_fails[tool_name] = tool_fails.get(tool_name, 0) + 1
+        if tool_fails[tool_name] >= 3:
+            return {
+                "success": False,
+                "response": f"Tool '{tool_name}' failed {tool_fails[tool_name]} times. Stopping.",
+                "error": result.get("error") or result.get("message"),
+            }
+    else:
+        tool_fails[tool_name] = 0
+    return None
+
+
 def _log_provider_exception(message: str, exc: Exception) -> None:
     """Shows a short console error while retaining the traceback in tars.log."""
     logger.error("%s: %s", message, exc)
@@ -157,6 +195,9 @@ class LLMProvider:
             os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or OMNIROUTE_DEFAULT_URL
         ).rstrip("/")
         self._quota_exhausted_until = 0.0
+        # model name -> epoch seconds until which that model is skipped
+        self._model_pause_until: Dict[str, float] = {}
+        self._load_model_health()
         self._init_client()
 
     def _init_client(self) -> None:
@@ -285,6 +326,44 @@ class LLMProvider:
     def mark_quota_exhausted(self, duration_sec: float = 60.0) -> None:
         """Applies a temporary circuit breaker when API rate limits are reached."""
         self._quota_exhausted_until = time.time() + duration_sec
+
+    def _models_in_pause(self, candidates: List[str]) -> List[str]:
+        """Drops models that are inside their transient-failure pause."""
+        now = time.time()
+        return [m for m in candidates if now >= self._model_pause_until.get(m, 0.0)]
+
+    def _pause_model(self, model_name: str, duration_sec: float = 120.0) -> None:
+        """Pauses one model after a timeout or overload so later turns skip it."""
+        if model_name:
+            self._model_pause_until[model_name] = time.time() + duration_sec
+            self._save_model_health()
+
+    def _save_model_health(self) -> None:
+        """Persists model pauses so a restart does not pay the timeout again."""
+        try:
+            path = Path(__file__).resolve().parent.parent / "logs" / "model_health.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            now = time.time()
+            live = {m: until for m, until in self._model_pause_until.items() if until > now}
+            path.write_text(json.dumps(live), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_model_health(self) -> None:
+        """Restores model pauses written by an earlier run."""
+        try:
+            path = Path(__file__).resolve().parent.parent / "logs" / "model_health.json"
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+            now = time.time()
+            self._model_pause_until = {
+                str(model): float(until)
+                for model, until in data.items()
+                if float(until) > now
+            }
+        except Exception:
+            self._model_pause_until = {}
 
     def switch_provider(self, provider: str, model: Optional[str] = None) -> Dict[str, Any]:
         """Switches the active LLM provider and optional model at runtime."""
@@ -420,9 +499,15 @@ class LLMProvider:
         for candidate in list(cfg_fallbacks) + list(DEFAULT_MODELS):
             if candidate and candidate not in candidate_models:
                 candidate_models.append(candidate)
+        # A model that just timed out or was overloaded is skipped for a while
+        # instead of costing every turn another 10-15s before the fallback runs.
+        candidate_models = self._models_in_pause(candidate_models)
+        if not candidate_models:
+            candidate_models = [self.model]
         from tools.verification import is_task_cancelled
 
         failed_calls: Dict[str, int] = {}
+        tool_fails: Dict[str, int] = {}
 
         for model_name in candidate_models:
             executed_steps = []
@@ -520,6 +605,10 @@ class LLMProvider:
 
                         # A repeated identical call that keeps failing is a loop, not progress.
                         call_key = json.dumps([tool_name, tool_args], sort_keys=True, default=str)
+                        stop = _loop_guard(tool_name, tool_args, result, tool_fails)
+                        if stop:
+                            stop["steps"] = executed_steps
+                            return stop
                         if isinstance(result, dict) and result.get("success") is False:
                             failed_calls[call_key] = failed_calls.get(call_key, 0) + 1
                             if failed_calls[call_key] >= 2:
@@ -577,7 +666,10 @@ class LLMProvider:
                     )
                 )
                 if transient and not executed_steps:
-                    # Upstream overload or unsupported parameter: try next configured model.
+                    # Upstream overload, timeout or unsupported parameter: skip this
+                    # model for a while and try the next configured one.  Without the
+                    # pause every turn paid the same timeout before failing over.
+                    self._pause_model(model_name, 180.0 if "400" in err_msg or "INVALID_ARGUMENT" in err_msg else 120.0)
                     continue
                 short_reason = err_msg.split("\n")[0][:80]
                 return {
@@ -814,6 +906,7 @@ class LLMProvider:
         from tools.verification import is_task_cancelled
 
         failed_calls: Dict[str, int] = {}
+        tool_fails: Dict[str, int] = {}
         try:
             for iteration in range(max_iterations):
                 if is_task_cancelled():
@@ -874,6 +967,10 @@ class LLMProvider:
 
                     # A repeated identical call that keeps failing is a loop, not progress.
                     call_key = json.dumps([tool_name, tool_args], sort_keys=True, default=str)
+                    stop = _loop_guard(tool_name, tool_args, result, tool_fails)
+                    if stop:
+                        stop["steps"] = steps
+                        return stop
                     if isinstance(result, dict) and result.get("success") is False:
                         failed_calls[call_key] = failed_calls.get(call_key, 0) + 1
                         if failed_calls[call_key] >= 2:
@@ -936,6 +1033,7 @@ class LLMProvider:
         from tools.verification import is_task_cancelled
 
         failed_calls: Dict[str, int] = {}
+        tool_fails: Dict[str, int] = {}
 
         try:
             configured_max = int(_load_llm_settings().get("max_output_tokens") or 1024)
@@ -1056,6 +1154,10 @@ class LLMProvider:
 
                     # A repeated identical call that keeps failing is a loop, not progress.
                     call_key = json.dumps([tool_name, tool_args], sort_keys=True, default=str)
+                    stop = _loop_guard(tool_name, tool_args, result, tool_fails)
+                    if stop:
+                        stop["steps"] = steps
+                        return stop
                     if isinstance(result, dict) and result.get("success") is False:
                         failed_calls[call_key] = failed_calls.get(call_key, 0) + 1
                         if failed_calls[call_key] >= 2:
