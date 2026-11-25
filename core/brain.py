@@ -96,6 +96,22 @@ class TARSAgent:
         "go ahead", "do it", "send it", "go on", "please do",
     })
 
+    # Words that stand in for a contact name ("send another one") and must resolve
+    # to the previous chat instead of being searched for as a person.
+    WHATSAPP_CONTACT_PLACEHOLDERS = frozenset({
+        "another", "another one", "one more", "it", "that", "this", "again",
+        "same", "them", "him", "her", "the same person",
+    })
+
+    # Leading words that mean "send X Y" is not a WhatsApp message to a person.
+    WHATSAPP_SEND_STOPWORDS = frozenset({
+        "a", "an", "the", "this", "that", "it", "my", "your", "hello", "hi",
+        "hey", "message", "msg", "messg", "mesg", "text", "email", "mail",
+        "file", "files", "attachment", "photo", "image", "doc", "document",
+        "report", "link", "invite", "reminder", "thanks", "please", "another",
+        "one", "us", "me", "you", "them", "him", "her",
+    })
+
     # Tools that are not destructive by themselves but persist state that is fed back
     # into the system prompt on every later turn.  A model-initiated call is gated;
     # the explicit "remember ..." fast path grants confirmation itself.
@@ -896,7 +912,7 @@ class TARSAgent:
             msg, ok = self._reply(res, "Window minimized.")
             return {"response": msg, "steps": [{"tool": "minimize_active_window", "args": {}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:fullscreen|full\s+screen|toggle\s+fullscreen)$", p_clean):
+        if re.search(r"^(?:(?:make\s+(?:it|this|the\s+window)|go|switch\s+to|enter)\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode|toggle\s+fullscreen)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["f11"]})
             msg, ok = self._reply(res, "Fullscreen toggled.")
             return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["f11"]}, "result": res}], "success": ok}
@@ -1447,7 +1463,19 @@ class TARSAgent:
                 r"^send\s+(?:(?:her|him|them)\s+)?(?:another\s+(?:one\s+)?(?:saying\s+)?|(?:another\s+)?(?:message|msg|messg|mesg)\s+(?:saying\s+)?)(.+)$",
                 p_clean,
             )
-        if whatsapp_send or whatsapp_send_rev or whatsapp_send_person_first or whatsapp_send_followup:
+        # "send reshmaa hello" carries no keyword, so it used to fall through to
+        # the model, stall, and report that nothing ran.  A short bare form is a
+        # WhatsApp send unless the first word is a common non-name word.
+        whatsapp_send_bare = None
+        if not (whatsapp_send or whatsapp_send_rev or whatsapp_send_person_first or whatsapp_send_followup):
+            candidate = re.match(
+                r"^(?:(?:please|can\s+you|could\s+you)\s+)?send\s+"
+                r"([a-z][a-z0-9._'-]{1,30})\s+(.+)$",
+                p_clean,
+            )
+            if candidate and candidate.group(1) not in self.WHATSAPP_SEND_STOPWORDS:
+                whatsapp_send_bare = candidate
+        if whatsapp_send or whatsapp_send_rev or whatsapp_send_person_first or whatsapp_send_followup or whatsapp_send_bare:
             if whatsapp_send:
                 contact = whatsapp_send.group(1).strip()
                 message = whatsapp_send.group(2).strip()
@@ -1462,9 +1490,24 @@ class TARSAgent:
                     or ""
                 ).strip()
                 message = whatsapp_send_person_first.group(4).strip()
+            elif whatsapp_send_bare:
+                contact = whatsapp_send_bare.group(1).strip()
+                message = whatsapp_send_bare.group(2).strip()
             else:
                 contact = self.last_whatsapp_contact
                 message = whatsapp_send_followup.group(1).strip()
+            contact = re.sub(r"^(?:the|my)\s+", "", contact).strip()
+            if contact.lower() in self.WHATSAPP_CONTACT_PLACEHOLDERS:
+                if self.last_whatsapp_contact:
+                    contact = self.last_whatsapp_contact
+                else:
+                    # "send another one" with no previous chat has no target;
+                    # searching for a person literally named "another" cannot work.
+                    return {
+                        "response": "Who should I send that to? Say the contact name.",
+                        "steps": [],
+                        "success": False,
+                    }
             message = re.sub(
                 r"\s+(?:in|on)\s+whatsapp$", "", message, flags=re.IGNORECASE
             ).strip()
