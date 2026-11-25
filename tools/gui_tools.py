@@ -380,19 +380,55 @@ def switch_window() -> Dict[str, Any]:
     return press_keys(["alt", "tab"])
 
 
+WINDOW_QUERY_FILLERS = {"app", "application", "window", "program", "programme", "screen"}
+
+
+def _normalize_window_query(text: str) -> str:
+    """
+    Strips spoken filler from a window or application name.
+
+    "close the calculator app" and "close the calucator" must both resolve to the
+    Calculator window, so leading articles and trailing generic nouns are removed
+    before matching.
+    """
+    clean = (text or "").strip().lower()
+    for prefix in ("the ", "my ", "a ", "an ", "this ", "that "):
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):].strip()
+    words = [w for w in clean.split() if w not in WINDOW_QUERY_FILLERS]
+    clean = " ".join(words).strip()
+    return clean
+
+
+def _fuzzy_title_match(query: str, title: str) -> float:
+    """Similarity between the query and a window title or one of its segments."""
+    from difflib import SequenceMatcher
+
+    title = (title or "").lower()
+    if not title or not query:
+        return 0.0
+    segments = [title] + [seg.strip() for seg in re.split(r"\s+[-–—|]\s+", title) if seg.strip()]
+    best = 0.0
+    for segment in segments:
+        if abs(len(segment) - len(query)) > max(6, len(query)):
+            continue
+        best = max(best, SequenceMatcher(None, query, segment).ratio())
+    return best
+
+
 def _find_window_handle(title_or_process: str) -> Optional[int]:
     """
     Finds a visible top-level window by title or process name.
 
     Candidates are ranked so the closest match wins: an exact title, then a title
     starting with the query, then a whole-word title match, then a substring match,
-    and finally a match on the owning process name.
+    then the owning process name, and finally a typo-tolerant title match.
     """
     import psutil
     import win32gui
     import win32process
 
-    query = (title_or_process or "").strip().lower()
+    query = _normalize_window_query(title_or_process)
     if not query:
         return None
 
@@ -438,6 +474,9 @@ def _find_window_handle(title_or_process: str) -> Optional[int]:
                 rank = 3
             elif proc_match:
                 rank = 4
+            elif len(query) >= 4 and _fuzzy_title_match(query, title) >= 0.75:
+                # "calucator" -> "Calculator"
+                rank = 5
             else:
                 return
             ranked.append((rank, proc_rank, hwnd))
