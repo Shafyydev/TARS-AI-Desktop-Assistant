@@ -310,7 +310,7 @@ def main() -> None:
                 if user_input.strip().lower() in ["v", "voice"]:
                     if listener:
                         console.print("\n[bold yellow]🎙️  Listening... Speak your command clearly.[/bold yellow]")
-raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=15)
+                        raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=15)
                         if not raw_speech:
                             console.print(f"[dim red]No speech detected ({status}).[/dim red]")
                             continue
