@@ -37,48 +37,84 @@ def copy_to_clipboard(text: str) -> bool:
         return False
 
 
+PROCESS_CATEGORIES = {
+    "browser": {
+        "brave.exe", "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe",
+        "opera_gx.exe", "vivaldi.exe", "iexplore.exe",
+    },
+    "terminal": {
+        "windowsterminal.exe", "powershell.exe", "pwsh.exe", "cmd.exe",
+        "conhost.exe", "bash.exe", "wsl.exe", "alacritty.exe",
+        "wezterm-gui.exe", "hyper.exe",
+    },
+    "editor": {
+        "code.exe", "notepad.exe", "notepad++.exe", "sublime_text.exe",
+        "devenv.exe", "idea64.exe", "pycharm64.exe", "webstorm64.exe",
+    },
+    "player": {"spotify.exe", "vlc.exe", "wmplayer.exe", "mpv.exe"},
+}
+
+
+def _foreground_process() -> tuple:
+    """Returns (pid, lowercase process name) of the foreground window."""
+    try:
+        import psutil
+        import win32gui
+        import win32process
+
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return 0, ""
+        _thread_id, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return pid, (psutil.Process(pid).name() or "").lower()
+    except Exception:
+        return 0, ""
+
+
 def get_active_window_context() -> Dict[str, Any]:
     """
     Returns the title, category, and process info of the currently active foreground window.
     Categories: 'browser', 'explorer', 'terminal', 'editor', 'player', 'unknown'.
+
+    The category comes from the *foreground* process.  Scanning every running
+    process for a browser used to misclassify a focused terminal as a browser
+    whenever Chrome or Brave was open in the background, which typed search URLs
+    into the terminal instead of a browser.
     """
     active = uia.get_active_window()
-    title = active.get("title", "").lower() if active.get("success") else ""
-    class_name = active.get("class_name", "")
+    title = (active.get("title") or "").lower() if active.get("success") else ""
+    class_name = active.get("class_name", "") or ""
+    pid, process = _foreground_process()
 
-    category = "unknown"
-    if any(b in title for b in ["brave", "chrome", "firefox", "edge", "opera", "youtube", "browser"]):
-        category = "browser"
-    elif any(e in title for e in ["file explorer", "explorer", "this pc", "documents", "downloads", "desktop"]):
+    category = ""
+    if process == "explorer.exe" and class_name.lower() not in {"progman", "workerw"}:
         category = "explorer"
-    elif any(t in title for t in ["powershell", "cmd", "terminal", "bash", "command prompt"]):
-        category = "terminal"
-    elif any(ed in title for ed in ["code", "visual studio", "notepad", "sublime"]):
-        category = "editor"
-    elif any(m in title for m in ["spotify", "vlc", "media player", "netflix", "prime"]):
-        category = "player"
+    elif process:
+        for candidate, names in PROCESS_CATEGORIES.items():
+            if process in names:
+                category = candidate
+                break
 
-    # If title is unknown or empty, inspect running processes to identify active app context
-    if category == "unknown":
-        try:
-            import psutil
-            for p in psutil.process_iter(['name']):
-                try:
-                    n = (p.info['name'] or '').lower()
-                    if n in ["brave.exe", "chrome.exe", "msedge.exe", "firefox.exe"]:
-                        category = "browser"
-                        break
-                    elif n in ["explorer.exe"] and category == "unknown":
-                        category = "explorer"
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    # Title keywords only fill a gap; they never turn a known non-browser
+    # foreground app into a browser.
+    if not category:
+        if any(b in title for b in ["brave", "chrome", "firefox", "opera", "youtube"]):
+            category = "browser"
+        elif any(e in title for e in ["file explorer", "this pc", "documents", "downloads", "desktop"]):
+            category = "explorer"
+        elif any(t in title for t in ["powershell", "cmd", "terminal", "bash", "command prompt"]):
+            category = "terminal"
+        elif any(ed in title for ed in ["visual studio code", "vs code", "notepad", "sublime"]):
+            category = "editor"
+        elif any(m in title for m in ["spotify", "vlc", "media player"]):
+            category = "player"
 
     return {
         "title": active.get("title", "Unknown"),
-        "category": category,
-        "class_name": class_name
+        "category": category or "unknown",
+        "class_name": class_name,
+        "process": process,
+        "pid": pid,
     }
 
 
@@ -219,6 +255,20 @@ def smart_click(target: str) -> Dict[str, Any]:
     uia_res = uia.click_ui_element(clean_target)
     if uia_res.get("success"):
         return uia_res
+
+    # 8b. Page controls that only appear part-way through (a YouTube "Skip Ad"
+    # button shows up a few seconds into the advert), so retry briefly instead of
+    # reporting a miss on the first look.
+    if cat == "browser" and any(word in clean_target for word in ("skip", "ad", "advert", "continue")):
+        for _attempt in range(3):
+            time.sleep(0.8)
+            retry = uia.click_ui_element(clean_target)
+            if retry.get("success"):
+                return retry
+        return {
+            "success": False,
+            "error": f"'{clean_target}' is not on the page yet, or was already gone.",
+        }
 
     # 9. No match: report failure instead of clicking the cursor position blindly.
     return {
@@ -665,6 +715,15 @@ def smart_search(query: str, engine: str = "google") -> Dict[str, Any]:
     if not clean_q:
         return {"success": False, "error": "No query provided to search."}
 
+    # "search for ttf vasan in youtube in new tab" must open a real new tab; the
+    # phrase used to stay inside the query string and was typed into the address
+    # bar verbatim.
+    wants_new_tab = bool(
+        re.search(r"\b(?:in|on|to|into)\s+(?:a\s+)?new\s+tab\b|\bnew\s+tab\b", clean_q, re.IGNORECASE)
+    )
+    clean_q = re.sub(r"\s*\b(?:in|on|to|into)\s+(?:a\s+)?new\s+tab\b", "", clean_q, flags=re.IGNORECASE)
+    clean_q = re.sub(r"\s*\bnew\s+tab\b", "", clean_q, flags=re.IGNORECASE).strip(" ?.")
+
     # Detect YouTube in query
     if "youtube" in clean_q.lower() or "youtube" in engine.lower():
         engine = "youtube"
@@ -689,6 +748,27 @@ def smart_search(query: str, engine: str = "google") -> Dict[str, Any]:
         }
 
     ctx = get_active_window_context()
+
+    if wants_new_tab:
+        # A new tab is a browser action, never an in-place terminal edit.
+        if engine == "youtube":
+            search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(clean_q)}"
+        else:
+            search_url = f"https://www.google.com/search?q={urllib.parse.quote_plus(clean_q)}"
+        if ctx["category"] == "browser":
+            gui.press_keys(["ctrl", "t"])
+            time.sleep(0.25)
+            opened = smart_type(search_url, target="address bar", press_enter=True)
+            if opened.get("success"):
+                return {
+                    "success": True,
+                    "query": clean_q,
+                    "engine": engine,
+                    "url": search_url,
+                    "message": f"Opened a new tab searching {engine.title()} for '{clean_q}'.",
+                    "method": "browser:new_tab",
+                }
+        return os_tools.launch_application(search_url)
 
     if ctx["category"] == "browser":
         # In an active browser: focus URL bar, type search URL, and press Enter
