@@ -475,9 +475,9 @@ class TaskOrchestrator:
         if not search_res.get("success"):
             # Seamless fallback to desktop browser smart interaction
             launch_res = self.agent.execute_tool("launch_application", {"app_name": "brave"})
-            time.sleep(0.5)
+            time.sleep(0.15)
             s_res = self.agent.execute_tool("smart_search", {"query": query, "engine": engine})
-            time.sleep(0.5)
+            time.sleep(0.15)
             c_res = self.agent.execute_tool("smart_click", {"target": "first result"})
             steps_log.extend([
                 {"tool": "launch_application", "args": {"app_name": "brave"}, "result": launch_res},
@@ -526,7 +526,7 @@ class TaskOrchestrator:
         if not isinstance(self.llm, LLMProvider) or os.getenv("TARS_DISABLE_PROVIDER_FAILOVER") == "1":
             return []
 
-        order = ("nvidia", "gemini", "openrouter", "omniroute", "ollama")
+        order = ("gemini", "nvidia", "openrouter", "omniroute", "ollama")
         candidates: List[LLMProvider] = []
         for prov_name in order:
             if prov_name == self.llm.provider:

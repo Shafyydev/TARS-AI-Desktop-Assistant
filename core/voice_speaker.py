@@ -136,7 +136,7 @@ class VoiceSpeaker:
                 import subprocess
                 escaped = text.replace("'", "''").replace('"', '`"')
                 cmd = f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{escaped}')"
-                subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=10)
+                subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=3)
                 return True
             except Exception:
                 return False
@@ -163,7 +163,7 @@ class VoiceSpeaker:
                     break
             except Exception:
                 break
-            if time.time() - t0 >= 0.25:
+            if time.time() - t0 >= 0.1:
                 break
             try:
                 import msvcrt
