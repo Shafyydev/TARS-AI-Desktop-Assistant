@@ -39,6 +39,9 @@
     .composer input { flex: 1; background: #0c1219; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
     .composer button { background: #0f2a36; color: var(--cyan); border: 1px solid #1f5f7a; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
     .composer button:disabled { opacity: .5; cursor: not-allowed; }
+    .composer button.listening { background: #7f1d1d; border-color: #ef4444; color: #fff; animation: micpulse 1.2s infinite; }
+    .composer button.muted { opacity: .55; }
+    @keyframes micpulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
     .list { max-height: 220px; overflow: auto; font-size: 12px; }
     .item { padding: 6px 0; border-bottom: 1px dashed #1d2835; }
     .item:last-child { border-bottom: none; }
@@ -107,10 +110,12 @@
       <h2>Command Console</h2>
       <div id="chat" class="chat-log"></div>
       <div class="composer">
-        <input id="prompt" placeholder="Type a command for TARS (e.g. 'system status', 'open notepad')…" />
+        <input id="prompt" placeholder="Type a command, or tap the mic and just speak…" />
+        <button id="spk" title="Toggle spoken replies">🔊</button>
+        <button id="mic" title="Hands-free voice input">🎙</button>
         <button id="send">Send</button>
       </div>
-      <div class="small" style="padding:0 10px 10px;color:var(--muted)">Runs through TARS agent locally. Destructive actions are denied in dashboard mode unless confirmed via terminal.</div>
+      <div class="small" style="padding:0 10px 10px;color:var(--muted)">Hands-free: tap 🎙 and speak; TARS answers out loud. Tap 🎙 again to stop. Destructive actions are denied in dashboard mode unless confirmed via terminal.</div>
     </section>
 
     <section class="panel" style="grid-row: span 2;">
@@ -269,11 +274,83 @@ async function sendPrompt(){
         const lines = j.steps.map(s=>`- ${s.tool||'step'}: ${s.result && s.result.success===false ? 'FAILED':'OK'}`).join('\n');
         addMsg('assistant', lines, 'Executed steps');
       }
+      speak(j.response || '');
     }
   }catch(e){ addMsg('assistant', 'Network error: '+e, 'Error'); }
   $('send').disabled = false;
   refreshHistory(); refreshToolLogs(); refreshReminders(); refreshStatus(); refreshProviders();
 }
+
+/* ---------- Hands-free voice ---------- */
+const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voiceOn = false, voiceReplies = true, recognition = null;
+
+function speak(text){
+  if(!voiceReplies || !text || !('speechSynthesis' in window)) return;
+  try{
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(text).slice(0, 600));
+    u.lang = 'en-US'; u.rate = 1.05;
+    window.speechSynthesis.speak(u);
+  }catch(e){}
+}
+
+function paintMic(){
+  const b = $('mic');
+  b.classList.toggle('listening', voiceOn);
+  b.textContent = voiceOn ? '⏹' : '🎙';
+  b.title = voiceOn ? 'Stop hands-free listening' : 'Hands-free voice input';
+}
+
+function stopVoice(){
+  voiceOn = false; paintMic();
+  if(recognition){ try{ recognition.stop(); }catch(e){} }
+  $('prompt').placeholder = 'Type a command, or tap the mic and just speak…';
+}
+
+function startVoice(){
+  if(!SpeechRecognitionAPI){
+    addMsg('assistant', 'This browser has no speech recognition. Open the dashboard in Chrome or Edge, or type the command.', 'Voice');
+    return;
+  }
+  if(voiceOn){ stopVoice(); return; }
+  recognition = new SpeechRecognitionAPI();
+  recognition.lang = 'en-US';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onresult = (ev) => {
+    let interim = '', finalText = '';
+    for(let i = ev.resultIndex; i < ev.results.length; i++){
+      const t = ev.results[i][0].transcript;
+      if(ev.results[i].isFinal) finalText += t; else interim += t;
+    }
+    if(interim) $('prompt').placeholder = interim;
+    if(finalText.trim()){
+      $('prompt').value = finalText.trim();
+      sendPrompt();
+    }
+  };
+  recognition.onerror = (e) => {
+    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      addMsg('assistant', 'Microphone access was blocked. Allow the microphone for this page and tap the mic again.', 'Voice');
+      stopVoice();
+    }
+  };
+  recognition.onend = () => {
+    // Keep listening until the user stops it: this is what makes it hands-free.
+    if(voiceOn){ try{ recognition.start(); }catch(e){} } else paintMic();
+  };
+  voiceOn = true; paintMic();
+  try{ recognition.start(); }catch(e){ voiceOn = false; paintMic(); }
+}
+
+$('mic').addEventListener('click', startVoice);
+$('spk').addEventListener('click', () => {
+  voiceReplies = !voiceReplies;
+  $('spk').classList.toggle('muted', !voiceReplies);
+  $('spk').textContent = voiceReplies ? '🔊' : '🔇';
+  if(!voiceReplies && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+});
 
 $('send').addEventListener('click', sendPrompt);
 $('prompt').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendPrompt(); });
@@ -284,7 +361,7 @@ $('providers').addEventListener('click', (e)=>{
   switchProvider(btn.dataset.provider, btn.dataset.model || '');
 });
 
-addMsg('assistant', 'Dashboard connected. Enter a command below to control TARS without the terminal.', 'TARS');
+addMsg('assistant', 'Dashboard connected. Type a command, or tap 🎙 and just speak — TARS answers out loud.', 'TARS');
 refreshStatus(); refreshProviders(); refreshToolCount(); refreshReminders(); refreshPrefs(); refreshHistory(); refreshToolLogs();
 setInterval(refreshStatus, 5000);
 setInterval(()=>{ refreshReminders(); refreshHistory(); refreshToolLogs(); refreshProviders(); }, 10000);
