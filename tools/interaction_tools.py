@@ -227,6 +227,163 @@ def smart_click(target: str) -> Dict[str, Any]:
     }
 
 
+def _select_whatsapp_window(windows: List[Any]) -> Any:
+    """
+    Picks the cleanest WhatsApp window handle. WebView2 exposes both an outer
+    WinUIDesktopWin32WindowClass frame (7x duplicated DOM bridge) and an inner
+    Chrome_WidgetWin_1 host (1x DOM tree); preferring the latter is faster and cleaner.
+    """
+    for win in windows:
+        try:
+            if getattr(win.element_info, "class_name", "") == "Chrome_WidgetWin_1":
+                return win
+        except Exception:
+            continue
+    return windows[0]
+
+
+def _find_whatsapp_search_edit(window: Any) -> Any:
+    """Locates the WhatsApp chat-search input across classic UWP and WebView2 builds."""
+    for attempt in range(8):
+        edits = window.descendants(control_type="Edit")
+        search_edit = next(
+            (edit for edit in edits if "search" in (edit.element_info.name or "").lower()),
+            edits[0] if edits else None,
+        )
+        if search_edit is not None:
+            return search_edit
+
+        # Newer WebView2 builds can expose the search box as a Group/Document/ComboBox
+        # or mount it lazily shortly after window activation.
+        if attempt >= 2:
+            for ctrl in window.descendants():
+                try:
+                    ct = ctrl.element_info.control_type
+                    if ct not in {"Edit", "ComboBox", "Group", "Document", "Text"}:
+                        continue
+                    nm = (ctrl.element_info.name or "").strip().lower()
+                    if nm.startswith("search") and ("filter" not in nm and "chat list" not in nm):
+                        rect = ctrl.rectangle()
+                        if 40 <= (rect.right - rect.left) <= 600 and 18 <= (rect.bottom - rect.top) <= 80:
+                            return ctrl
+                except Exception:
+                    continue
+
+        if attempt < 7:
+            time.sleep(0.35)
+    return None
+
+
+def _find_whatsapp_message_composer(window: Any) -> Any:
+    """Locates the active chat message composer box across classic and WebView2 WhatsApp."""
+    try:
+        win_rect = window.rectangle()
+        win_top = win_rect.top
+        win_left = win_rect.left
+        win_height = max(1, win_rect.bottom - win_rect.top)
+        win_width = max(1, win_rect.right - win_rect.left)
+    except Exception:
+        win_top = win_left = 0
+        win_height = 1080
+        win_width = 1920
+
+    def _is_composer_name(name: str) -> bool:
+        low = (name or "").casefold()
+        if "search" in low:
+            return False
+        return any(tok in low for tok in ("type a message", "type to ", "write a message", "message"))
+
+    for attempt in range(7):
+        edits = window.descendants(control_type="Edit")
+        composer = next(
+            (edit for edit in edits if _is_composer_name(edit.element_info.name or "")),
+            None,
+        )
+        if composer is not None:
+            return composer
+
+        # Positional fallback for unnamed Edit in lower-right chat composer pane
+        for edit in edits:
+            try:
+                nm = (edit.element_info.name or "").casefold()
+                if "search" in nm:
+                    continue
+                rect = edit.rectangle()
+                if rect.top >= win_top + win_height * 0.55 and rect.left >= win_left + win_width * 0.2:
+                    return edit
+            except Exception:
+                continue
+
+        # WebView2 fallback when the Lexical contenteditable uses Document/Group/Text
+        for ctrl in window.descendants():
+            try:
+                ct = ctrl.element_info.control_type
+                if ct not in {"Document", "Group", "Text", "ComboBox"}:
+                    continue
+                nm = (ctrl.element_info.name or "").strip()
+                if not _is_composer_name(nm):
+                    continue
+                rect = ctrl.rectangle()
+                w_box = rect.right - rect.left
+                h_box = rect.bottom - rect.top
+                if w_box >= 120 and 18 <= h_box <= 180 and rect.top >= win_top + win_height * 0.5:
+                    return ctrl
+            except Exception:
+                continue
+
+        if attempt < 6:
+            time.sleep(0.25)
+    return None
+
+
+def _find_whatsapp_send_button(window: Any) -> Any:
+    """Finds the visible WhatsApp 'Send' button in the active chat footer."""
+    try:
+        win_rect = window.rectangle()
+        win_top = win_rect.top
+        win_left = win_rect.left
+        win_height = max(1, win_rect.bottom - win_rect.top)
+        win_width = max(1, win_rect.right - win_rect.left)
+    except Exception:
+        win_top = win_left = 0
+        win_height = 1080
+        win_width = 1920
+
+    for ctrl in window.descendants(control_type="Button"):
+        try:
+            nm = (ctrl.element_info.name or "").strip().casefold()
+            aid = (ctrl.element_info.automation_id or "").strip().casefold()
+            if nm in {"send", "send message"} or aid in {"send", "sendbutton", "send-button", "send_button"}:
+                try:
+                    rect = ctrl.rectangle()
+                    if rect.top >= win_top + win_height * 0.5 and rect.left >= win_left + win_width * 0.35:
+                        return ctrl
+                except Exception:
+                    return ctrl
+        except Exception:
+            continue
+    return None
+
+
+def _composer_contains_text(composer: Any, expected: str) -> bool:
+    """True when the UIA composer control exposes non-empty or expected text."""
+    needle = (expected or "").strip().casefold()[:16]
+    if not needle:
+        return False
+    for getter in (
+        lambda: composer.window_text(),
+        lambda: " ".join(composer.texts()),
+        lambda: composer.iface_value.CurrentValue,
+    ):
+        try:
+            val = getter()
+            if isinstance(val, str) and needle in val.casefold():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
     """Searches the WhatsApp Desktop chat list and opens a matching contact.
 
@@ -250,16 +407,10 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
                 "error": "WhatsApp Desktop is not open. Open WhatsApp first, then ask again."
             }
 
-        window = windows[0]
+        window = _select_whatsapp_window(windows)
         window.set_focus()
 
-        # WhatsApp exposes its chat-search field as an Edit control. Prefer an
-        # explicitly named search field, then fall back to the first visible Edit.
-        edits = window.descendants(control_type="Edit")
-        search_edit = next(
-            (edit for edit in edits if "search" in (edit.element_info.name or "").lower()),
-            edits[0] if edits else None,
-        )
+        search_edit = _find_whatsapp_search_edit(window)
         if search_edit is None:
             return {
                 "success": False,
@@ -267,6 +418,10 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             }
 
         search_edit.set_focus()
+        try:
+            search_edit.click_input()
+        except Exception:
+            pass
         search_edit.type_keys("^a{BACKSPACE}")
         # WhatsApp Desktop is Chromium-based; direct UIA typing is unreliable in
         # its search field. Clipboard paste delivers the exact contact text.
@@ -315,6 +470,8 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         # Chromium-based WhatsApp sometimes highlights the result after a click
         # without activating it. Enter commits the selected chat row.
         gui.press_keys(["enter"])
+        # Allow the WebView2 chat pane & message composer to finish mounting.
+        time.sleep(0.45)
         return {
             "success": True,
             "contact": contact,
@@ -345,29 +502,79 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
         from pywinauto import Desktop
 
         windows = Desktop(backend="uia").windows(title_re=".*WhatsApp.*", visible_only=True)
-        window = windows[0]
-        edits = window.descendants(control_type="Edit")
-        message_edit = next(
-            (
-                edit for edit in edits
-                if any(token in (edit.element_info.name or "").casefold()
-                       for token in ("type a message", "message"))
-                and "search" not in (edit.element_info.name or "").casefold()
-            ),
-            None,
-        )
+        if not windows:
+            return {
+                "success": False,
+                "error": "WhatsApp Desktop window closed before sending the message.",
+            }
+        window = _select_whatsapp_window(windows)
+        window.set_focus()
+
+        message_edit = _find_whatsapp_message_composer(window)
         if message_edit is None:
             return {
                 "success": False,
                 "error": "WhatsApp chat opened, but its message field was not found."
             }
 
-        message_edit.set_focus()
-        if copy_to_clipboard(clean_message):
-            gui.press_keys(["ctrl", "v"])
+        def _focus_and_insert(use_direct_type: bool = False) -> None:
+            # In WebView2/Chromium WhatsApp, UIA set_focus() alone often leaves
+            # the Lexical contenteditable editor without a text caret; a real
+            # click is required so pasted/typed text lands inside the composer.
+            clicked = False
+            try:
+                message_edit.click_input()
+                clicked = True
+            except Exception:
+                pass
+            if not clicked:
+                try:
+                    rect = message_edit.rectangle()
+                    cx = (rect.left + rect.right) // 2
+                    cy = (rect.top + rect.bottom) // 2
+                    pyautogui.click(cx, cy)
+                    clicked = True
+                except Exception:
+                    pass
+            message_edit.set_focus()
+            time.sleep(0.15)
+
+            if not use_direct_type and copy_to_clipboard(clean_message):
+                gui.press_keys(["ctrl", "v"])
+            else:
+                try:
+                    message_edit.type_keys(clean_message, with_spaces=True)
+                except Exception:
+                    pyautogui.write(clean_message, interval=0.015)
+            time.sleep(0.25)
+
+        _focus_and_insert(use_direct_type=False)
+        send_btn = _find_whatsapp_send_button(window)
+        text_verified = (send_btn is not None) or _composer_contains_text(message_edit, clean_message)
+
+        if not text_verified:
+            # Fallback attempt: focus composer explicitly and type directly
+            _focus_and_insert(use_direct_type=True)
+            send_btn = _find_whatsapp_send_button(window)
+            text_verified = (send_btn is not None) or _composer_contains_text(message_edit, clean_message)
+
+        if not text_verified:
+            return {
+                "success": False,
+                "error": (
+                    f"Opened WhatsApp chat with {contact_name}, but could not type "
+                    "the message into the composer box."
+                ),
+            }
+
+        if send_btn is not None:
+            try:
+                send_btn.click_input()
+            except Exception:
+                gui.press_keys(["enter"])
         else:
-            message_edit.type_keys(clean_message, with_spaces=True)
-        gui.press_keys(["enter"])
+            gui.press_keys(["enter"])
+
         return {
             "success": True,
             "contact": contact_name,

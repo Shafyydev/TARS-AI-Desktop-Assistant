@@ -581,6 +581,18 @@ class TestRegressionFixes(unittest.TestCase):
         self.assertIn("didn't run anything", cleaned["response"])
         self.assertNotIn("Message sent", cleaned["response"])
 
+        # 1b. Hallucinated completion with trailing "Anything else?" must ALSO be blocked
+        hallucinated_trailing_q = {
+            "success": True,
+            "response": "Message sent to Reshmaa. Anything else?",
+            "steps": [],
+            "no_tool_calls": True,
+        }
+        cleaned_q = orch._honest_llm_result(hallucinated_trailing_q, "send reshmaa hi")
+        self.assertFalse(cleaned_q["success"])
+        self.assertIn("didn't run anything", cleaned_q["response"])
+        self.assertNotIn("Message sent", cleaned_q["response"])
+
         # 2. Question asking for clarification/confirmation should stay visible
         question = {
             "success": True,
@@ -591,6 +603,19 @@ class TestRegressionFixes(unittest.TestCase):
         kept = orch._honest_llm_result(question, "send it")
         self.assertFalse(kept["success"])
         self.assertIn("Should I send", kept["response"])
+
+    def test_whatsapp_person_first_skips_bare_article(self):
+        agent = __import__("core.brain", fromlist=["TARSAgent"]).TARSAgent()
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
+        agent.tool_registry["send_whatsapp_message"] = mock_send
+
+        self.assertIsNone(agent._autonomous_local_execute("send a messg hello"))
+        mock_send.assert_not_called()
+
+        res = agent._autonomous_local_execute("send reshmaa a messg saying hi")
+        self.assertIsNotNone(res)
+        self.assertTrue(res["success"])
+        mock_send.assert_called_once_with(contact_name="reshmaa", message="hi")
 
     def test_llm_provider_gemini_ignores_omniroute_ai_model(self):
         from core.llm_provider import LLMProvider, OPENROUTER_DEFAULT_MODEL
@@ -610,6 +635,56 @@ class TestRegressionFixes(unittest.TestCase):
 
         cfg_31 = LLMProvider._gemini_config("sys", [], 10.0, model_name="gemini-3.1-flash-lite")
         self.assertIsNotNone(getattr(cfg_31, "thinking_config", None))
+
+    def test_select_whatsapp_window_prefers_chrome_widget_host(self):
+        from tools.interaction_tools import _select_whatsapp_window
+
+        frame = MagicMock()
+        frame.element_info.class_name = "WinUIDesktopWin32WindowClass"
+        chrome = MagicMock()
+        chrome.element_info.class_name = "Chrome_WidgetWin_1"
+
+        self.assertIs(_select_whatsapp_window([frame, chrome]), chrome)
+        self.assertIs(_select_whatsapp_window([frame]), frame)
+
+    def test_whatsapp_launch_ignores_headless_background_process(self):
+        from tools.os_tools import _launch_target_present, launch_application
+
+        fake_proc = MagicMock()
+        fake_proc.info = {"name": "WhatsApp.Root.exe"}
+
+        with patch("tools.os_tools.psutil.process_iter", return_value=[fake_proc]), \
+             patch("win32gui.EnumWindows"):
+            self.assertFalse(_launch_target_present("whatsapp"))
+
+        with patch("tools.os_tools._has_visible_window", return_value=True), \
+             patch("tools.gui_tools.focus_window", return_value={"success": True, "window": "WhatsApp"}) as mock_foc, \
+             patch("tools.os_tools.subprocess.Popen") as mock_popen:
+            res = launch_application("whatsapp")
+            self.assertTrue(res["success"])
+            mock_foc.assert_called_once_with("whatsapp")
+            mock_popen.assert_not_called()
+
+    def test_openrouter_loop_passes_max_tokens_and_retries_402(self):
+        from core.llm_provider import LLMProvider
+
+        llm = LLMProvider(provider="openrouter", model="google/gemini-2.5-flash")
+        mock_msg = MagicMock(content="OK", tool_calls=[])
+        mock_resp = MagicMock(choices=[MagicMock(message=mock_msg)])
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            Exception("Error code: 402 - requires fewer max_tokens"),
+            mock_resp,
+        ]
+        llm.client = mock_client
+
+        res = llm._run_openai_compatible_loop("hi", "sys", [], lambda n, a: {})
+        self.assertTrue(res["success"])
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertLessEqual(first_kwargs["max_tokens"], 2048)
+        self.assertEqual(second_kwargs["max_tokens"], 512)
 
 
 if __name__ == "__main__":

@@ -408,6 +408,13 @@ class LLMProvider:
                 history_contents.pop(0)
 
         last_error = None
+        if not self.client:
+            return {
+                "success": False,
+                "response": "LLM unavailable: Gemini client is not initialized.",
+                "error": "Gemini client is None",
+                "steps": [],
+            }
         cfg_fallbacks = _load_llm_settings().get("fallback_models") or []
         candidate_models = [self.model]
         for candidate in list(cfg_fallbacks) + list(DEFAULT_MODELS):
@@ -626,7 +633,11 @@ class LLMProvider:
             "temperature": 0.2,
         }
         try:
-            kwargs["http_options"] = types.HttpOptions(timeout=int(max(1.0, timeout) * 1000))
+            http_kwargs: Dict[str, Any] = {"timeout": int(max(1.0, timeout) * 1000)}
+            if hasattr(types, "HttpRetryOptions"):
+                # Avoid 35-90s SDK internal retries on 503/504 so TARS fails over immediately.
+                http_kwargs["retry_options"] = types.HttpRetryOptions(attempts=1)
+            kwargs["http_options"] = types.HttpOptions(**http_kwargs)
         except Exception:
             pass
         # Flash models spend most of their latency on internal reasoning that this
@@ -927,6 +938,12 @@ class LLMProvider:
         failed_calls: Dict[str, int] = {}
 
         try:
+            configured_max = int(_load_llm_settings().get("max_output_tokens") or 1024)
+        except Exception:
+            configured_max = 1024
+        max_tokens = max(256, min(configured_max, 2048))
+
+        try:
             for iteration in range(max_iterations):
                 if is_task_cancelled():
                     logger.info("%s loop cancelled before iteration %s", provider_name, iteration + 1)
@@ -943,12 +960,21 @@ class LLMProvider:
                     "model": self.model,
                     "messages": messages,
                     "temperature": 0.2,
+                    "max_tokens": max_tokens,
                     "timeout": timeout,
                 }
                 if tool_schemas:
                     call_kwargs["tools"] = tool_schemas
 
-                response = self.client.chat.completions.create(**call_kwargs)
+                try:
+                    response = self.client.chat.completions.create(**call_kwargs)
+                except Exception as call_exc:
+                    if not steps and ("402" in str(call_exc) or "fewer max_tokens" in str(call_exc).lower()) and max_tokens > 512:
+                        max_tokens = 512
+                        call_kwargs["max_tokens"] = max_tokens
+                        response = self.client.chat.completions.create(**call_kwargs)
+                    else:
+                        raise
                 if not response.choices:
                     raise RuntimeError(f"{provider_name} returned no completion choices")
 
@@ -1051,6 +1077,7 @@ class LLMProvider:
                 model=self.model,
                 messages=messages,
                 temperature=0.2,
+                max_tokens=max_tokens,
                 timeout=timeout,
             )
             summary_text = summary_resp.choices[0].message.content or "Completed requested actions."
@@ -1083,6 +1110,9 @@ class LLMProvider:
             if "429" in err_msg or "rate limit" in err_msg.lower():
                 self.mark_quota_exhausted(60.0)
                 short_reason = "rate limit reached"
+            elif "402" in err_msg or "more credits" in err_msg.lower():
+                self.mark_quota_exhausted(60.0)
+                short_reason = f"insufficient {provider_name} credits"
             elif "401" in err_msg or "auth" in err_msg.lower() or "api key" in err_msg.lower():
                 short_reason = f"invalid {provider_name} API key"
             elif "404" in err_msg or "not found" in err_msg.lower():

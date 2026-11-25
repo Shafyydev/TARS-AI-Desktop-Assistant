@@ -119,6 +119,56 @@ class TestInteractionTools(unittest.TestCase):
         mock_keys.assert_any_call(["enter"])
         contact.click_input.assert_called_once()
 
+    @patch("tools.interaction_tools.gui.press_keys")
+    @patch("tools.interaction_tools.copy_to_clipboard", return_value=True)
+    @patch("tools.interaction_tools.open_whatsapp_chat", return_value={"success": True, "contact": "Reshmaa"})
+    @patch("pywinauto.Desktop")
+    def test_send_whatsapp_message_clicks_composer_and_clicks_send_button(self, mock_desktop, _mock_open, mock_copy, _mock_keys):
+        window = MagicMock()
+        window.rectangle.return_value = MagicMock(top=0, left=0, right=1920, bottom=1200)
+        composer = MagicMock()
+        composer.element_info.name = "Type a message"
+        composer.element_info.control_type = "Edit"
+        send_btn = MagicMock()
+        send_btn.element_info.name = "Send"
+        send_btn.element_info.automation_id = "send"
+        send_btn.rectangle.return_value = MagicMock(top=1100, left=1800, right=1860, bottom=1150)
+
+        window.descendants.side_effect = [[composer], [send_btn]]
+        mock_desktop.return_value.windows.return_value = [window]
+
+        res = it.send_whatsapp_message("Reshmaa", "hello there")
+
+        self.assertTrue(res["success"])
+        composer.click_input.assert_called()
+        mock_copy.assert_called_with("hello there")
+        send_btn.click_input.assert_called_once()
+
+    @patch("tools.interaction_tools.pyautogui.write")
+    @patch("tools.interaction_tools.gui.press_keys")
+    @patch("tools.interaction_tools.copy_to_clipboard", return_value=True)
+    @patch("tools.interaction_tools.open_whatsapp_chat", return_value={"success": True, "contact": "Reshmaa"})
+    @patch("pywinauto.Desktop")
+    def test_send_whatsapp_message_fails_honestly_when_typing_not_verified(self, mock_desktop, _mock_open, _mock_copy, _mock_keys, _mock_write):
+        window = MagicMock()
+        window.rectangle.return_value = MagicMock(top=0, left=0, right=1920, bottom=1200)
+        composer = MagicMock()
+        composer.element_info.name = "Type to Reshmaa"
+        composer.element_info.control_type = "Document"
+        composer.rectangle.return_value = MagicMock(top=1100, left=600, right=1700, bottom=1160)
+        composer.window_text.return_value = ""
+        composer.texts.return_value = []
+
+        # Simulate: no Edit control, WebView2 Document composer exists, but Send button
+        # never appears and text stays empty (simulating lost focus in WebView2)
+        window.descendants.side_effect = [[], [composer], [], []]
+        mock_desktop.return_value.windows.return_value = [window]
+
+        res = it.send_whatsapp_message("Reshmaa", "hello there")
+
+        self.assertFalse(res["success"])
+        self.assertIn("could not type", res["error"].lower())
+
     @patch("tools.interaction_tools.smart_type")
     @patch("tools.interaction_tools.get_active_window_context")
     def test_smart_search_in_browser(self, mock_ctx, mock_type):

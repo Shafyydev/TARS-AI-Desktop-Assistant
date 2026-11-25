@@ -136,6 +136,33 @@ _LAUNCH_ALIAS_TOKENS: Dict[str, tuple] = {
 }
 
 
+def _has_visible_window(token: str) -> bool:
+    """True when a visible top-level window title contains ``token``."""
+    try:
+        import win32gui
+
+        matched = False
+
+        def _collect(hwnd, _payload):
+            nonlocal matched
+            if matched:
+                return False
+            try:
+                if win32gui.IsWindowVisible(hwnd):
+                    title = (win32gui.GetWindowText(hwnd) or "").lower()
+                    if token in title:
+                        matched = True
+                        return False
+            except Exception:
+                pass
+            return True
+
+        win32gui.EnumWindows(_collect, None)
+        return matched
+    except Exception:
+        return False
+
+
 def _launch_target_present(token: str) -> bool:
     """True when a process or visible window matching ``token`` exists."""
     if not token:
@@ -143,13 +170,16 @@ def _launch_target_present(token: str) -> bool:
 
     candidates = _LAUNCH_ALIAS_TOKENS.get(token, (token,))
 
-    for proc in psutil.process_iter(["name"]):
-        try:
-            proc_name = (proc.info.get("name") or "").lower()
-            if any(alias in proc_name for alias in candidates):
-                return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
+    # UWP/WebView2 tray apps like WhatsApp stay running headless as WhatsApp.Root.exe
+    # even when zero windows are visible, so process checks alone produce false positives.
+    if token != "whatsapp":
+        for proc in psutil.process_iter(["name"]):
+            try:
+                proc_name = (proc.info.get("name") or "").lower()
+                if any(alias in proc_name for alias in candidates):
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
     try:
         import win32gui
@@ -207,6 +237,24 @@ def launch_application(app_name: str) -> Dict[str, Any]:
         # Fallback to direct Windows start
         cmd = f"start \"\" \"{clean_name}\""
 
+    # WhatsApp Desktop (Store/WebView2) can remain wedged in the background with
+    # WhatsApp.Root.exe alive and zero visible windows; focus if open, otherwise
+    # clear the headless process before launching so Windows renders the window.
+    if clean_name == "whatsapp":
+        if _has_visible_window("whatsapp"):
+            from tools.gui_tools import focus_window
+            foc = focus_window("whatsapp")
+            if foc.get("success"):
+                return {"success": True, "message": "Focused open WhatsApp window."}
+        else:
+            for proc in psutil.process_iter(["name"]):
+                try:
+                    if (proc.info.get("name") or "").lower() in {"whatsapp.root.exe", "whatsapp.exe"}:
+                        proc.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            time.sleep(0.4)
+
     try:
         subprocess.Popen(cmd, shell=True)
     except Exception as e:
@@ -215,14 +263,15 @@ def launch_application(app_name: str) -> Dict[str, Any]:
     # A shell start returns immediately whether or not the target exists, so the
     # launch is only reported as successful once something matching it appears.
     token = "" if resolved_folder is not None else _launch_token(cmd)
-    if not token or _wait_for_launch(token, timeout=3.0):
+    wait_budget = 6.0 if token == "whatsapp" else 3.0
+    if not token or _wait_for_launch(token, timeout=wait_budget):
         return {"success": True, "message": f"Successfully launched {clean_name}."}
 
     return {
         "success": False,
         "error": (
             f"Launched '{clean_name}' but no matching process or window appeared "
-            "within 3.0 seconds."
+            f"within {wait_budget:.1f} seconds."
         ),
     }
 

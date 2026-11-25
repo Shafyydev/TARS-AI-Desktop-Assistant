@@ -58,8 +58,16 @@ class TaskOrchestrator:
 
         text = (llm_result.get("response") or "").strip()
         lower = text.lower()
-        is_question_or_prompt = text.endswith("?") or any(
-            marker in lower
+        # Strip benign trailing sign-off questions ("Anything else?", "Need anything else?")
+        # so a hallucinated completion like "Message sent to Reshmaa. Anything else?"
+        # is never misclassified as a clarification question.
+        core_lower = re.sub(
+            r"(?:\s*(?:anything else|need anything else|what else|shall i do anything else)\??)+$",
+            "",
+            lower,
+        ).strip()
+        is_question_or_prompt = core_lower.endswith("?") or any(
+            marker in core_lower
             for marker in ("would you like", "should i", "do you want", "please confirm", "say yes")
         )
         claims_done = not is_question_or_prompt and any(
@@ -67,6 +75,7 @@ class TaskOrchestrator:
             for word in (
                 "done", "opened", "closed", "sent", "created", "deleted", "completed",
                 "maximized", "minimized", "launched", "typed", "pressed", "terminated",
+                "shutting down",
             )
         )
         if not self._is_action_request(request) and not claims_done:

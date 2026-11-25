@@ -1426,7 +1426,7 @@ class TARSAgent:
 
         whatsapp_send = re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
-            r"(?:send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+to|whatsapp\s+to|message\s+to|message|text)\s+"
+            r"(?:send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:to\s+)?|whatsapp\s+(?:to\s+)?|message\s+(?:to\s+)?|text\s+(?:to\s+)?)"
             r"(.+?)\s+(?:saying|with(?:\s+(?:the\s+)?text)?)\s+(.+)$",
             p_clean,
         )
@@ -1436,19 +1436,32 @@ class TARSAgent:
             r"(?:saying|with(?:\s+(?:the\s+)?text)?)\s+(.+?)\s+to\s+(.+)$",
             p_clean,
         )
+        whatsapp_send_person_first = None if (whatsapp_send or whatsapp_send_rev) else re.match(
+            r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
+            r"(?:send\s+(?!(?:a|an|the|this|that|it|my)\b)(.+?)\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:saying\s+)?|send\s+(?:in|on)\s+whatsapp\s+to\s+(.+?)\s+saying\s+|whatsapp\s+(.+?)\s+saying\s+)(.+)$",
+            p_clean,
+        )
         whatsapp_send_followup = None
-        if not whatsapp_send and not whatsapp_send_rev and self.last_whatsapp_contact:
+        if not whatsapp_send and not whatsapp_send_rev and not whatsapp_send_person_first and self.last_whatsapp_contact:
             whatsapp_send_followup = re.match(
                 r"^send\s+(?:(?:her|him|them)\s+)?(?:another\s+(?:one\s+)?(?:saying\s+)?|(?:another\s+)?(?:message|msg|messg|mesg)\s+(?:saying\s+)?)(.+)$",
                 p_clean,
             )
-        if whatsapp_send or whatsapp_send_rev or whatsapp_send_followup:
+        if whatsapp_send or whatsapp_send_rev or whatsapp_send_person_first or whatsapp_send_followup:
             if whatsapp_send:
                 contact = whatsapp_send.group(1).strip()
                 message = whatsapp_send.group(2).strip()
             elif whatsapp_send_rev:
                 message = whatsapp_send_rev.group(1).strip()
                 contact = whatsapp_send_rev.group(2).strip()
+            elif whatsapp_send_person_first:
+                contact = (
+                    whatsapp_send_person_first.group(1)
+                    or whatsapp_send_person_first.group(2)
+                    or whatsapp_send_person_first.group(3)
+                    or ""
+                ).strip()
+                message = whatsapp_send_person_first.group(4).strip()
             else:
                 contact = self.last_whatsapp_contact
                 message = whatsapp_send_followup.group(1).strip()
