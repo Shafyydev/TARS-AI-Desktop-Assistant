@@ -106,6 +106,10 @@ class VoiceListener:
 
         self._recognizer = None
         self._microphone = None
+        self._whisper_model = None
+        self._whisper_failed = False
+        self.stt_engine = os.getenv("TARS_STT_ENGINE", "whisper").strip().lower()
+        self.whisper_model_name = os.getenv("TARS_STT_MODEL", "base").strip()
         self.last_active_time = 0.0
         self.active_dialogue_window_sec = 30.0
         self.wake_detector = WakeWordDetector(mic_index=self.mic_index)
@@ -196,6 +200,32 @@ class VoiceListener:
         return False
 
 
+    def _transcribe_whisper(self, audio) -> Optional[str]:
+        """
+        Transcribes a speech_recognition.AudioData object locally with Whisper.
+
+        Returns the transcript text, or None if Whisper is unavailable or fails
+        (the caller then falls back to Google STT).
+        """
+        if self._whisper_failed:
+            return None
+        try:
+            if self._whisper_model is None:
+                import whisper
+                # First use downloads the model (~150MB for base) and caches it.
+                self._whisper_model = whisper.load_model(self.whisper_model_name)
+            # Whisper expects a float32 mono array at 16 kHz.
+            import numpy as np
+            raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
+            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            result = self._whisper_model.transcribe(samples, fp16=False)
+            text = (result.get("text") or "").strip()
+            return text or None
+        except Exception as e:
+            print(f"[Listener] Whisper unavailable ({e}); falling back to Google STT.")
+            self._whisper_failed = True
+            return None
+
     def listen_once(
         self,
         timeout: int = 6,
@@ -222,18 +252,21 @@ class VoiceListener:
                     phrase_time_limit=phrase_time_limit
                 )
 
-            # Locale-aware recognition with automatic en-US fallback
+            # Local Whisper first (no network); fall back to Google STT.
             text = None
-            try:
-                text = self._recognizer.recognize_google(audio, language=self.language)
-            except sr.UnknownValueError:
-                if self.language and self.language != "en-US":
-                    try:
-                        text = self._recognizer.recognize_google(audio, language="en-US")
-                    except Exception:
+            if self.stt_engine == "whisper":
+                text = self._transcribe_whisper(audio)
+            if not text:
+                try:
+                    text = self._recognizer.recognize_google(audio, language=self.language)
+                except sr.UnknownValueError:
+                    if self.language and self.language != "en-US":
+                        try:
+                            text = self._recognizer.recognize_google(audio, language="en-US")
+                        except Exception:
+                            return None, "unrecognized"
+                    else:
                         return None, "unrecognized"
-                else:
-                    return None, "unrecognized"
 
             if text and text.strip():
                 normalized = normalize_voice_command(text.strip())
