@@ -189,6 +189,18 @@ class TestInteractionTools(unittest.TestCase):
         self.assertIn("youtube.com/results?search_query=interstellar+trailer", res["url"])
         mock_type.assert_called_once()
 
+    @patch("tools.interaction_tools.os_tools.launch_application")
+    @patch("tools.interaction_tools.get_active_window_context")
+    def test_smart_search_new_tab_phrasing_opens_tab(self, mock_ctx, mock_launch):
+        # "in new tab" must not end up inside the query string.
+        mock_ctx.return_value = {"title": "PowerShell", "category": "terminal", "class_name": "ConsoleWindowClass"}
+        mock_launch.return_value = {"success": True, "message": "opened"}
+        res = it.smart_search("ttf vasan in youtube in new tab")
+        self.assertTrue(res["success"])
+        url = mock_launch.call_args[0][0]
+        self.assertNotIn("new+tab", url)
+        self.assertIn("ttf+vasan", url)
+
 
 class TestAgentInteractionIntegration(unittest.TestCase):
     """End-to-end command parsing and execution tests via TARSAgent."""
@@ -290,6 +302,27 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         self.assertTrue(result["success"])
         mock_send.assert_called_once_with(contact_name="amma", message="hello")
         self.assertIsNone(self.agent.pending_confirmation)
+
+    def test_agent_bare_send_form_reaches_whatsapp(self):
+        """A keyword-less "send reshmaa hello" must not fall through to the model."""
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
+        self.agent.tool_registry["send_whatsapp_message"] = mock_send
+
+        result = self.agent.run_agent_loop("send reshmaa hello")
+
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with(contact_name="reshmaa", message="hello")
+
+    def test_agent_placeholder_contact_asks_instead_of_searching(self):
+        """"Send another one" with no previous chat has no target to search for."""
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
+        self.agent.tool_registry["send_whatsapp_message"] = mock_send
+        self.agent.last_whatsapp_contact = None
+
+        result = self.agent.run_agent_loop("send another messg saying hello")
+
+        self.assertFalse(result["success"])
+        mock_send.assert_not_called()
 
     def test_agent_does_not_treat_bare_send_as_whatsapp_message(self):
         """A misheard "send ..." must not turn into a WhatsApp message."""
