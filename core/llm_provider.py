@@ -55,6 +55,13 @@ if not logger.handlers:
     logger.addHandler(sh)
 
 
+def _strip_tool_markers(text: str) -> str:
+    """Removes internal ``[tools: ...]`` history markers a model may echo back."""
+    if not text:
+        return text
+    return re.sub(r"\s*\[tools:[^\]]*\]", "", text).strip()
+
+
 def _loop_guard(
     tool_name: str,
     tool_args: Dict[str, Any],
@@ -547,7 +554,7 @@ class LLMProvider:
 
                     # If no function calls requested, the model has finished
                     if not function_calls:
-                        final_text = " ".join(text_parts).strip() or "Task completed."
+                        final_text = _strip_tool_markers(" ".join(text_parts).strip()) or "Task completed."
                         if executed_steps:
                             any_ok = any(
                                 (step.get("result") or {}).get("success") is not False
@@ -939,7 +946,7 @@ class LLMProvider:
                 if not tool_calls:
                     return {
                         "success": True,
-                        "response": self._strip_ollama_thinking(assistant_message.get("content", "")) or "Task completed.",
+                        "response": _strip_tool_markers(self._strip_ollama_thinking(assistant_message.get("content", ""))) or "Task completed.",
                         "steps": steps,
                         "model": self.model,
                         "no_tool_calls": True,
@@ -1100,7 +1107,7 @@ class LLMProvider:
 
                 if not tool_calls:
                     final_content = assistant_msg.content or ""
-                    cleaned = self._strip_ollama_thinking(final_content) or "Task completed."
+                    cleaned = _strip_tool_markers(self._strip_ollama_thinking(final_content)) or "Task completed."
                     if is_gateway_notice(cleaned):
                         logger.warning(
                             "%s returned an upstream notice instead of a completion for model '%s'",
