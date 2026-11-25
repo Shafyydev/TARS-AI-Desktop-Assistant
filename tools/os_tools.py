@@ -284,7 +284,7 @@ def launch_application(app_name: str) -> Dict[str, Any]:
     # A shell start returns immediately whether or not the target exists, so the
     # launch is only reported as successful once something matching it appears.
     token = "" if resolved_folder is not None else _launch_token(cmd)
-    wait_budget = 6.0 if token == "whatsapp" else 3.0
+    wait_budget = 3.0 if token == "whatsapp" else 1.5
     if not token or _wait_for_launch(token, timeout=wait_budget):
         return {"success": True, "message": f"Successfully launched {clean_name}."}
 

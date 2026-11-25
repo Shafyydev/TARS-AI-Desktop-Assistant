@@ -117,11 +117,11 @@ class VoiceListener:
             import speech_recognition as sr
             self._recognizer = sr.Recognizer()
             self._recognizer.energy_threshold = self.energy_threshold
-            # Keep enough silence (1.2s) for natural pauses between clauses and words
+            # Keep enough silence for natural pauses between clauses and words
             self._recognizer.pause_threshold = self.pause_threshold
-            # Standard safe non-speaking duration (0.5s) to avoid mid-sentence cuts
-            self._recognizer.non_speaking_duration = 0.5
-            self._recognizer.phrase_threshold = 0.3
+            # Short non-speaking duration so end-of-speech is detected quickly
+            self._recognizer.non_speaking_duration = 0.3
+            self._recognizer.phrase_threshold = 0.2
             # Prevent network timeouts on longer spoken sentences
             self._recognizer.operation_timeout = 10.0
             # Smooth dynamic adaptation to ambient room sound
