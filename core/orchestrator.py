@@ -48,7 +48,7 @@ class TaskOrchestrator:
     # Per-request budget.  A Gemini flash call that has not answered in 15s is a
     # dead request (504 DEADLINE_EXCEEDED) rather than slow thinking, so a long
     # budget only adds dead air before the failover kicks in.
-    LLM_TIMEOUTS = {"gemini": 15.0, "ollama": 10.0, "openrouter": 20.0, "omniroute": 20.0}
+    LLM_TIMEOUTS = {"gemini": 10.0, "ollama": 10.0, "openrouter": 20.0, "omniroute": 20.0}
 
     @classmethod
     def _llm_timeout(cls, provider: Optional[str]) -> float:

@@ -4,6 +4,7 @@ import io
 import re
 import ast
 import json
+import random
 import time
 import operator
 from datetime import datetime
@@ -131,6 +132,13 @@ class TARSAgent:
         "My humor setting is at 75 percent. Any higher and I might start enjoying your attempts to operate this PC.",
         "Why did the computer cross the road? To escape the user pressing Ctrl+Alt+Delete.",
         "I’d tell you a joke about UDP, but you probably wouldn't get it."
+    ]
+
+    PRAISE_REPLIES = [
+        "Always glad to exceed expectations, Chief.",
+        "Naturally. What's next?",
+        "Compliments noted. Systems still green.",
+        "I aim to please. What else?",
     ]
 
     def __init__(self, config_path: Optional[Path] = None):
@@ -591,6 +599,14 @@ class TARSAgent:
         if re.search(r"^(?:hello|hi|hey|what's up|how are you|good morning|good evening|good afternoon)$", p_clean):
             return {"response": "TARS online. Ready for orders.", "steps": [], "success": True}
 
+        # Praise, thanks and sign-offs: answering these through the model costs a
+        # network round trip for a reply that never changes.
+        if re.search(r"^(?:good\s+job|well\s+done|nice\s+work|great\s+job|awesome|perfect|excellent|thank\s+you|thanks|thx|much\s+appreciated|i\s+love\s+you|you\s+are\s+(?:the\s+)?best)(?:\s+(?:tars|chief|boss))?[!.]*$", p_clean):
+            return {"response": random.choice(self.PRAISE_REPLIES), "steps": [], "success": True}
+
+        if re.search(r"^(?:good\s+night|bye|goodbye|see\s+you|that's\s+all|nothing\s+else|no\s+thanks)[!.]*$", p_clean):
+            return {"response": "Standing by. Say the word when you need me.", "steps": [], "success": True}
+
         # Direct capabilities query (anchored)
         if re.search(r"^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+(?:capabilities|features)|help|capabilities|features)$", p_clean):
             return {
@@ -601,7 +617,6 @@ class TARSAgent:
 
         # 2. Jokes & Personality Matrices (short, direct requests only)
         if re.search(r"^(?:tell\s+(?:me\s+)?(?:a\s+)?joke|tell\s+me\s+something\s+funny|joke)$", p_clean):
-            import random
             return {"response": random.choice(self.JOKES), "steps": [], "success": True}
 
         if re.search(r"\b(?:what\s+is\s+your\s+)?humor\s+(?:setting|parameter|level)\b", p_clean):
@@ -1460,7 +1475,11 @@ class TARSAgent:
         whatsapp_send_followup = None
         if not whatsapp_send and not whatsapp_send_rev and not whatsapp_send_person_first and self.last_whatsapp_contact:
             whatsapp_send_followup = re.match(
-                r"^send\s+(?:(?:her|him|them)\s+)?(?:another\s+(?:one\s+)?(?:saying\s+)?|(?:another\s+)?(?:message|msg|messg|mesg)\s+(?:saying\s+)?)(.+)$",
+                r"^send\s+(?:(?:her|him|them)\s+)?(?:"
+                r"another\s+(?:one\s+)?(?:saying\s+)?|"
+                r"(?:another\s+)?(?:message|msg|messg|mesg)\s+(?:saying\s+)?|"
+                r"(?:a\s+)?(?:message|msg|messg|mesg|text)\s+(?:saying|with(?:\s+(?:the\s+)?text)?)\s+"
+                r")(.+)$",
                 p_clean,
             )
         # "send reshmaa hello" carries no keyword, so it used to fall through to
