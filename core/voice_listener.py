@@ -109,7 +109,7 @@ class VoiceListener:
         self._whisper_model = None
         self._fw_model = None
         self._whisper_failed = False
-        self.stt_engine = os.getenv("TARS_STT_ENGINE", "google").strip().lower()
+        self.stt_engine = os.getenv("TARS_STT_ENGINE", "whisper").strip().lower()
         self.whisper_model_name = os.getenv("TARS_STT_MODEL", "base").strip()
         self.last_active_time = 0.0
         self.active_dialogue_window_sec = 30.0
