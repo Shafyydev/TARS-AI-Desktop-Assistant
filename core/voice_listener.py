@@ -128,7 +128,7 @@ class VoiceListener:
             self._recognizer.non_speaking_duration = 0.3
             self._recognizer.phrase_threshold = 0.2
             # Prevent network timeouts on longer spoken sentences
-            self._recognizer.operation_timeout = 10.0
+            self._recognizer.operation_timeout = 5.0
             # Smooth dynamic adaptation to ambient room sound
             self._recognizer.dynamic_energy_threshold = True
             self._recognizer.dynamic_energy_adjustment_damping = 0.15
