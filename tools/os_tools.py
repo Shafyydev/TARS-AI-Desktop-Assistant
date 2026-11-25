@@ -73,6 +73,21 @@ COMMON_APPS = {
 }
 
 
+def _match_common_app(name: str) -> Optional[str]:
+    """
+    Returns the COMMON_APPS key that ``name`` is a typo of, or None.
+
+    "open yoputube" used to run ``start "" "yoputube"``, which silently does
+    nothing.  Single-word near misses now resolve to the intended app or site.
+    """
+    from difflib import get_close_matches
+
+    if not name or " " in name.strip():
+        return None
+    matches = get_close_matches(name.strip().lower(), list(COMMON_APPS.keys()), n=1, cutoff=0.8)
+    return matches[0] if matches else None
+
+
 def _clean_app_target(app_name: str) -> str:
     """
     Strips container phrases from a spoken app name.
@@ -216,6 +231,7 @@ def launch_application(app_name: str) -> Dict[str, Any]:
     """
     clean_name = _clean_app_target(app_name)
     resolved_folder = None
+    fuzzy_app = None if " " in clean_name.strip() else _match_common_app(clean_name)
 
     # Smart GitHub profile resolution
     if "github" in clean_name and any(kw in clean_name for kw in ["profile", "my", "account", "user"]):
@@ -223,6 +239,11 @@ def launch_application(app_name: str) -> Dict[str, Any]:
         clean_name = "GitHub profile (Shafyydev)"
     elif clean_name in COMMON_APPS:
         cmd = COMMON_APPS[clean_name]
+    elif fuzzy_app:
+        # Typo tolerance: "open yoputube" resolves to YouTube instead of a
+        # silent ``start "" "yoputube"``.
+        cmd = COMMON_APPS[fuzzy_app]
+        clean_name = fuzzy_app
     elif any(clean_name.endswith(ext) for ext in [".com", ".org", ".io", ".net", ".dev", ".edu", ".gov"]) or clean_name.startswith("http"):
         url = clean_name if clean_name.startswith("http") else f"https://{clean_name}"
         cmd = f"start {url}"
