@@ -228,11 +228,11 @@ Local desktop controls (hotkeys, system telemetry, media keys, audio controls, a
 ## 💻 Running TARS
 
 ```powershell
-# 1. Interactive Hybrid Mode (Type or speak commands):
+# 1. Hands-Free Voice Control (default: just speak, TARS answers out loud):
 python main.py
 
-# 2. Continuous Hands-Free Voice Control:
-python main.py --voice
+# 2. Typed Command Mode (no microphone):
+python main.py --text
 
 # 3. Text-Only Silent Mode (No TTS):
 python main.py --text-only
@@ -244,7 +244,7 @@ python main.py --diagnostics
 python main.py --list-mics
 python main.py --test-mic
 
-# 6. Launch Web Dashboard:
+# 6. Launch Web Dashboard (tap the mic for hands-free voice):
 uvicorn dashboard.server:app --host 0.0.0.0 --port 8080
 ```
 
