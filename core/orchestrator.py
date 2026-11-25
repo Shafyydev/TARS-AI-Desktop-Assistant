@@ -33,11 +33,15 @@ class TaskOrchestrator:
     def _is_action_request(cls, request: str) -> bool:
         """True when the request starts with a verb that must actually do something."""
         text = (request or "").strip().lower()
-        text = re.sub(
-            r"^(?:please|can\s+you|could\s+you|would\s+you|hey\s+tars|tars|ok|okay|now)\s+",
-            "",
-            text,
+        prefix_re = re.compile(
+            r"^(?:please|can\s+you|could\s+you|would\s+you|hey\s+tars|tars|"
+            r"ok|okay|now|yes|yeah|sure|just|go\s+ahead(?:\s+and)?)\s+"
         )
+        for _ in range(4):
+            updated = prefix_re.sub("", text, count=1).strip()
+            if updated == text:
+                break
+            text = updated
         first = text.split()[0] if text else ""
         return first in cls.ACTION_VERBS
 
@@ -45,24 +49,31 @@ class TaskOrchestrator:
         """
         Rewrites a model reply that ran no tools.
 
-        A question can be answered without tools, but an action request with zero
-        executed steps means nothing happened, so the result must not claim success.
+        A question can be answered without tools, but an action request (or a reply
+        falsely claiming completion) with zero executed steps means nothing happened,
+        so the result must not claim success.
         """
         if not llm_result.get("no_tool_calls"):
             return llm_result
-        if not self._is_action_request(request):
-            return llm_result
 
         text = (llm_result.get("response") or "").strip()
-        llm_result["success"] = False
-        llm_result.pop("no_tool_calls", None)
-        claims_done = any(
-            word in text.lower()
+        lower = text.lower()
+        is_question_or_prompt = text.endswith("?") or any(
+            marker in lower
+            for marker in ("would you like", "should i", "do you want", "please confirm", "say yes")
+        )
+        claims_done = not is_question_or_prompt and any(
+            re.search(rf"\b{word}\b", lower)
             for word in (
                 "done", "opened", "closed", "sent", "created", "deleted", "completed",
                 "maximized", "minimized", "launched", "typed", "pressed", "terminated",
             )
         )
+        if not self._is_action_request(request) and not claims_done:
+            return llm_result
+
+        llm_result["success"] = False
+        llm_result.pop("no_tool_calls", None)
         llm_result["response"] = (
             "I didn't run anything for that request."
             if (not text or claims_done)

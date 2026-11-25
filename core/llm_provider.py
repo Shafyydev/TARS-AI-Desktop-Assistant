@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Callable
 
 DEFAULT_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview"]
 OLLAMA_DEFAULT_MODEL = "qwen3:4b"
-OPENROUTER_DEFAULT_MODEL = "anthropic/claude-3.5-sonnet"
+OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-flash"
 OMNIROUTE_DEFAULT_MODEL = "auto/best-fast"
 OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
 
@@ -144,8 +144,10 @@ class LLMProvider:
                 os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "omniroute" else None
             )
         else:
-            default_model = "gemini-3.8-flash"
-            model_env = os.getenv("GEMINI_MODEL") or os.getenv("AI_MODEL")
+            default_model = DEFAULT_MODELS[0]
+            model_env = os.getenv("GEMINI_MODEL") or (
+                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "gemini" else None
+            )
 
         self.model = model or settings_model or model_env or default_model
         self.client = None
@@ -406,7 +408,11 @@ class LLMProvider:
                 history_contents.pop(0)
 
         last_error = None
-        candidate_models = [self.model] + [m for m in DEFAULT_MODELS if m != self.model]
+        cfg_fallbacks = _load_llm_settings().get("fallback_models") or []
+        candidate_models = [self.model]
+        for candidate in list(cfg_fallbacks) + list(DEFAULT_MODELS):
+            if candidate and candidate not in candidate_models:
+                candidate_models.append(candidate)
         from tools.verification import is_task_cancelled
 
         failed_calls: Dict[str, int] = {}
@@ -414,7 +420,7 @@ class LLMProvider:
         for model_name in candidate_models:
             executed_steps = []
             try:
-                config = self._gemini_config(system_instruction, tools_list, timeout)
+                config = self._gemini_config(system_instruction, tools_list, timeout, model_name=model_name)
                 chat = self.client.chats.create(
                     model=model_name,
                     config=config,
@@ -558,11 +564,13 @@ class LLMProvider:
                     continue
                 transient = any(
                     marker in err_msg
-                    for marker in ("503", "UNAVAILABLE", "500", "502", "504", "overloaded")
+                    for marker in (
+                        "503", "UNAVAILABLE", "500", "502", "504",
+                        "overloaded", "Server disconnected", "INVALID_ARGUMENT", "400",
+                    )
                 )
                 if transient and not executed_steps:
-                    # Upstream overload: try the next configured model instead of
-                    # failing the whole request.
+                    # Upstream overload or unsupported parameter: try next configured model.
                     continue
                 short_reason = err_msg.split("\n")[0][:80]
                 return {
@@ -597,7 +605,12 @@ class LLMProvider:
     }
 
     @staticmethod
-    def _gemini_config(system_instruction: str, tools_list: List[Callable], timeout: float) -> Any:
+    def _gemini_config(
+        system_instruction: str,
+        tools_list: List[Callable],
+        timeout: float,
+        model_name: str = "",
+    ) -> Any:
         """
         Builds the Gemini GenerateContentConfig.
 
@@ -618,15 +631,19 @@ class LLMProvider:
             pass
         # Flash models spend most of their latency on internal reasoning that this
         # agent does not need: the ReAct loop already supplies the reasoning by
-        # feeding tool results back.  Disabling it roughly halves reply time.
-        try:
-            kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-        except Exception:
-            pass
+        # feeding tool results back.  Skip this flag on '-latest' / '2.0' models
+        # because gemini-flash-lite-latest rejects thinking_budget=0 with HTTP 400.
+        m_lower = (model_name or "").lower()
+        if "latest" not in m_lower and "2.0" not in m_lower:
+            try:
+                kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+            except Exception:
+                pass
         try:
             return types.GenerateContentConfig(**kwargs)
         except Exception:
             kwargs.pop("http_options", None)
+            kwargs.pop("thinking_config", None)
             return types.GenerateContentConfig(**kwargs)
 
     @staticmethod

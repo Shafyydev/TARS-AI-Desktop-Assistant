@@ -212,7 +212,11 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
                     "X-Title": "TARS AI Desktop Assistant",
                 }
             )
-            model = os.getenv("OPENROUTER_MODEL") or os.getenv("AI_MODEL") or "anthropic/claude-3.5-sonnet"
+            model = (
+                os.getenv("OPENROUTER_MODEL")
+                or (os.getenv("AI_MODEL") if ai_provider == "openrouter" else None)
+                or "google/gemini-2.5-flash"
+            )
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -288,22 +292,34 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
             with open(shot_path, "rb") as f:
                 img_bytes = f.read()
 
-            vision_model = os.getenv("GEMINI_VISION_MODEL") or "gemini-3.1-flash-lite"
+            vision_models = []
+            for m in (
+                os.getenv("GEMINI_VISION_MODEL"),
+                "gemini-3.1-flash-lite",
+                "gemini-3-flash-preview",
+            ):
+                if m and m not in vision_models:
+                    vision_models.append(m)
             cfg = None
             try:
                 cfg = types.GenerateContentConfig(http_options=types.HttpOptions(timeout=6000))
             except Exception:
                 pass
-            resp = client.models.generate_content(
-                model=vision_model,
-                contents=[
-                    types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
-                    prompt
-                ],
-                config=cfg,
-            )
-            if resp and resp.text:
-                return resp.text.strip()
+            for vision_model in vision_models:
+                try:
+                    resp = client.models.generate_content(
+                        model=vision_model,
+                        contents=[
+                            types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                            prompt
+                        ],
+                        config=cfg,
+                    )
+                    if resp and resp.text:
+                        return resp.text.strip()
+                except Exception as inner_err:
+                    vision_errors.append(f"{vision_model}: {str(inner_err)[:50]}")
+                    continue
         except Exception as e:
             vision_errors.append(str(e)[:60])
         return None

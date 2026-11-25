@@ -217,7 +217,7 @@ TARS_DEFAULT_MODE=hybrid
 
 TARS supports four AI backends with native multi-turn ReAct tool calling:
 1. **Google Gemini** (`AI_PROVIDER=gemini`): Fast multi-modal reasoning and screen vision via `gemini-3.1-flash-lite`. Requires `GEMINI_API_KEY`.
-2. **OpenRouter** (`AI_PROVIDER=openrouter`): Access to high-end and fast cloud models (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`, `google/gemini-2.5-flash`) via the OpenAI-compatible API with full tool calling and vision support. Requires `OPENROUTER_API_KEY`.
+2. **OpenRouter** (`AI_PROVIDER=openrouter`): Access to high-end and fast cloud models (e.g. `google/gemini-2.5-flash`, `openai/gpt-4o`, `openai/gpt-4o-mini`) via the OpenAI-compatible API with full tool calling and vision support. Requires `OPENROUTER_API_KEY`.
 3. **OmniRoute** (`AI_PROVIDER=omniroute`): Local multi-model AI gateway (e.g. `auto/best-fast`, `auto/best-coding`, `auto/best-reasoning`) running at `http://localhost:20128/v1` with automatic API key discovery from `~/.omniroute/storage.sqlite`.
 4. **Ollama** (`AI_PROVIDER=ollama`): Fully offline local model execution (e.g. `qwen3:4b`).
 

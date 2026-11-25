@@ -528,5 +528,89 @@ class TestDashboardEndpoints(unittest.TestCase):
         self.assertTrue(cancel_resp.json()["success"])
 
 
+class TestRegressionFixes(unittest.TestCase):
+    """Tests covering bugs diagnosed in logs and live memory traces."""
+
+    def test_whatsapp_saying_to_order_and_typo(self):
+        agent = __import__("core.brain", fromlist=["TARSAgent"]).TARSAgent()
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent WhatsApp message to reshmaa."})
+        agent.tool_registry["send_whatsapp_message"] = mock_send
+
+        res = agent._autonomous_local_execute("send a messg saying hello to reshmaa")
+        self.assertIsNotNone(res)
+        self.assertTrue(res["success"])
+        mock_send.assert_called_once_with(contact_name="reshmaa", message="hello")
+        self.assertEqual(agent.last_whatsapp_contact, "reshmaa")
+
+    def test_whatsapp_followup_uses_last_contact(self):
+        agent = __import__("core.brain", fromlist=["TARSAgent"]).TARSAgent()
+        mock_send = MagicMock(return_value={"success": True, "message": "Sent."})
+        agent.tool_registry["send_whatsapp_message"] = mock_send
+        agent.last_whatsapp_contact = "reshmaa"
+
+        res = agent._autonomous_local_execute("send another one saying hello")
+        self.assertIsNotNone(res)
+        self.assertTrue(res["success"])
+        mock_send.assert_called_once_with(contact_name="reshmaa", message="hello")
+
+        mock_send.reset_mock()
+        res2 = agent._autonomous_local_execute("send her another hi")
+        self.assertIsNotNone(res2)
+        self.assertTrue(res2["success"])
+        mock_send.assert_called_once_with(contact_name="reshmaa", message="hi")
+
+        # Misheard bare send must still NOT match
+        mock_send.reset_mock()
+        self.assertIsNone(agent._autonomous_local_execute("send hello how are you"))
+        mock_send.assert_not_called()
+
+    def test_honest_llm_result_blocks_yes_send_hallucination_and_keeps_questions(self):
+        with patch("core.brain.TARSAgent._init_llm_client"):
+            agent = __import__("core.brain", fromlist=["TARSAgent"]).TARSAgent()
+            orch = agent.orchestrator
+
+        # 1. Hallucinated completion after "yes send" with zero tool calls
+        hallucinated = {
+            "success": True,
+            "response": "Done. Message sent to Reshmaa.",
+            "steps": [],
+            "no_tool_calls": True,
+        }
+        cleaned = orch._honest_llm_result(hallucinated, "yes send")
+        self.assertFalse(cleaned["success"])
+        self.assertIn("didn't run anything", cleaned["response"])
+        self.assertNotIn("Message sent", cleaned["response"])
+
+        # 2. Question asking for clarification/confirmation should stay visible
+        question = {
+            "success": True,
+            "response": "Should I send 'hello' to Reshmaa? Please confirm.",
+            "steps": [],
+            "no_tool_calls": True,
+        }
+        kept = orch._honest_llm_result(question, "send it")
+        self.assertFalse(kept["success"])
+        self.assertIn("Should I send", kept["response"])
+
+    def test_llm_provider_gemini_ignores_omniroute_ai_model(self):
+        from core.llm_provider import LLMProvider, OPENROUTER_DEFAULT_MODEL
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "omniroute", "AI_MODEL": "auto/best-fast"}, clear=False):
+            gem = LLMProvider(provider="gemini")
+            self.assertEqual(gem.model, "gemini-3.1-flash-lite")
+
+        self.assertNotEqual(OPENROUTER_DEFAULT_MODEL, "anthropic/claude-3.5-sonnet")
+        self.assertEqual(OPENROUTER_DEFAULT_MODEL, "google/gemini-2.5-flash")
+
+    def test_gemini_config_skips_thinking_budget_for_latest(self):
+        from core.llm_provider import LLMProvider
+
+        cfg_latest = LLMProvider._gemini_config("sys", [], 10.0, model_name="gemini-flash-lite-latest")
+        self.assertIsNone(getattr(cfg_latest, "thinking_config", None))
+
+        cfg_31 = LLMProvider._gemini_config("sys", [], 10.0, model_name="gemini-3.1-flash-lite")
+        self.assertIsNotNone(getattr(cfg_31, "thinking_config", None))
+
+
 if __name__ == "__main__":
     unittest.main()

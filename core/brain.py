@@ -1426,15 +1426,38 @@ class TARSAgent:
 
         whatsapp_send = re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
-            r"(?:send\s+(?:a\s+)?message\s+to|message\s+to|message)\s+(.+?)\s+saying\s+(.+)$",
+            r"(?:send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+to|whatsapp\s+to|message\s+to|message|text)\s+"
+            r"(.+?)\s+(?:saying|with(?:\s+(?:the\s+)?text)?)\s+(.+)$",
             p_clean,
         )
-        if whatsapp_send:
-            contact = whatsapp_send.group(1).strip()
-            message = re.sub(
-                r"\s+in\s+whatsapp$", "", whatsapp_send.group(2).strip(), flags=re.IGNORECASE
+        whatsapp_send_rev = None if whatsapp_send else re.match(
+            r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
+            r"send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+"
+            r"(?:saying|with(?:\s+(?:the\s+)?text)?)\s+(.+?)\s+to\s+(.+)$",
+            p_clean,
+        )
+        whatsapp_send_followup = None
+        if not whatsapp_send and not whatsapp_send_rev and self.last_whatsapp_contact:
+            whatsapp_send_followup = re.match(
+                r"^send\s+(?:(?:her|him|them)\s+)?(?:another\s+(?:one\s+)?(?:saying\s+)?|(?:another\s+)?(?:message|msg|messg|mesg)\s+(?:saying\s+)?)(.+)$",
+                p_clean,
             )
+        if whatsapp_send or whatsapp_send_rev or whatsapp_send_followup:
+            if whatsapp_send:
+                contact = whatsapp_send.group(1).strip()
+                message = whatsapp_send.group(2).strip()
+            elif whatsapp_send_rev:
+                message = whatsapp_send_rev.group(1).strip()
+                contact = whatsapp_send_rev.group(2).strip()
+            else:
+                contact = self.last_whatsapp_contact
+                message = whatsapp_send_followup.group(1).strip()
+            message = re.sub(
+                r"\s+(?:in|on)\s+whatsapp$", "", message, flags=re.IGNORECASE
+            ).strip()
             res = self.execute_tool("send_whatsapp_message", {"contact_name": contact, "message": message})
+            if isinstance(res, dict) and res.get("success"):
+                self.last_whatsapp_contact = contact
             msg, ok = self._reply(res, f"Sent WhatsApp message to {contact}.")
             return {
                 "response": msg,
