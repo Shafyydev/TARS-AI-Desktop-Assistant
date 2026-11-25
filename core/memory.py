@@ -109,6 +109,26 @@ class MemoryStore:
             cursor = self._conn.cursor()
             cursor.execute("DELETE FROM conversation_history")
 
+    def delete_user_preference(self, key: str) -> bool:
+        """Deletes a persistent stored preference/fact by key."""
+        with self._conn:
+            cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM user_memories WHERE key = ?", (key,))
+            return cursor.rowcount > 0
+
+    def search_history(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Searches past conversation messages containing ``query``."""
+        pattern = f"%{(query or '').strip()}%"
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT timestamp, role, content FROM conversation_history WHERE content LIKE ? ORDER BY id DESC LIMIT ?",
+            (pattern, limit),
+        )
+        return [
+            {"timestamp": ts, "role": role, "content": content}
+            for ts, role, content in cursor.fetchall()
+        ]
+
     def close(self) -> None:
         """Closes the database connection."""
         if self._conn:
@@ -150,5 +170,16 @@ def remember_fact(key: str, value: str) -> Dict[str, Any]:
         "key": key,
         "value": value,
         "message": f"Remembered: '{key}' is '{value}'."
+    }
+
+
+def forget_fact(key: str) -> Dict[str, Any]:
+    """Removes a stored preference or fact from persistent memory by key."""
+    store = get_default_memory()
+    removed = store.delete_user_preference(key)
+    return {
+        "success": removed,
+        "key": key,
+        "message": f"Forgot '{key}'." if removed else f"No stored fact found for '{key}'.",
     }
 

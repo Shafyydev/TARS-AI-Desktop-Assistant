@@ -131,3 +131,41 @@ def fetch_webpage_summary(url: str, max_chars: int = 3000) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "error": f"Failed to fetch content from {url}: {str(e)}"}
+
+
+def get_weather(location: str = "") -> Dict[str, Any]:
+    """
+    Fetches current weather conditions for a city/location without needing API keys.
+
+    Args:
+        location: Optional city or region name (defaults to IP-detected current location).
+    """
+    loc = (location or "").strip()
+    target = urllib.parse.quote(loc) if loc else ""
+    url = f"https://wttr.in/{target}?format=j1"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TARS-Agent/1.0"}, timeout=4)
+        resp.raise_for_status()
+        data = resp.json()
+        current = (data.get("current_condition") or [{}])[0]
+        area = (data.get("nearest_area") or [{}])[0]
+        area_name = ((area.get("areaName") or [{}])[0]).get("value") or loc or "your area"
+        country = ((area.get("country") or [{}])[0]).get("value") or ""
+        desc = ((current.get("weatherDesc") or [{}])[0]).get("value") or "Clear"
+        temp_c = current.get("temp_C", "?")
+        feels_c = current.get("FeelsLikeC", temp_c)
+        humidity = current.get("humidity", "?")
+        wind = current.get("windspeedKmph", "?")
+        place = f"{area_name}, {country}".strip(", ")
+        return {
+            "success": True,
+            "location": place,
+            "temperature_c": temp_c,
+            "feels_like_c": feels_c,
+            "condition": desc,
+            "humidity_percent": humidity,
+            "wind_kmph": wind,
+            "message": f"Weather in {place}: {desc}, {temp_c}°C (feels like {feels_c}°C), humidity {humidity}%, wind {wind} km/h.",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Could not fetch weather telemetry: {e}"}

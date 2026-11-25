@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.personality import build_system_prompt
-from core.memory import MemoryStore, remember_fact, set_default_memory
+from core.memory import MemoryStore, remember_fact, forget_fact, set_default_memory
 from core.orchestrator import TaskOrchestrator
 from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
 import tools.google_workspace_tools as google_ws
@@ -99,7 +99,7 @@ class TARSAgent:
     # Tools that are not destructive by themselves but persist state that is fed back
     # into the system prompt on every later turn.  A model-initiated call is gated;
     # the explicit "remember ..." fast path grants confirmation itself.
-    CONFIRMATION_TOOLS = DESTRUCTIVE_TOOLS | frozenset({"remember_fact"})
+    CONFIRMATION_TOOLS = DESTRUCTIVE_TOOLS | frozenset({"remember_fact", "forget_fact"})
 
     # Tools whose output is text an attacker can control (web pages, email bodies,
     # files).  Results are wrapped before they are handed back to the model.
@@ -157,6 +157,11 @@ class TARSAgent:
             "empty_recycle_bin": tools.empty_recycle_bin,
             "get_network_info": tools.get_network_info,
             "system_power": tools.system_power,
+            "set_screen_brightness": tools.set_screen_brightness,
+            "get_top_processes": tools.get_top_processes,
+            "snap_window": tools.snap_window,
+            "manage_virtual_desktop": tools.manage_virtual_desktop,
+            "open_windows_setting": tools.open_windows_setting,
             # GUI & Computer Use
             "take_screenshot": tools.take_screenshot,
             "inspect_screen": tools.inspect_screen,
@@ -185,14 +190,23 @@ class TARSAgent:
             "read_file": tools.read_file,
             "get_file_metadata": tools.get_file_metadata,
             "list_drives": tools.list_drives,
+            "write_or_append_file": tools.write_or_append_file,
+            "copy_or_move_item": tools.copy_or_move_item,
+            "zip_or_unzip": tools.zip_or_unzip,
             "fetch_webpage_summary": tools.fetch_webpage_summary,
             "get_free_knowledge": tools.get_free_knowledge,
+            "get_weather": tools.get_weather,
             "browser_navigate": tools.browser_navigate,
             "browser_search": tools.browser_search,
             "browser_click_first_result": tools.browser_click_first_result,
             "browser_find_elements": tools.browser_find_elements,
             "browser_click_element": tools.browser_click_element,
             "browser_extract_text": tools.browser_extract_text,
+            "browser_type": tools.browser_type,
+            "browser_scroll": tools.browser_scroll,
+            "browser_history_nav": tools.browser_history_nav,
+            "browser_get_tabs": tools.browser_get_tabs,
+            "browser_switch_tab": tools.browser_switch_tab,
             "connect_brave": tools.connect_brave,
             # UI Automation & Smart Interaction
             "get_active_window": tools.get_active_window,
@@ -221,6 +235,7 @@ class TARSAgent:
             "create_calendar_event": google_ws.create_calendar_event,
             # Memory & Verification
             "remember_fact": remember_fact,
+            "forget_fact": forget_fact,
             "verify_action": tools.verify_action,
             "cancel_current_task": tools.cancel_current_task,
         }
@@ -886,20 +901,72 @@ class TARSAgent:
             msg, ok = self._reply(res, "Fullscreen toggled.")
             return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["f11"]}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:snap\s+left)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "left"]})
+        if re.search(r"^(?:snap\s+left|tile\s+left)$", p_clean):
+            res = self.execute_tool("snap_window", {"direction": "left"})
             msg, ok = self._reply(res, "Snapped window left.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "left"]}, "result": res}], "success": ok}
+            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "left"}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:snap\s+right)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "right"]})
+        if re.search(r"^(?:snap\s+right|tile\s+right)$", p_clean):
+            res = self.execute_tool("snap_window", {"direction": "right"})
             msg, ok = self._reply(res, "Snapped window right.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "right"]}, "result": res}], "success": ok}
+            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "right"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:snap\s+up|tile\s+up)$", p_clean):
+            res = self.execute_tool("snap_window", {"direction": "up"})
+            msg, ok = self._reply(res, "Snapped window up.")
+            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "up"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:snap\s+down|tile\s+down)$", p_clean):
+            res = self.execute_tool("snap_window", {"direction": "down"})
+            msg, ok = self._reply(res, "Snapped window down.")
+            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "down"}, "result": res}], "success": ok}
+
+        snap_target_match = re.match(r"^(?:snap|tile)\s+(.+?)\s+(left|right|up|down)$", p_clean)
+        if snap_target_match:
+            win_target = snap_target_match.group(1).strip()
+            direction = snap_target_match.group(2).strip()
+            res = self.execute_tool("snap_window", {"direction": direction, "window_name": win_target})
+            msg, ok = self._reply(res, f"Snapped {win_target} {direction}.")
+            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": direction, "window_name": win_target}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:new|create|add)\s+(?:virtual\s+)?desktop$", p_clean):
+            res = self.execute_tool("manage_virtual_desktop", {"action": "new"})
+            msg, ok = self._reply(res, "Created new virtual desktop.")
+            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "new"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:next|switch\s+(?:to\s+)?next)\s+(?:virtual\s+)?desktop$", p_clean):
+            res = self.execute_tool("manage_virtual_desktop", {"action": "next"})
+            msg, ok = self._reply(res, "Switched to next desktop.")
+            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "next"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:prev|previous|switch\s+(?:to\s+)?(?:prev|previous))\s+(?:virtual\s+)?desktop$", p_clean):
+            res = self.execute_tool("manage_virtual_desktop", {"action": "prev"})
+            msg, ok = self._reply(res, "Switched to previous desktop.")
+            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "prev"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:close|remove)\s+(?:this\s+|current\s+)?(?:virtual\s+)?desktop$", p_clean):
+            res = self.execute_tool("manage_virtual_desktop", {"action": "close"})
+            msg, ok = self._reply(res, "Closed virtual desktop.")
+            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "close"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:task\s+view|view\s+desktops|show\s+all\s+windows)$", p_clean):
+            res = self.execute_tool("press_keys", {"keys": ["win", "tab"]})
+            msg, ok = self._reply(res, "Opened Task View.")
+            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "tab"]}, "result": res}], "success": ok}
 
         if re.search(r"^(?:switch\s+(?:the\s+)?(?:window|app|application)|alt\s+tab|next\s+window|switch\s+window)$", p_clean):
             res = self.execute_tool("switch_window", {})
             msg, ok = self._reply(res, "Switched active window.")
             return {"response": msg, "steps": [{"tool": "switch_window", "args": {}, "result": res}], "success": ok}
+
+        focus_win_match = re.match(r"^(?:focus(?:\s+on)?|switch\s+to|bring\s+to\s+front)\s+(?:the\s+)?(.+?)(?:\s+window|\s+app)?$", p_clean)
+        if focus_win_match:
+            win_target = focus_win_match.group(1).strip()
+            if win_target and win_target not in {"desktop", "next desktop", "previous desktop"} and not any(conj in win_target for conj in [" and ", " then "]):
+                res = self.execute_tool("focus_window", {"title_or_process": win_target})
+                if isinstance(res, dict) and res.get("success"):
+                    msg, ok = self._reply(res, f"Focused '{res.get('window', win_target)}'.")
+                    return {"response": msg, "steps": [{"tool": "focus_window", "args": {"title_or_process": win_target}, "result": res}], "success": ok}
 
         close_match = re.match(
             r"^(?:close|shut|exit|kill|quit)\b"
@@ -932,11 +999,36 @@ class TARSAgent:
             msg, ok = self._reply(res, "Screenshot captured.")
             return {"response": msg, "steps": [{"tool": "take_screenshot", "args": {}, "result": res}], "success": ok}
 
+        if re.search(r"^(?:snip|screen\s+snip|take\s+(?:a\s+)?snip)$", p_clean):
+            res = self.execute_tool("press_keys", {"keys": ["win", "shift", "s"]})
+            msg, ok = self._reply(res, "Opened screen snip tool.")
+            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "shift", "s"]}, "result": res}], "success": ok}
+
+        bright_match = re.match(r"^(?:(?:set|adjust|change)\s+)?(?:(?:screen|display)\s+)?brightness\s+(?:to\s+)?(\d{1,3})(?:\s*%)?$", p_clean)
+        if bright_match:
+            val = int(bright_match.group(1))
+            res = self.execute_tool("set_screen_brightness", {"level_percent": val})
+            msg, ok = self._reply(res, f"Screen brightness set to {val}%.")
+            return {"response": msg, "steps": [{"tool": "set_screen_brightness", "args": {"level_percent": val}, "result": res}], "success": ok}
+
+        setting_match = re.match(r"^(?:open\s+)?(?:windows\s+)?(wifi|wi-fi|network|bluetooth|display|sound|battery|power|update|updates|apps|storage|privacy|notifications)\s+settings?$", p_clean)
+        if setting_match:
+            s_name = setting_match.group(1).strip()
+            res = self.execute_tool("open_windows_setting", {"setting_name": s_name})
+            msg, ok = self._reply(res, f"Opened {s_name} settings.")
+            return {"response": msg, "steps": [{"tool": "open_windows_setting", "args": {"setting_name": s_name}, "result": res}], "success": ok}
+
         # 11. Hardware & System Telemetry (Anchored)
         if re.search(r"^(?:(?:system\s+|pc\s+|hardware\s+)?(?:status|telemetry|specs)|(?:hardware|cpu|ram|battery)(?:\s+status)?)$", p_clean):
             telem = self.execute_tool("get_system_telemetry", {})
             msg = f"CPU is at {telem['cpu_load_percent']}%, RAM load is {telem['ram_usage_percent']}%. Battery: {telem['battery']}."
             return {"response": msg, "steps": [{"tool": "get_system_telemetry", "args": {}, "result": telem}], "success": True}
+
+        if re.search(r"^(?:top\s+processes|what(?:'s|\s+is)\s+using\s+(?:my\s+)?(?:cpu|ram|memory)|memory\s+hogs|cpu\s+hogs)$", p_clean):
+            metric = "ram" if ("ram" in p_clean or "memory" in p_clean) else "cpu"
+            res = self.execute_tool("get_top_processes", {"sort_by": metric, "limit": 6})
+            msg, ok = self._reply(res, f"Top {metric.upper()} consumers: {res.get('summary', 'none')}.")
+            return {"response": msg, "steps": [{"tool": "get_top_processes", "args": {"sort_by": metric, "limit": 6}, "result": res}], "success": ok}
 
         # 12. Volume Calibration & Controls
         vol_match = re.search(
@@ -1066,6 +1158,24 @@ class TARSAgent:
                 "success": True
             }
 
+        forget_match = re.match(r"^(?:forget(?:\s+about)?|delete\s+memory)\s+(.+)$", p_clean)
+        if forget_match:
+            key = forget_match.group(1).strip()
+            res = self._execute_tool_inner("forget_fact", {"key": key}, confirmation_granted=True)
+            self._log_tool_call("forget_fact", {"key": key}, res)
+            return {
+                "response": res.get("message", f"Forgot '{key}'."),
+                "steps": [{"tool": "forget_fact", "args": {"key": key}, "result": res}],
+                "success": res.get("success", False),
+            }
+
+        if re.search(r"^(?:what\s+do\s+you\s+remember(?:\s+about\s+me)?|list\s+(?:my\s+)?memories|show\s+preferences)$", p_clean):
+            prefs = self.memory.get_all_preferences()
+            if not prefs:
+                return {"response": "I don't have any stored facts or preferences yet.", "steps": [], "success": True}
+            summary = "; ".join(f"{k}: {v}" for k, v in list(prefs.items())[:8])
+            return {"response": f"Stored memories: {summary}.", "steps": [], "success": True}
+
         # 17. Screen Understanding & Vision
         if re.search(r"^(?:what(?:'s|\s+is)\s+on\s+(?:the|my)\s+screen|describe\s+(?:the\s+|my\s+)?screen|look\s+at\s+(?:the|my)\s+screen|screen\s+summary)$", p_clean):
             res = self.execute_tool("describe_screen", {})
@@ -1073,18 +1183,37 @@ class TARSAgent:
             msg, ok = self._reply(res, desc)
             return {"response": msg, "steps": [{"tool": "describe_screen", "args": {}, "result": res}], "success": ok}
 
-        # 18. Timers and Reminders
-        remind_match = re.match(r"^(?:remind\s+me\s+to\s+(.+)\s+in\s+(\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)|set\s+(?:a\s+)?timer\s+for\s+(\d+(?:\.\d+)?)\s*(?:minute|minutes|min|mins)(?:\s+for\s+(.+))?)$", p_clean)
+        # 18. Timers and Reminders (supports seconds, minutes, hours & cancellation)
+        remind_match = re.match(
+            r"^(?:remind\s+me\s+to\s+(.+)\s+in\s+(\d+(?:\.\d+)?)\s*(second|seconds|sec|secs|minute|minutes|min|mins|hour|hours|hr|hrs)"
+            r"|set\s+(?:a\s+)?timer\s+for\s+(\d+(?:\.\d+)?)\s*(second|seconds|sec|secs|minute|minutes|min|mins|hour|hours|hr|hrs)(?:\s+for\s+(.+))?)$",
+            p_clean,
+        )
         if remind_match:
             if remind_match.group(1) and remind_match.group(2):
-                msg = remind_match.group(1).strip()
-                mins = float(remind_match.group(2))
+                rem_msg = remind_match.group(1).strip()
+                amount = float(remind_match.group(2))
+                unit = remind_match.group(3).lower()
             else:
-                mins = float(remind_match.group(3))
-                msg = (remind_match.group(4) or "timer").strip()
-            res = self.execute_tool("set_reminder", {"message": msg, "minutes": mins})
-            msg, ok = self._reply(res, res.get("message", f"Reminder set for {mins} minutes."))
-            return {"response": msg, "steps": [{"tool": "set_reminder", "args": {"message": msg, "minutes": mins}, "result": res}], "success": ok}
+                amount = float(remind_match.group(4))
+                unit = remind_match.group(5).lower()
+                rem_msg = (remind_match.group(6) or "timer").strip()
+            if unit.startswith("sec"):
+                args = {"message": rem_msg, "seconds": amount}
+            elif unit.startswith(("hour", "hr")):
+                args = {"message": rem_msg, "hours": amount}
+            else:
+                args = {"message": rem_msg, "minutes": amount}
+            res = self.execute_tool("set_reminder", args)
+            msg, ok = self._reply(res, res.get("message", f"Reminder set for {amount} {unit}."))
+            return {"response": msg, "steps": [{"tool": "set_reminder", "args": args, "result": res}], "success": ok}
+
+        cancel_rem_match = re.match(r"^(?:cancel|delete|remove)\s+reminder\s+([a-zA-Z0-9_]+)$", p_clean)
+        if cancel_rem_match:
+            rem_id = cancel_rem_match.group(1).strip()
+            res = self.execute_tool("cancel_active_reminder", {"reminder_id": rem_id})
+            msg, ok = self._reply(res, res.get("message", f"Reminder '{rem_id}' cancelled."))
+            return {"response": msg, "steps": [{"tool": "cancel_active_reminder", "args": {"reminder_id": rem_id}, "result": res}], "success": ok}
 
         if re.search(r"^(?:list\s+(?:my\s+)?reminders|what\s+are\s+my\s+reminders|show\s+reminders|active\s+timers)$", p_clean):
             res = self.execute_tool("list_active_reminders", {})
@@ -1140,6 +1269,21 @@ class TARSAgent:
                 return {"response": msg, "steps": [{"tool": "read_clipboard", "args": {}, "result": res}], "success": ok}
             msg, ok = self._reply(res, "Clipboard is currently empty.")
             return {"response": msg, "steps": [{"tool": "read_clipboard", "args": {}, "result": res}], "success": ok}
+
+        copy_clip_match = re.match(r"^(?:copy|write)\s+(.+?)\s+to\s+(?:the\s+)?clipboard$", p_clean)
+        if copy_clip_match:
+            raw_clip = re.match(r"^(?:copy|write)\s+(.+?)\s+to\s+(?:the\s+)?clipboard$", prompt.strip(), re.IGNORECASE)
+            clip_text = raw_clip.group(1).strip() if raw_clip else copy_clip_match.group(1).strip()
+            res = self.execute_tool("write_clipboard", {"text": clip_text})
+            msg, ok = self._reply(res, "Copied text to clipboard.")
+            return {"response": msg, "steps": [{"tool": "write_clipboard", "args": {"text": clip_text}, "result": res}], "success": ok}
+
+        weather_match = re.match(r"^(?:(?:what(?:'s|\s+is)\s+(?:the\s+)?)?weather(?:\s+(?:like\s+)?(?:in|at|for)\s+(.+))?)$", p_clean)
+        if weather_match:
+            loc = (weather_match.group(1) or "").strip()
+            res = self.execute_tool("get_weather", {"location": loc})
+            msg, ok = self._reply(res, res.get("message", "Could not fetch weather."))
+            return {"response": msg, "steps": [{"tool": "get_weather", "args": {"location": loc}, "result": res}], "success": ok}
 
         # 17. GitHub Profile Direct Shortcut (Anchored)
         if re.search(r"^(?:(?:go\s+to|open)\s+)?(?:my\s+)?github(?:\s+(?:profile|account|page|user))?$|^my\s+github$|^go\s+to\s+my\s+profile\s+github$", p_clean):
@@ -1238,6 +1382,13 @@ class TARSAgent:
             if free_gb is None or total_gb is None:
                 return {"response": "Could not read drive telemetry.", "steps": [{"tool": "get_system_telemetry", "args": {}, "result": telem}], "success": False}
             return {"response": f"Primary drive has {free_gb} GB free out of {total_gb} GB.", "steps": [{"tool": "get_system_telemetry", "args": {}, "result": telem}], "success": True}
+
+        if re.search(r"^(?:what\s+(?:app|window)\s+is\s+(?:open|active|focused)|current\s+window|active\s+window)$", p_clean):
+            win = self.execute_tool("get_active_window", {})
+            title = win.get("title") or "Unknown"
+            proc = win.get("process_name") or win.get("app_name") or ""
+            label = f"{title} ({proc})" if proc else title
+            return {"response": f"Current active window: {label}.", "steps": [{"tool": "get_active_window", "args": {}, "result": win}], "success": bool(win.get("success", True))}
 
         if re.search(r"\b(?:what\s+(?:is|apps\s+are)\s+running|running\s+(?:apps|windows|tasks)|active\s+windows|show\s+tasks)\b", p_clean):
             wins = self.execute_tool("get_running_windows", {})

@@ -33,7 +33,8 @@ def find_brave_executable() -> Optional[str]:
 def _ensure_browser(prefer_brave: bool = True) -> Any:
     """
     Initializes or retrieves the active Playwright browser page instance.
-    Prefers Brave browser if found, otherwise falls back to Chrome or Chromium.
+    Attaches to a running CDP debug instance on port 9222 if available,
+    otherwise prefers Brave browser, falling back to Chrome or Chromium.
     """
     global _browser, _context, _page, _playwright
 
@@ -44,6 +45,20 @@ def _ensure_browser(prefer_brave: bool = True) -> Any:
 
     if _playwright is None:
         _playwright = sync_playwright().start()
+
+    # Reuse an already-open Chrome/Brave debug session if port 9222 is listening
+    cdp_port = int(os.getenv("TARS_BROWSER_CDP_PORT", "9222"))
+    try:
+        import socket
+        with socket.create_connection(("127.0.0.1", cdp_port), timeout=0.15):
+            _browser = _playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+            contexts = _browser.contexts
+            _context = contexts[0] if contexts else _browser.new_context()
+            pages = _context.pages
+            _page = pages[0] if pages else _context.new_page()
+            return _page
+    except Exception:
+        pass
 
     brave_exe = find_brave_executable() if prefer_brave else None
     headless = os.getenv("TARS_BROWSER_HEADLESS", "0") in ["1", "true", "True"]
@@ -304,6 +319,98 @@ def browser_close() -> Dict[str, Any]:
             _playwright.stop()
         _browser = _context = _page = _playwright = None
         return {"success": True, "message": "Browser session closed."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def browser_type(selector: str, text: str, press_enter: bool = False, index: int = 0) -> Dict[str, Any]:
+    """
+    Types text into a web form input or textarea matched by CSS/XPath selector.
+
+    Args:
+        selector: CSS or XPath selector matching the input field.
+        text: Text string to fill into the element.
+        press_enter: Optionally press Enter after typing to submit forms.
+        index: Zero-based match index if multiple elements match.
+    """
+    try:
+        page = _ensure_browser()
+        loc = page.locator(selector).nth(index)
+        loc.click(timeout=5000)
+        loc.fill(text, timeout=5000)
+        if press_enter:
+            loc.press("Enter")
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        return {
+            "success": True,
+            "selector": selector,
+            "url": page.url,
+            "message": f"Typed into '{selector}'."
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to type into '{selector}': {e}"}
+
+
+def browser_scroll(direction: str = "down", amount: int = 600) -> Dict[str, Any]:
+    """
+    Scrolls the active automated browser page vertically.
+
+    Args:
+        direction: 'down' or 'up'.
+        amount: Pixel delta to scroll.
+    """
+    try:
+        page = _ensure_browser()
+        delta = -abs(amount) if direction.strip().lower() == "up" else abs(amount)
+        page.mouse.wheel(0, delta)
+        return {"success": True, "message": f"Scrolled browser {direction} by {abs(delta)}px."}
+    except Exception as e:
+        return {"success": False, "error": f"Browser scroll failed: {e}"}
+
+
+def browser_history_nav(action: str = "back") -> Dict[str, Any]:
+    """
+    Navigates browser page history: 'back', 'forward', or 'reload'.
+    """
+    try:
+        page = _ensure_browser()
+        act = (action or "back").strip().lower()
+        if act == "forward":
+            page.go_forward(timeout=15000, wait_until="domcontentloaded")
+        elif act in {"reload", "refresh"}:
+            page.reload(timeout=15000, wait_until="domcontentloaded")
+        else:
+            page.go_back(timeout=15000, wait_until="domcontentloaded")
+        return {"success": True, "url": page.url, "title": page.title(), "message": f"Browser navigated: {act}."}
+    except Exception as e:
+        return {"success": False, "error": f"Browser navigation '{action}' failed: {e}"}
+
+
+def browser_get_tabs() -> Dict[str, Any]:
+    """Lists all open tabs in the automated browser context with index, title, and URL."""
+    try:
+        _ensure_browser()
+        pages = _context.pages if _context else []
+        tabs = []
+        for idx, p in enumerate(pages):
+            if not p.is_closed():
+                tabs.append({"index": idx, "title": p.title(), "url": p.url, "active": p == _page})
+        return {"success": True, "count": len(tabs), "tabs": tabs}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def browser_switch_tab(index: int = 0) -> Dict[str, Any]:
+    """Switches focus to an open browser tab by zero-based index."""
+    global _page
+    try:
+        _ensure_browser()
+        pages = [p for p in (_context.pages if _context else []) if not p.is_closed()]
+        if not (0 <= index < len(pages)):
+            return {"success": False, "error": f"Tab index {index} out of range (0-{max(0, len(pages) - 1)})."}
+        _page = pages[index]
+        _page.bring_to_front()
+        return {"success": True, "index": index, "title": _page.title(), "url": _page.url}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

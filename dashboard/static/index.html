@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -16,6 +16,9 @@
     .logo { font-weight: 800; letter-spacing: 3px; color: var(--cyan); font-size: 20px; }
     .sub { color: var(--muted); font-size: 12px; }
     .pill { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--green); background: #0e1712; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    .btn-cancel { background: #2a1015; color: var(--red); border: 1px solid #5a2030; border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .btn-cancel:hover { background: #3a1520; }
     .layout { display: grid; grid-template-columns: 320px 1fr 360px; gap: 14px; padding: 14px; }
     .panel { background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; min-height: 120px; }
     .panel h2 { margin: 0; padding: 10px 12px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--cyan); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
@@ -44,6 +47,17 @@
     .mono { font-family: Consolas, ui-monospace, monospace; font-size: 11px; color: #c9d6e2; }
     .small { font-size: 11px; color: var(--muted); }
     a { color: var(--cyan); }
+    .provider-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed #1d2835; font-size: 12px; }
+    .provider-row:last-child { border-bottom: none; }
+    .provider-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .provider-dot.up { background: var(--green); }
+    .provider-dot.down { background: var(--red); }
+    .provider-name { font-weight: 600; color: var(--text); min-width: 80px; }
+    .provider-model { color: var(--muted); flex: 1; }
+    .provider-switch { background: #0f2a36; color: var(--cyan); border: 1px solid #1f5f7a; border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
+    .provider-switch:hover { background: #1a3f50; }
+    .provider-switch.active { background: #0e1712; color: var(--green); border-color: #2a5035; cursor: default; }
+    .tool-count { font-size: 20px; font-weight: 700; color: var(--cyan); }
     @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .chat-wrap { height: 60vh; } }
   </style>
 </head>
@@ -53,10 +67,13 @@
       <div class="logo">TARS</div>
       <div>
         <div><b>Tactical Autonomous Robotic System</b> — Local Dashboard</div>
-        <div class="sub">Control & monitor without terminal · <span id="clock">--</span></div>
+        <div class="sub">Control &amp; monitor without terminal · <span id="clock">--</span></div>
       </div>
     </div>
-    <div id="online" class="pill">● CONNECTING</div>
+    <div class="header-actions">
+      <button class="btn-cancel" id="cancelBtn" title="Cancel running task">⬜ Cancel Task</button>
+      <div id="online" class="pill">● CONNECTING</div>
+    </div>
   </header>
 
   <div class="layout">
@@ -71,9 +88,13 @@
         </div>
         <div style="margin-top:10px">
           <div class="kv"><b>LLM:</b> <span id="llm">--</span></div>
+          <div class="kv"><b>Tools:</b> <span id="toolCount" class="tool-count">--</span> registered</div>
           <div class="kv"><b>Honesty:</b> <span id="honesty">--</span> · <b>Humor:</b> <span id="humor">--</span> · <b>Sarcasm:</b> <span id="sarcasm">--</span></div>
           <div class="kv"><b>CWD:</b> <span id="cwd" class="mono">--</span></div>
         </div>
+        <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
+        <div class="kv"><b>AI Providers</b></div>
+        <div id="providers" class="list small">Loading…</div>
         <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
         <div class="kv"><b>Reminders</b></div>
         <div id="reminders" class="list small">Loading…</div>
@@ -138,6 +159,51 @@ async function refreshStatus(){
     $('online').textContent = '● OFFLINE';
     $('online').style.color = 'var(--red)';
   }
+}
+
+async function refreshProviders(){
+  try{
+    const j = await (await fetch('/api/providers')).json();
+    const items = j.providers || [];
+    const current = j.current || {};
+    if(!items.length){ $('providers').innerHTML = '<span class="small">No providers configured.</span>'; return; }
+    $('providers').innerHTML = items.map(p => {
+      const prov = p.provider || p.name || '?';
+      const isCurrent = prov === current.provider;
+      const dot = `<span class="provider-dot ${p.available?'up':'down'}" title="${esc(p.reason||'Available')}"></span>`;
+      const btn = isCurrent
+        ? `<span class="provider-switch active">Active</span>`
+        : (p.available ? `<button class="provider-switch" data-provider="${esc(prov)}" data-model="${esc(p.model||'')}">Switch</button>` : '');
+      return `<div class="provider-row">${dot}<span class="provider-name">${esc(prov)}</span><span class="provider-model">${esc(p.model||'n/a')}</span>${btn}</div>`;
+    }).join('');
+  }catch(e){ $('providers').textContent = 'Unavailable'; }
+}
+
+async function refreshToolCount(){
+  try{
+    const j = await (await fetch('/api/tools')).json();
+    $('toolCount').textContent = j.count || '--';
+  }catch(e){ $('toolCount').textContent = '--'; }
+}
+
+async function switchProvider(name, model){
+  try{
+    const r = await fetch('/api/switch-provider', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({provider:name, model: model||null})});
+    const j = await r.json();
+    if(j.success){
+      addMsg('assistant', `Switched to ${name} (${j.model||model||'default'}).`, 'System');
+    } else {
+      addMsg('assistant', `Failed to switch: ${j.error||'unknown error'}.`, 'Error');
+    }
+    refreshProviders(); refreshStatus();
+  }catch(e){ addMsg('assistant', 'Network error switching provider.', 'Error'); }
+}
+
+async function cancelTask(){
+  try{
+    const j = await (await fetch('/api/cancel-task', {method:'POST'})).json();
+    addMsg('assistant', j.message || 'Cancelled.', 'System');
+  }catch(e){ addMsg('assistant', 'Could not cancel task.', 'Error'); }
 }
 
 async function refreshReminders(){
@@ -206,16 +272,22 @@ async function sendPrompt(){
     }
   }catch(e){ addMsg('assistant', 'Network error: '+e, 'Error'); }
   $('send').disabled = false;
-  refreshHistory(); refreshToolLogs(); refreshReminders(); refreshStatus();
+  refreshHistory(); refreshToolLogs(); refreshReminders(); refreshStatus(); refreshProviders();
 }
 
 $('send').addEventListener('click', sendPrompt);
 $('prompt').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendPrompt(); });
+$('cancelBtn').addEventListener('click', cancelTask);
+$('providers').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button.provider-switch');
+  if(!btn) return;
+  switchProvider(btn.dataset.provider, btn.dataset.model || '');
+});
 
 addMsg('assistant', 'Dashboard connected. Enter a command below to control TARS without the terminal.', 'TARS');
-refreshStatus(); refreshReminders(); refreshPrefs(); refreshHistory(); refreshToolLogs();
+refreshStatus(); refreshProviders(); refreshToolCount(); refreshReminders(); refreshPrefs(); refreshHistory(); refreshToolLogs();
 setInterval(refreshStatus, 5000);
-setInterval(()=>{ refreshReminders(); refreshHistory(); refreshToolLogs(); }, 10000);
+setInterval(()=>{ refreshReminders(); refreshHistory(); refreshToolLogs(); refreshProviders(); }, 10000);
 </script>
 </body>
 </html>

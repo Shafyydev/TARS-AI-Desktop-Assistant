@@ -1,6 +1,9 @@
 """Real filesystem inspection, navigation, and file management tools for Windows."""
 import os
+import re
+import shutil
 import time
+import zipfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import psutil
@@ -364,3 +367,180 @@ def search_files(root: str, pattern: str, max_results: int = 50) -> Dict[str, An
         }
     except Exception as e:
         return {"success": False, "error": f"Search failed: {str(e)}"}
+
+
+def _resolve_user_path(raw_path: str) -> Path:
+    """Resolves user shell aliases, env vars, and relative paths into an absolute Path."""
+    from tools.os_tools import get_real_folder
+
+    clean = (raw_path or "").strip()
+    parts = re.split(r"[\\/]", clean, maxsplit=1) if clean else []
+    alias = parts[0].lower() if parts else ""
+    if alias in {"desktop", "documents", "downloads", "pictures", "videos", "music", "home"}:
+        base = get_real_folder(alias)
+        return (base / parts[1]).resolve() if len(parts) == 2 and parts[1] else base.resolve()
+
+    expanded = Path(os.path.expandvars(os.path.expanduser(clean)))
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    return expanded.resolve()
+
+
+def _is_protected_path(target: Path) -> bool:
+    """True when ``target`` points inside a critical OS/system directory or drive root."""
+    from tools.safety import SafetyValidator
+
+    if target == Path(target.anchor) or len(target.parts) <= 1:
+        return True
+    resolved_target = target.resolve()
+    for raw_p in SafetyValidator().protected_paths:
+        prot_path = Path(raw_p).resolve()
+        if resolved_target == prot_path or resolved_target.is_relative_to(prot_path):
+            return True
+    return False
+
+
+def write_or_append_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
+    """
+    Writes or appends UTF-8 text content to a file safely.
+
+    Args:
+        path: Target file path (absolute, CWD-relative, or starting with desktop/documents/downloads).
+        content: Text content to write or append.
+        append: When True, appends to existing content instead of overwriting.
+    """
+    if not path or not isinstance(path, str):
+        return {"success": False, "error": "Target file path is required."}
+
+    target = _resolve_user_path(path)
+    if _is_protected_path(target):
+        return {"success": False, "error": f"Refusing to modify protected system path: {target}"}
+
+    if target.exists() and target.is_dir():
+        return {"success": False, "error": f"Path '{target}' is a directory, not a file."}
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if append else "w"
+        with open(target, mode, encoding="utf-8") as handle:
+            handle.write(content or "")
+        return {
+            "success": True,
+            "path": str(target),
+            "mode": "appended" if append else "written",
+            "bytes_written": len((content or "").encode("utf-8")),
+            "message": f"{'Appended to' if append else 'Wrote'} file '{target.name}'.",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to write file '{target}': {e}"}
+
+
+def copy_or_move_item(source: str, destination: str, move: bool = False) -> Dict[str, Any]:
+    """
+    Copies or moves a file or folder safely with protected-path validation.
+
+    Args:
+        source: Path of the file or directory to copy or move.
+        destination: Destination path or directory.
+        move: When True, moves/renames the item instead of copying it.
+    """
+    if not source or not destination:
+        return {"success": False, "error": "Both source and destination paths are required."}
+
+    src = _resolve_user_path(source)
+    dst = _resolve_user_path(destination)
+
+    if not src.exists():
+        return {"success": False, "error": f"Source '{src}' does not exist."}
+    if _is_protected_path(src) or _is_protected_path(dst):
+        return {"success": False, "error": "Refusing to modify or target a protected system path or drive root."}
+
+    try:
+        if dst.exists() and dst.is_dir():
+            final_dst = dst / src.name
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            final_dst = dst
+
+        if move:
+            shutil.move(str(src), str(final_dst))
+            verb = "Moved"
+        elif src.is_dir():
+            shutil.copytree(str(src), str(final_dst), dirs_exist_ok=True)
+            verb = "Copied"
+        else:
+            shutil.copy2(str(src), str(final_dst))
+            verb = "Copied"
+
+        return {
+            "success": True,
+            "source": str(src),
+            "destination": str(final_dst),
+            "action": verb.lower(),
+            "message": f"{verb} '{src.name}' to '{final_dst}'.",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to {'move' if move else 'copy'} '{src}': {e}"}
+
+
+def zip_or_unzip(source: str, destination: Optional[str] = None, action: str = "zip") -> Dict[str, Any]:
+    """
+    Compresses a file/folder into a .zip archive or extracts an existing .zip archive.
+
+    Args:
+        source: Source file/folder (for zip) or .zip archive path (for unzip).
+        destination: Optional output archive path or extraction directory.
+        action: Either 'zip' (compress) or 'unzip' / 'extract'.
+    """
+    src = _resolve_user_path(source)
+    if not src.exists():
+        return {"success": False, "error": f"Source '{src}' does not exist."}
+
+    act = (action or "zip").strip().lower()
+    if act in {"unzip", "extract"}:
+        if not zipfile.is_zipfile(src):
+            return {"success": False, "error": f"'{src}' is not a valid zip archive."}
+        extract_dir = _resolve_user_path(destination) if destination else src.with_suffix("")
+        if _is_protected_path(extract_dir):
+            return {"success": False, "error": f"Refusing to extract into protected path: {extract_dir}"}
+        try:
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            base_resolved = extract_dir.resolve()
+            with zipfile.ZipFile(src, "r") as zf:
+                for member in zf.infolist():
+                    member_target = (base_resolved / member.filename).resolve()
+                    if not member_target.is_relative_to(base_resolved):
+                        return {"success": False, "error": f"Blocked unsafe zip path traversal: {member.filename}"}
+                zf.extractall(base_resolved)
+            return {
+                "success": True,
+                "source": str(src),
+                "destination": str(base_resolved),
+                "message": f"Extracted '{src.name}' into '{base_resolved}'.",
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to extract archive: {e}"}
+
+    out_zip = _resolve_user_path(destination) if destination else src.with_suffix(".zip")
+    if out_zip.suffix.lower() != ".zip":
+        out_zip = out_zip.with_suffix(".zip")
+    if _is_protected_path(out_zip):
+        return {"success": False, "error": f"Refusing to write archive into protected path: {out_zip}"}
+
+    try:
+        out_zip.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if src.is_dir():
+                for item in src.rglob("*"):
+                    if item.is_file():
+                        zf.write(item, arcname=item.relative_to(src.parent))
+            else:
+                zf.write(src, arcname=src.name)
+        return {
+            "success": True,
+            "source": str(src),
+            "archive_path": str(out_zip),
+            "message": f"Created archive '{out_zip.name}'.",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to create zip archive: {e}"}

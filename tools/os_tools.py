@@ -42,6 +42,15 @@ COMMON_APPS = {
     "excel": "start excel",
     "powerpoint": "start powerpnt",
     "obs": "start obs64",
+    "vlc": "start vlc",
+    "snipping tool": "start ms-screenclip:",
+    "photos": "start ms-photos:",
+    "calendar": "start outlookcal:",
+    "store": "start ms-windows-store:",
+    "microsoft store": "start ms-windows-store:",
+    "device manager": "devmgmt.msc",
+    "resource monitor": "resmon",
+    "postman": "start postman",
     # Websites & Quick Web Destinations
     "github": "start https://github.com",
     "my github": "start https://github.com/Shafyydev",
@@ -111,14 +120,33 @@ def _launch_token(cmd: str) -> str:
     return token.strip().lower()
 
 
+_LAUNCH_ALIAS_TOKENS: Dict[str, tuple] = {
+    "calc": ("calc", "calculator", "applicationframehost"),
+    "wt": ("wt", "windowsterminal", "terminal"),
+    "ms-settings": ("ms-settings", "systemsettings", "settings"),
+    "winword": ("winword", "word"),
+    "powerpnt": ("powerpnt", "powerpoint"),
+    "mspaint": ("mspaint", "paint"),
+    "taskmgr": ("taskmgr", "task manager"),
+    "explorer": ("explorer", "file explorer"),
+    "msedge": ("msedge", "edge"),
+    "ms-screenclip": ("ms-screenclip", "snipping", "screenclippinghost"),
+    "ms-photos": ("ms-photos", "photos"),
+    "ms-windows-store": ("ms-windows-store", "winstore", "microsoft store"),
+}
+
+
 def _launch_target_present(token: str) -> bool:
     """True when a process or visible window matching ``token`` exists."""
     if not token:
         return True
 
+    candidates = _LAUNCH_ALIAS_TOKENS.get(token, (token,))
+
     for proc in psutil.process_iter(["name"]):
         try:
-            if token in (proc.info.get("name") or "").lower():
+            proc_name = (proc.info.get("name") or "").lower()
+            if any(alias in proc_name for alias in candidates):
                 return True
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -136,12 +164,12 @@ def _launch_target_present(token: str) -> bool:
                 pass
 
         win32gui.EnumWindows(_collect, None)
-        return any(token in title.lower() for title in titles)
+        return any(any(alias in title.lower() for alias in candidates) for title in titles)
     except Exception:
         return False
 
 
-def _wait_for_launch(token: str, timeout: float = 1.5) -> bool:
+def _wait_for_launch(token: str, timeout: float = 3.0) -> bool:
     """Waits up to ``timeout`` seconds for a launched target to appear."""
     deadline = time.time() + timeout
     while True:
@@ -187,14 +215,14 @@ def launch_application(app_name: str) -> Dict[str, Any]:
     # A shell start returns immediately whether or not the target exists, so the
     # launch is only reported as successful once something matching it appears.
     token = "" if resolved_folder is not None else _launch_token(cmd)
-    if not token or _wait_for_launch(token, timeout=1.5):
+    if not token or _wait_for_launch(token, timeout=3.0):
         return {"success": True, "message": f"Successfully launched {clean_name}."}
 
     return {
         "success": False,
         "error": (
             f"Launched '{clean_name}' but no matching process or window appeared "
-            "within 1.5 seconds."
+            "within 3.0 seconds."
         ),
     }
 
@@ -708,3 +736,170 @@ def system_power(action: str, delay_sec: int = 0) -> Dict[str, Any]:
         return {"success": False, "error": f"Unknown power action '{action}'."}
     except Exception as e:
         return {"success": False, "error": f"Power command failed: {e}"}
+
+
+def set_screen_brightness(level_percent: int) -> Dict[str, Any]:
+    """
+    Sets the primary internal display brightness (0 to 100%) on Windows laptops/displays.
+
+    Args:
+        level_percent: Target brightness percentage between 0 and 100.
+    """
+    level = max(0, min(100, int(level_percent)))
+    try:
+        ps_cmd = (
+            "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods)"
+            f".WmiSetBrightness(1, {level})"
+        )
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if proc.returncode == 0:
+            return {"success": True, "brightness": level, "message": f"Screen brightness set to {level}%."}
+        err = (proc.stderr or proc.stdout or "").strip()
+        return {
+            "success": False,
+            "error": err or "Display does not support WMI software brightness control (common on external desktop monitors).",
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to adjust brightness: {e}"}
+
+
+def get_top_processes(sort_by: str = "cpu", limit: int = 8) -> Dict[str, Any]:
+    """
+    Returns top resource-consuming running Windows processes by CPU or memory usage.
+
+    Args:
+        sort_by: Metric to rank by ('cpu' or 'ram'/'memory').
+        limit: Maximum number of processes to list (1-25).
+    """
+    limit = max(1, min(25, int(limit)))
+    by_ram = (sort_by or "cpu").strip().lower() in {"ram", "memory", "mem"}
+    items: List[Dict[str, Any]] = []
+    # Prime CPU measurement cleanly with a short delta
+    procs = []
+    for p in psutil.process_iter(["pid", "name", "memory_info"]):
+        try:
+            p.cpu_percent(interval=None)
+            procs.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(0.15)
+    for p in procs:
+        try:
+            name = p.info.get("name") or ""
+            if not name or name.lower() in {"system idle process", "idle"}:
+                continue
+            cpu = round(p.cpu_percent(interval=None), 1)
+            mem_info = p.info.get("memory_info")
+            ram_mb = round((mem_info.rss if mem_info else 0) / (1024 * 1024), 1)
+            items.append({"pid": p.info["pid"], "name": name, "cpu_percent": cpu, "ram_mb": ram_mb})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    key_name = "ram_mb" if by_ram else "cpu_percent"
+    items.sort(key=lambda row: row[key_name], reverse=True)
+    top = items[:limit]
+    summary = ", ".join(
+        f"{r['name']} ({r['ram_mb']} MB)" if by_ram else f"{r['name']} ({r['cpu_percent']}% CPU, {r['ram_mb']} MB)"
+        for r in top[:5]
+    )
+    return {"success": True, "sort_by": "ram" if by_ram else "cpu", "processes": top, "summary": summary}
+
+
+def snap_window(direction: str, window_name: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Snaps or tiles the active or named window ('left', 'right', 'up'/'maximize', 'down'/'minimize').
+    """
+    from tools.gui_tools import focus_window, press_keys
+
+    dir_clean = (direction or "left").strip().lower()
+    mapping = {
+        "left": ["win", "left"],
+        "right": ["win", "right"],
+        "up": ["win", "up"],
+        "maximize": ["win", "up"],
+        "down": ["win", "down"],
+        "minimize": ["win", "down"],
+    }
+    keys = mapping.get(dir_clean)
+    if not keys:
+        return {"success": False, "error": f"Unsupported snap direction '{direction}'. Use left, right, maximize, or minimize."}
+
+    target_label = "active window"
+    if window_name:
+        foc = focus_window(window_name)
+        if not foc.get("success"):
+            return foc
+        target_label = foc.get("window") or window_name
+        time.sleep(0.08)
+
+    res = press_keys(keys)
+    if res.get("success"):
+        res["message"] = f"Snapped '{target_label}' {dir_clean}."
+    return res
+
+
+def manage_virtual_desktop(action: str = "new") -> Dict[str, Any]:
+    """
+    Manages Windows virtual desktops: 'new', 'next', 'prev', or 'close'.
+    """
+    from tools.gui_tools import press_keys
+
+    act = (action or "new").strip().lower()
+    combos = {
+        "new": ["ctrl", "win", "d"],
+        "create": ["ctrl", "win", "d"],
+        "next": ["ctrl", "win", "right"],
+        "right": ["ctrl", "win", "right"],
+        "prev": ["ctrl", "win", "left"],
+        "previous": ["ctrl", "win", "left"],
+        "left": ["ctrl", "win", "left"],
+        "close": ["ctrl", "win", "f4"],
+    }
+    keys = combos.get(act)
+    if not keys:
+        return {"success": False, "error": f"Unknown virtual desktop action '{action}'. Use new, next, prev, or close."}
+    res = press_keys(keys)
+    if res.get("success"):
+        res["message"] = f"Virtual desktop action '{act}' executed."
+    return res
+
+
+_WINDOWS_SETTINGS_URIS: Dict[str, str] = {
+    "wifi": "ms-settings:network-wifi",
+    "wi-fi": "ms-settings:network-wifi",
+    "network": "ms-settings:network-status",
+    "bluetooth": "ms-settings:bluetooth",
+    "display": "ms-settings:display",
+    "screen": "ms-settings:display",
+    "sound": "ms-settings:sound",
+    "audio": "ms-settings:sound",
+    "battery": "ms-settings:batterysaver",
+    "power": "ms-settings:powersleep",
+    "update": "ms-settings:windowsupdate",
+    "updates": "ms-settings:windowsupdate",
+    "windows update": "ms-settings:windowsupdate",
+    "apps": "ms-settings:appsfeatures",
+    "storage": "ms-settings:storagesense",
+    "privacy": "ms-settings:privacy",
+    "about": "ms-settings:about",
+    "default apps": "ms-settings:defaultapps",
+    "notifications": "ms-settings:notifications",
+}
+
+
+def open_windows_setting(setting_name: str) -> Dict[str, Any]:
+    """
+    Opens a specific Windows Settings page directly (e.g. 'wifi', 'bluetooth', 'display', 'sound', 'battery', 'updates').
+    """
+    clean = (setting_name or "").strip().lower()
+    uri = _WINDOWS_SETTINGS_URIS.get(clean, "ms-settings:")
+    try:
+        subprocess.run(["cmd.exe", "/c", "start", "", uri], capture_output=True, timeout=3)
+        return {"success": True, "uri": uri, "message": f"Opened Windows {clean or 'main'} settings."}
+    except Exception as e:
+        return {"success": False, "error": f"Could not open settings '{setting_name}': {e}"}

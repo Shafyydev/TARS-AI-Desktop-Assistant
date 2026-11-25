@@ -161,12 +161,23 @@ def main() -> None:
     agent = TARSAgent()
 
     llm = agent.orchestrator.llm
+    fallbacks = agent.orchestrator._get_fallback_providers()
+    fb_names = ", ".join(p.provider for p in fallbacks)
     if llm.available():
-        console.print(f"[dim green]Language model ready:[/dim green] {llm.provider} / {llm.model}")
+        fb_note = f" (failover ready: {fb_names})" if fb_names else ""
+        console.print(f"[dim green]Language model ready:[/dim green] {llm.provider} / {llm.model}{fb_note}")
     else:
-        console.print(f"[bold red]Language model offline:[/bold red] {llm.unavailable_reason()}")
+        if fb_names:
+            console.print(f"[yellow]Primary LLM ({llm.provider}) offline ({llm.unavailable_reason()}); failover ready: {fb_names}[/yellow]")
+        else:
+            console.print(f"[bold red]Language model offline:[/bold red] {llm.unavailable_reason()}")
     use_fast = not args.neural_voice
     speaker = VoiceSpeaker(fast_voice=use_fast) if not args.text_only else None
+
+    # Speak scheduled reminder alerts aloud when audio output is enabled
+    if speaker:
+        from core.scheduler import set_alert_callback
+        set_alert_callback(lambda msg: speaker.speak(msg, blocking=False))
     v_cfg = agent.settings.get("voice", {})
     listener = (
         VoiceListener(

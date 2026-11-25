@@ -20,7 +20,12 @@ from tools.os_tools import (
     delete_file_or_folder,
     empty_recycle_bin,
     get_network_info,
-    system_power
+    system_power,
+    set_screen_brightness,
+    get_top_processes,
+    snap_window,
+    manage_virtual_desktop,
+    open_windows_setting,
 )
 from tools.gui_tools import (
     take_screenshot,
@@ -45,14 +50,17 @@ from tools.gui_tools import (
     maximize_active_window,
     minimize_active_window
 )
-from tools.browser_tools import open_url, search_web, fetch_webpage_summary, get_free_knowledge
+from tools.browser_tools import open_url, search_web, fetch_webpage_summary, get_free_knowledge, get_weather
 from tools.filesystem_tools import (
     list_drives,
     navigate_to_path,
     list_directory,
     read_file,
     get_file_metadata,
-    search_files
+    search_files,
+    write_or_append_file,
+    copy_or_move_item,
+    zip_or_unzip,
 )
 from tools.verification import (
     verify_action,
@@ -68,6 +76,11 @@ from tools.browser_automation import (
     browser_find_elements,
     browser_click_element,
     browser_extract_text,
+    browser_type,
+    browser_scroll,
+    browser_history_nav,
+    browser_get_tabs,
+    browser_switch_tab,
     browser_close,
     connect_brave,
     find_brave_executable
@@ -88,7 +101,7 @@ from tools.interaction_tools import (
     open_whatsapp_chat,
     send_whatsapp_message
 )
-from core.memory import remember_fact
+from core.memory import remember_fact, forget_fact
 from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
 from tools.google_workspace_tools import (
     list_unread_emails,
@@ -102,6 +115,7 @@ __all__ = [
     "SafetyValidator",
     "check_safety_rules",
     "remember_fact",
+    "forget_fact",
     "set_reminder",
     "list_active_reminders",
     "cancel_active_reminder",
@@ -135,6 +149,11 @@ __all__ = [
     "empty_recycle_bin",
     "get_network_info",
     "system_power",
+    "set_screen_brightness",
+    "get_top_processes",
+    "snap_window",
+    "manage_virtual_desktop",
+    "open_windows_setting",
     "take_screenshot",
     "inspect_screen",
     "click_coordinate",
@@ -159,12 +178,18 @@ __all__ = [
     "search_web",
     "fetch_webpage_summary",
     "get_free_knowledge",
+    "get_weather",
     "browser_navigate",
     "browser_search",
     "browser_click_first_result",
     "browser_find_elements",
     "browser_click_element",
     "browser_extract_text",
+    "browser_type",
+    "browser_scroll",
+    "browser_history_nav",
+    "browser_get_tabs",
+    "browser_switch_tab",
     "browser_close",
     "connect_brave",
     "find_brave_executable",
@@ -179,6 +204,9 @@ __all__ = [
     "read_file",
     "get_file_metadata",
     "search_files",
+    "write_or_append_file",
+    "copy_or_move_item",
+    "zip_or_unzip",
     "verify_action",
     "cancel_current_task",
     "request_task_cancellation",

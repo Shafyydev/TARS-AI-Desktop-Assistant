@@ -180,50 +180,25 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
     shot_path = shot.get("filepath")
     api_key = os.getenv("GEMINI_API_KEY")
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    ai_provider = os.getenv("AI_PROVIDER", "gemini").lower()
+    ai_provider = (os.getenv("AI_PROVIDER") or "").strip().lower()
+    if not ai_provider:
+        try:
+            from core.llm_provider import _load_llm_settings
+            ai_provider = str(_load_llm_settings().get("provider") or "gemini").strip().lower()
+        except Exception:
+            ai_provider = "gemini"
+
     prompt = question or (
         "Describe what is currently visible on this desktop screen concisely in 2 sentences. "
         "Highlight active applications, visible windows, websites, or open documents."
     )
 
-    if shot_path and ai_provider == "omniroute":
-        try:
-            import base64
-            from openai import OpenAI
-            with open(shot_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-            from core.llm_provider import get_omniroute_api_key
-            key = get_omniroute_api_key() or "omniroute-default"
-            base_url = (
-                os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or "http://localhost:20128/v1"
-            ).rstrip("/")
-            client = OpenAI(
-                base_url=base_url,
-                api_key=key,
-                default_headers={
-                    "HTTP-Referer": "https://github.com/Shafyydev/TARS",
-                    "X-Title": "TARS AI Desktop Assistant",
-                }
-            )
-            model = os.getenv("AI_MODEL", "auto/best-vision")
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-                        ]
-                    }
-                ],
-                max_tokens=300
-            )
-            if resp.choices and resp.choices[0].message.content:
-                description = resp.choices[0].message.content.strip()
-        except Exception as e:
-            description = f"{description} (Vision analysis unavailable: {str(e)[:60]})"
-    elif shot_path and ai_provider == "openrouter" and openrouter_key and openrouter_key != "your_openrouter_api_key_here":
+    vision_done = False
+    vision_errors: List[str] = []
+
+    def _try_openrouter_vision() -> Optional[str]:
+        if not (shot_path and openrouter_key and openrouter_key != "your_openrouter_api_key_here"):
+            return None
         try:
             import base64
             from openai import OpenAI
@@ -237,7 +212,7 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
                     "X-Title": "TARS AI Desktop Assistant",
                 }
             )
-            model = os.getenv("AI_MODEL", "anthropic/claude-3.5-sonnet")
+            model = os.getenv("OPENROUTER_MODEL") or os.getenv("AI_MODEL") or "anthropic/claude-3.5-sonnet"
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -249,13 +224,63 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
                         ]
                     }
                 ],
-                max_tokens=300
+                max_tokens=300,
+                timeout=8.0,
             )
             if resp.choices and resp.choices[0].message.content:
-                description = resp.choices[0].message.content.strip()
+                return resp.choices[0].message.content.strip()
         except Exception as e:
-            description = f"{description} (Vision analysis unavailable: {str(e)[:60]})"
-    elif shot_path and api_key and api_key != "your_gemini_api_key_here":
+            vision_errors.append(str(e)[:60])
+        return None
+
+    def _try_omniroute_vision() -> Optional[str]:
+        if not shot_path:
+            return None
+        try:
+            import base64
+            from openai import OpenAI
+            from core.llm_provider import get_omniroute_api_key
+            with open(shot_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            key = get_omniroute_api_key() or "omniroute-default"
+            base_url = (
+                os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or "http://localhost:20128/v1"
+            ).rstrip("/")
+            client = OpenAI(
+                base_url=base_url,
+                api_key=key,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                    "X-Title": "TARS AI Desktop Assistant",
+                }
+            )
+            model = os.getenv("OMNIROUTE_MODEL") or os.getenv("AI_MODEL") or "auto/best-vision"
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=300,
+                timeout=8.0,
+            )
+            if resp.choices and resp.choices[0].message.content:
+                from core.llm_provider import is_gateway_notice
+                content = resp.choices[0].message.content.strip()
+                if not is_gateway_notice(content):
+                    return content
+        except Exception as e:
+            vision_errors.append(str(e)[:60])
+        return None
+
+    def _try_gemini_vision() -> Optional[str]:
+        if not (shot_path and api_key and api_key != "your_gemini_api_key_here"):
+            return None
         try:
             from google import genai
             from google.genai import types
@@ -263,17 +288,53 @@ def inspect_screen(question: Optional[str] = None) -> Dict[str, Any]:
             with open(shot_path, "rb") as f:
                 img_bytes = f.read()
 
+            vision_model = os.getenv("GEMINI_VISION_MODEL") or "gemini-3.1-flash-lite"
+            cfg = None
+            try:
+                cfg = types.GenerateContentConfig(http_options=types.HttpOptions(timeout=6000))
+            except Exception:
+                pass
             resp = client.models.generate_content(
-                model="gemini-3.8-flash",
+                model=vision_model,
                 contents=[
                     types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
                     prompt
-                ]
+                ],
+                config=cfg,
             )
             if resp and resp.text:
-                description = resp.text.strip()
+                return resp.text.strip()
         except Exception as e:
-            description = f"{description} (Vision analysis unavailable: {str(e)[:60]})"
+            vision_errors.append(str(e)[:60])
+        return None
+
+    # Order vision providers with primary first, falling back gracefully
+    order = {
+        "omniroute": [_try_omniroute_vision, _try_openrouter_vision, _try_gemini_vision],
+        "openrouter": [_try_openrouter_vision, _try_omniroute_vision, _try_gemini_vision],
+        "gemini": [_try_gemini_vision, _try_openrouter_vision, _try_omniroute_vision],
+    }.get(ai_provider, [_try_gemini_vision, _try_openrouter_vision, _try_omniroute_vision])
+
+    for fn in order:
+        text = fn()
+        if text:
+            description = text
+            vision_done = True
+            break
+
+    if not vision_done:
+        # Offline fallback: enrich description with accessible UI element labels from active window
+        try:
+            from tools.ui_automation import get_ui_elements
+            ui_res = get_ui_elements()
+            if ui_res.get("success") and ui_res.get("elements"):
+                labels = [e["name"] for e in ui_res["elements"][:8] if e.get("name")]
+                if labels:
+                    description = f"{description} Visible controls: {', '.join(labels)}."
+        except Exception:
+            pass
+        if vision_errors and "Visible controls" not in description:
+            description = f"{description} (Vision analysis unavailable: {vision_errors[0]})"
 
     return {
         "success": shot.get("success", True),

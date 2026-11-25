@@ -73,6 +73,7 @@ class TaskOrchestrator:
     def __init__(self, agent: Any):
         self.agent = agent
         self.llm = LLMProvider()
+        self._fallback_providers: Dict[str, LLMProvider] = {}
         self.current_task: Optional[TaskState] = None
         self.task_history: List[TaskState] = []
         self.context: Dict[str, Any] = {
@@ -82,43 +83,87 @@ class TaskOrchestrator:
             "last_browser_url": None,
         }
 
-    # The model-facing tool set.  Deliberately smaller than the full registry:
-    # aliases and overlapping variants only add ambiguity for the model, and the
-    # local fast path already covers the direct commands without any tool call.
+    # Compact tool set for small local models (Ollama e.g. qwen3:4b) so context stays tight.
+    OLLAMA_TOOL_NAMES = frozenset({
+        "run_powershell",
+        "launch_application", "open_folder", "lock_workstation", "get_system_telemetry",
+        "set_system_volume", "media_control", "get_running_windows", "read_clipboard",
+        "list_directory", "search_files", "read_file", "create_file_or_folder",
+        "delete_file_or_folder",
+        "inspect_screen", "click_coordinate", "type_text", "press_keys", "scroll_screen",
+        "switch_window",
+        "browser_navigate", "browser_click_first_result", "browser_extract_text", "smart_search",
+        "smart_click", "smart_type",
+        "open_whatsapp_chat", "send_whatsapp_message",
+        "set_reminder", "list_active_reminders", "cancel_active_reminder",
+        "list_unread_emails", "read_email", "send_email", "list_upcoming_events",
+        "create_calendar_event",
+        "remember_fact", "verify_action", "cancel_current_task",
+    })
+
+    # Full model-facing tool set for cloud/frontier models while still omitting duplicate aliases.
     MODEL_TOOL_NAMES = frozenset({
         # Shell (confirmation-gated)
         "run_powershell",
-        # System & hardware
+        # System, power & hardware
         "launch_application", "open_folder", "lock_workstation", "get_system_telemetry",
-        "set_system_volume", "media_control", "get_running_windows", "read_clipboard",
-        # Files
-        "list_directory", "search_files", "read_file", "create_file_or_folder",
-        "delete_file_or_folder",
-        # Screen & input
-        "inspect_screen", "click_coordinate", "type_text", "press_keys", "scroll_screen",
-        "switch_window",
-        # Web
-        "browser_navigate", "browser_click_first_result", "browser_extract_text", "smart_search",
-        # Desktop UI
-        "smart_click", "smart_type",
-        # WhatsApp
-        "open_whatsapp_chat", "send_whatsapp_message",
-        # Reminders
+        "get_top_processes", "set_system_volume", "set_screen_brightness", "media_control",
+        "get_running_windows", "snap_window", "manage_virtual_desktop", "open_windows_setting",
+        "read_clipboard", "write_clipboard", "get_network_info", "kill_process",
+        "empty_recycle_bin", "system_power",
+        # Files & archives
+        "list_drives", "navigate_to_path", "list_directory", "search_files", "read_file",
+        "get_file_metadata", "create_file_or_folder", "write_or_append_file",
+        "copy_or_move_item", "zip_or_unzip", "delete_file_or_folder",
+        # Screen, vision & input
+        "take_screenshot", "inspect_screen", "describe_screen", "click_coordinate",
+        "double_click", "right_click", "drag_mouse", "type_text", "press_keys",
+        "scroll_screen", "switch_window", "focus_window", "close_active_window",
+        "maximize_active_window", "minimize_active_window",
+        # Web, Playwright & free knowledge
+        "open_url", "fetch_webpage_summary", "get_free_knowledge", "get_weather",
+        "browser_navigate", "browser_search", "browser_click_first_result",
+        "browser_find_elements", "browser_click_element", "browser_extract_text",
+        "browser_type", "browser_scroll", "browser_history_nav", "browser_get_tabs",
+        "browser_switch_tab", "smart_search",
+        # Desktop UI automation & WhatsApp
+        "get_active_window", "get_active_window_context", "list_running_applications",
+        "get_ui_elements", "click_ui_element", "type_into_ui_element", "wait_for_condition",
+        "smart_click", "smart_type", "open_whatsapp_chat", "send_whatsapp_message",
+        # Reminders & scheduling
         "set_reminder", "list_active_reminders", "cancel_active_reminder",
         # Google Workspace
         "list_unread_emails", "read_email", "send_email", "list_upcoming_events",
         "create_calendar_event",
         # Memory & verification
-        "remember_fact", "verify_action", "cancel_current_task",
+        "remember_fact", "forget_fact", "verify_action", "cancel_current_task",
     })
 
-    def _tools_for_provider(self) -> List[Callable]:
+    def _tools_for_provider(self, provider_name: Optional[str] = None) -> List[Callable]:
         """Returns the curated tool declarations exposed to the configured LLM."""
-        return [
-            self.agent.tool_registry[name]
-            for name in sorted(self.MODEL_TOOL_NAMES)
-            if name in self.agent.tool_registry
-        ]
+        import tools as tools_pkg
+
+        active_provider = provider_name or getattr(self.llm, "provider", "")
+        selected = (
+            self.OLLAMA_TOOL_NAMES
+            if active_provider == "ollama"
+            else self.MODEL_TOOL_NAMES
+        )
+        declarations: List[Callable] = []
+        for name in sorted(selected):
+            if name not in self.agent.tool_registry:
+                continue
+            fn = self.agent.tool_registry[name]
+            # If a test replaces a registry tool with a MagicMock (no __name__),
+            # supply the canonical function signature for schema generation while
+            # _llm_tool_executor still dispatches calls through tool_registry[name].
+            if not hasattr(fn, "__name__"):
+                canonical = getattr(tools_pkg, name, None)
+                if callable(canonical) and hasattr(canonical, "__name__"):
+                    declarations.append(canonical)
+                continue
+            declarations.append(fn)
+        return declarations
 
     def _llm_tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -221,6 +266,18 @@ class TaskOrchestrator:
                     "response": f"In {last_dir}, I found {len(last_files)} file(s): {', '.join(names) if names else 'none'}.",
                     "steps": []
                 }
+
+        # Follow-up: "read that webpage" / "extract page text" after browser navigation
+        if re.search(r"\b(?:read\s+(?:this|that)\s+page|extract\s+(?:page\s+)?text|what\s+does\s+the\s+page\s+say)\b", clean):
+            if self.context.get("last_browser_url"):
+                res = self.agent.execute_tool("browser_extract_text", {})
+                if res.get("success"):
+                    snippet = (res.get("text") or "")[:400].strip()
+                    return {
+                        "success": True,
+                        "response": f"Page '{res.get('title', 'Page')}': {snippet}",
+                        "steps": [{"tool": "browser_extract_text", "args": {}, "result": res}],
+                    }
 
         return None
 
@@ -410,11 +467,33 @@ class TaskOrchestrator:
                 "steps": steps_log
             }
 
+    def _get_fallback_providers(self) -> List[LLMProvider]:
+        """
+        Returns secondary configured & reachable LLMProvider instances in priority
+        order so TARS fails over seamlessly if the primary provider is down,
+        rate-limited, or returning an upstream gateway notice.
+        """
+        if not isinstance(self.llm, LLMProvider) or os.getenv("TARS_DISABLE_PROVIDER_FAILOVER") == "1":
+            return []
+
+        order = ("openrouter", "gemini", "omniroute", "ollama")
+        candidates: List[LLMProvider] = []
+        for prov_name in order:
+            if prov_name == self.llm.provider:
+                continue
+            inst = self._fallback_providers.get(prov_name)
+            if inst is None:
+                inst = LLMProvider(provider=prov_name)
+                self._fallback_providers[prov_name] = inst
+            if inst.available():
+                candidates.append(inst)
+        return candidates
+
     def run_orchestrated_task(self, request: str, on_status: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """
         Main orchestration entry point.
         Checks cancellation, resolves follow-ups, executes deterministic compound flows,
-        or delegates to the multi-turn LLM agent loop.
+        or delegates to the multi-turn LLM agent loop with automatic provider failover.
         """
         reset_cancellation()
 
@@ -433,16 +512,16 @@ class TaskOrchestrator:
         if browser_res:
             return browser_res
 
-        # 4. Multi-turn LLM ReAct Tool-Calling Agent Loop
+        # 4. Multi-turn LLM ReAct Tool-Calling Agent Loop with seamless provider failover
+        tools_list = self._tools_for_provider()
+        system_instruction = f"{self.agent.system_prompt}\n\n{build_runtime_context()}"
+        history = self.agent.memory.get_recent_messages(limit=10) if hasattr(self.agent, "memory") else None
+        user_prefs = self.agent.memory.get_all_preferences() if hasattr(self.agent, "memory") else None
+
+        primary_error_result: Optional[Dict[str, Any]] = None
         if self.llm.available():
             if on_status:
-                on_status("Formulating autonomous execution plan...")
-
-            tools_list = self._tools_for_provider()
-            system_instruction = f"{self.agent.system_prompt}\n\n{build_runtime_context()}"
-
-            history = self.agent.memory.get_recent_messages(limit=10) if hasattr(self.agent, "memory") else None
-            user_prefs = self.agent.memory.get_all_preferences() if hasattr(self.agent, "memory") else None
+                on_status(f"Formulating autonomous execution plan ({self.llm.provider})...")
 
             llm_result = self.llm.run_tool_agent_loop(
                 prompt=request,
@@ -457,7 +536,33 @@ class TaskOrchestrator:
             )
 
             if llm_result:
-                return self._honest_llm_result(llm_result, request)
+                # Return directly if succeeded, cancelled, or already executed tool side effects
+                if llm_result.get("success") or llm_result.get("cancelled") or llm_result.get("steps"):
+                    return self._honest_llm_result(llm_result, request)
+                primary_error_result = llm_result
+
+        # Fail over across secondary configured providers only when zero tool side effects occurred
+        for fallback in self._get_fallback_providers():
+            if on_status:
+                on_status(f"Primary LLM unavailable; failing over to {fallback.provider}...")
+            fb_tools = self._tools_for_provider(provider_name=fallback.provider)
+
+            fb_result = fallback.run_tool_agent_loop(
+                prompt=request,
+                system_instruction=system_instruction,
+                tools_list=fb_tools,
+                tool_executor=self._llm_tool_executor,
+                history=history,
+                user_preferences=user_prefs,
+                on_status=on_status,
+                max_iterations=10,
+                timeout=10.0 if fallback.provider == "ollama" else 25.0,
+            )
+            if fb_result and (fb_result.get("success") or fb_result.get("cancelled") or fb_result.get("steps")):
+                return self._honest_llm_result(fb_result, request)
+
+        if primary_error_result:
+            return self._honest_llm_result(primary_error_result, request)
 
         # 5. Fallback: report why the model is offline, or ask for a clearer command
         reason = self.llm.unavailable_reason()

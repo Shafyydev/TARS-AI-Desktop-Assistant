@@ -1,4 +1,4 @@
-﻿"""FastAPI backend for the TARS dashboard (no changes to existing TARS modules)."""
+"""FastAPI backend for the TARS dashboard (no changes to existing TARS modules)."""
 from __future__ import annotations
 
 import json
@@ -182,7 +182,7 @@ def reminders() -> Dict[str, Any]:
 def screenshot() -> Any:
     try:
         res = tools.take_screenshot()
-        path = res.get("path") if isinstance(res, dict) else None
+        path = (res.get("filepath") or res.get("path")) if isinstance(res, dict) else None
         if path and Path(path).exists():
             return FileResponse(path)
     except Exception as e:
@@ -219,6 +219,57 @@ def chat(req: ChatRequest) -> Dict[str, Any]:
         "statuses": statuses,
         "duration_sec": elapsed,
     }
+
+
+class ProviderSwitchRequest(BaseModel):
+    provider: str
+    model: Optional[str] = None
+
+
+@app.get("/api/providers")
+def providers() -> Dict[str, Any]:
+    """Returns the status of all configured LLM backends."""
+    try:
+        from core.llm_provider import LLMProvider
+        statuses = LLMProvider.list_provider_statuses()
+        agent = get_agent()
+        current = {
+            "provider": getattr(agent.orchestrator.llm, "provider", None),
+            "model": getattr(agent.orchestrator.llm, "model", None),
+        }
+        return {"success": True, "current": current, "providers": statuses}
+    except Exception as e:
+        return {"success": False, "error": str(e), "providers": []}
+
+
+@app.post("/api/switch-provider")
+def switch_provider(req: ProviderSwitchRequest) -> Dict[str, Any]:
+    """Switches the active LLM provider at runtime."""
+    agent = get_agent()
+    try:
+        result = agent.orchestrator.llm.switch_provider(req.provider, req.model)
+        return dict(result)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/cancel-task")
+def cancel_task() -> Dict[str, Any]:
+    """Cancels the currently running orchestrated task."""
+    agent = get_agent()
+    try:
+        agent.orchestrator.cancel()
+        return {"success": True, "message": "Task cancellation requested."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/tools")
+def list_tools() -> Dict[str, Any]:
+    """Returns the list of all registered tool names."""
+    agent = get_agent()
+    names = sorted(agent.tool_registry.keys())
+    return {"success": True, "count": len(names), "tools": names}
 
 
 @app.get("/")

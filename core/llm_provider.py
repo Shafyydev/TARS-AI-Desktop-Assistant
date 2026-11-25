@@ -284,6 +284,46 @@ class LLMProvider:
         """Applies a temporary circuit breaker when API rate limits are reached."""
         self._quota_exhausted_until = time.time() + duration_sec
 
+    def switch_provider(self, provider: str, model: Optional[str] = None) -> Dict[str, Any]:
+        """Switches the active LLM provider and optional model at runtime."""
+        prov = (provider or "").strip().lower()
+        if prov not in {"gemini", "openrouter", "omniroute", "ollama"}:
+            return {"success": False, "error": f"Unsupported provider '{provider}'."}
+
+        defaults = {
+            "ollama": os.getenv("OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL,
+            "openrouter": os.getenv("OPENROUTER_MODEL") or OPENROUTER_DEFAULT_MODEL,
+            "omniroute": os.getenv("OMNIROUTE_MODEL") or OMNIROUTE_DEFAULT_MODEL,
+            "gemini": os.getenv("GEMINI_MODEL") or DEFAULT_MODELS[0],
+        }
+        self.provider = prov
+        self.model = (model or "").strip() or defaults[prov]
+        self._quota_exhausted_until = 0.0
+        self.client = None
+        self._init_client()
+        return {
+            "success": True,
+            "provider": self.provider,
+            "model": self.model,
+            "available": self.available(),
+            "reason": self.unavailable_reason(),
+        }
+
+    @classmethod
+    def list_provider_statuses(cls) -> List[Dict[str, Any]]:
+        """Probes all supported LLM backends and reports configuration and live availability."""
+        statuses: List[Dict[str, Any]] = []
+        for prov in ("gemini", "openrouter", "omniroute", "ollama"):
+            probe = cls(provider=prov)
+            avail = probe.available()
+            statuses.append({
+                "provider": prov,
+                "model": probe.model,
+                "available": avail,
+                "reason": "" if avail else probe.unavailable_reason(),
+            })
+        return statuses
+
     def run_tool_agent_loop(
         self,
         prompt: str,
@@ -548,6 +588,12 @@ class LLMProvider:
         "system_power.action": ["sleep", "restart", "shutdown", "cancel"],
         "smart_search.engine": ["google", "youtube", "duckduckgo"],
         "browser_search.engine": ["google", "youtube", "duckduckgo"],
+        "snap_window.direction": ["left", "right", "up", "down", "maximize", "minimize"],
+        "manage_virtual_desktop.action": ["new", "next", "prev", "close"],
+        "get_top_processes.sort_by": ["cpu", "ram"],
+        "zip_or_unzip.action": ["zip", "unzip"],
+        "browser_scroll.direction": ["down", "up"],
+        "browser_history_nav.action": ["back", "forward", "reload"],
     }
 
     @staticmethod

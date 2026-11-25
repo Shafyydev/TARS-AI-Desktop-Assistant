@@ -16,8 +16,8 @@ graph TD
     FastPath -- "Yes (Volume, Media, Hotkeys)" --> ExecFast["Direct Tool Execution"]
     FastPath -- "No (Compound / Novel Tasks)" --> Orchestrator["TaskOrchestrator & TaskState"]
     
-    Orchestrator --> LLM["LLMProvider (Gemini 3.8 Flash ReAct Engine)"]
-    LLM --> ToolRegistry["Central Tool Registry (78 Tools)"]
+    Orchestrator --> LLM["LLMProvider (Multi-Provider Failover)"]
+    LLM --> ToolRegistry["Central Tool Registry (96 Tools)"]
     
     subgraph Execution Engines [TARS Execution 'Hands']
         ToolRegistry --> Term["💻 Terminal Engine (PowerShell / Shell / Safety)"]
@@ -35,7 +35,7 @@ graph TD
 
 ---
 
-## 🛠️ Implemented Tool Ecosystem (78 Registered Tools)
+## 🛠️ Implemented Tool Ecosystem (96 Registered Tools)
 
 ### 1. Terminal & Execution Security
 - `run_powershell(command, timeout, cwd)`: Executes PowerShell commands with UTF-8 encoding.
@@ -54,6 +54,11 @@ graph TD
 - `read_clipboard()` / `write_clipboard(text)`: Windows clipboard integration.
 - `lock_workstation()`: Instantly locks Windows workstation.
 - `system_power(action, delay_sec)`: Sleep, restart, shutdown, and cancellation.
+- `set_screen_brightness(level_percent)`: Adjusts laptop screen brightness via WMI. *(New)*
+- `get_top_processes(sort_by, limit)`: Lists top CPU/RAM consuming processes. *(New)*
+- `snap_window(direction, window_name)`: Snaps windows left/right/up/down. *(New)*
+- `manage_virtual_desktop(action)`: Creates, switches, and closes virtual desktops. *(New)*
+- `open_windows_setting(setting_name)`: Opens Windows Settings pages (WiFi, Bluetooth, Display, etc.). *(New)*
 
 ### 3. Windows UI Automation (pywinauto UIA Backend)
 - `get_active_window()`: Identifies foreground window title, class name, and control type.
@@ -70,6 +75,11 @@ graph TD
 - `browser_find_elements(selector, limit)`: Inspects DOM elements.
 - `browser_click_element(selector, index)`: DOM-based element clicking.
 - `browser_extract_text(selector)`: Extracts visible text content.
+- `browser_type(selector, text)`: Types text into browser input fields. *(New)*
+- `browser_scroll(direction, amount)`: Scrolls the browser page. *(New)*
+- `browser_history_nav(action)`: Browser back/forward navigation. *(New)*
+- `browser_get_tabs()`: Lists all open browser tabs. *(New)*
+- `browser_switch_tab(index)`: Switches to a specific browser tab by index. *(New)*
 - `connect_brave(port)` / `find_brave_executable()`: Native Brave integration via standard paths or CDP.
 - `browser_close()`: Clean browser shutdown with `atexit` registration.
 
@@ -80,19 +90,24 @@ graph TD
 - `read_file(path, max_chars)`: Reads text/code files (`.py`, `.md`, `.txt`, `.json`, etc.) with binary file protection.
 - `get_file_metadata(path)`: Retrieves size, creation time, modified time, and permissions.
 - `search_files(root, pattern, max_results)`: Recursive glob search across approved roots.
+- `write_or_append_file(path, content, append)`: Creates or appends UTF-8 text files with protected-path guard. *(New)*
+- `copy_or_move_item(source, destination, move)`: Copies or moves files and folders. *(New)*
+- `zip_or_unzip(source, destination, action)`: Creates or extracts zip archives with path traversal protection. *(New)*
 
 ### 6. Closed-Loop Verification, Memory & Safety
 - `remember_fact(key, value)`: Stores persistent user preferences and long-term memory into SQLite.
+- `forget_fact(key)`: Removes a stored fact from memory. *(New)*
 - `verify_action(check, expected)`: Confirms path existence, process state, or window presence.
 - `cancel_current_task()`: Immediately cancels active multi-step operations.
 - `SafetyValidator`: Blocks destructive sequences (`format`, `diskpart`, `rmdir /s /q C:\Windows`) and enforces confirmation on sensitive commands.
 
 ### 7. Vision & Multimodal Screen Understanding
-- `describe_screen(question)`: High-accuracy screen understanding passing desktop captures to Gemini (`gemini-3.8-flash`) to identify open apps, UI elements, and document text.
-- `inspect_screen()`: Retrieves screenshot, dimensions, mouse position, and active window metadata.
+- `describe_screen(question)`: High-accuracy screen understanding with multi-provider cascade (tries primary provider, then falls back through all configured backends).
+- `inspect_screen()`: Retrieves screenshot, dimensions, mouse position, active window metadata, and visual analysis.
+- `get_weather(location)`: Fetches current weather from wttr.in (no API key required). *(New)*
 
 ### 8. Reminders & Persistent Timers (APScheduler + SQLite)
-- `set_reminder(message, minutes)`: Schedules persistent timers and reminders that trigger spoken voice alerts even across application restarts.
+- `set_reminder(message, minutes/seconds/hours)`: Schedules persistent timers that trigger spoken voice alerts, supporting seconds, minutes, and hours.
 - `list_active_reminders()`: Lists all upcoming scheduled alarms and timers.
 - `cancel_active_reminder(reminder_id)`: Cancels scheduled reminder by ID.
 
@@ -105,6 +120,18 @@ graph TD
 
 ---
 
+## 🔄 Multi-Provider LLM Failover
+
+TARS automatically fails over across configured AI backends when the primary provider is unavailable, rate-limited, or returning an upstream gateway notice. The failover chain is fully automatic and requires zero user intervention.
+
+```
+Primary Provider → OpenRouter → Gemini → OmniRoute → Ollama (local)
+```
+
+Each provider is probed at runtime. If the primary provider fails with no tool side effects, TARS seamlessly retries the request on the next available backend.
+
+---
+
 ## 🎙️ Voice Interface & Interruption System
 
 - **Speech Recognition:** `speech_recognition` with tuned low-latency Voice Activity Detection (0.35s pause threshold) and phonetic normalization (`tap` -> `tab`, `clothes` -> `close`).
@@ -113,6 +140,27 @@ graph TD
 - **Acoustic Voice Barge-In:** Background audio energy monitor (`VoiceBargeInMonitor`) automatically detects when the user speaks mid-sentence and cuts off playback.
 - **Console Keyboard Interruption:** Tapping any key (Space, Enter, Esc) cuts off speech instantly.
 - **Silence Commands:** Supported verbal commands: *"stop talking"*, *"be quiet"*, *"shut up"*, *"silence"*, *"can you hear me"*.
+
+---
+
+## 📊 Web Dashboard
+
+TARS includes a local web dashboard (FastAPI backend + vanilla JS frontend) for monitoring and controlling the assistant without a terminal.
+
+**Features:**
+- Real-time system telemetry (CPU, RAM, Disk, Battery)
+- AI Provider status panel with one-click switching
+- Command console with tool execution log
+- Conversation history viewer
+- Reminder management
+- User preferences viewer
+- Task cancellation button
+- Registered tools counter (`96` tools)
+
+**Start the dashboard:**
+```powershell
+uvicorn dashboard.server:app --host 0.0.0.0 --port 8080
+```
 
 ---
 
@@ -140,7 +188,7 @@ Create or edit `.env` in the project root:
 ```ini
 # Primary AI Provider: "gemini" | "openrouter" | "omniroute" | "ollama"
 AI_PROVIDER=gemini
-AI_MODEL=gemini-3.8-flash
+AI_MODEL=gemini-3.1-flash-lite
 
 # Google Gemini API Key (Default cloud provider)
 GEMINI_API_KEY=your_gemini_api_key_here
@@ -168,7 +216,7 @@ TARS_DEFAULT_MODE=hybrid
 ### Supported AI Providers
 
 TARS supports four AI backends with native multi-turn ReAct tool calling:
-1. **Google Gemini** (`AI_PROVIDER=gemini`): Fast multi-modal reasoning and screen vision via `gemini-3.8-flash`. Requires `GEMINI_API_KEY`.
+1. **Google Gemini** (`AI_PROVIDER=gemini`): Fast multi-modal reasoning and screen vision via `gemini-3.1-flash-lite`. Requires `GEMINI_API_KEY`.
 2. **OpenRouter** (`AI_PROVIDER=openrouter`): Access to high-end and fast cloud models (e.g. `anthropic/claude-3.5-sonnet`, `openai/gpt-4o`, `google/gemini-2.5-flash`) via the OpenAI-compatible API with full tool calling and vision support. Requires `OPENROUTER_API_KEY`.
 3. **OmniRoute** (`AI_PROVIDER=omniroute`): Local multi-model AI gateway (e.g. `auto/best-fast`, `auto/best-coding`, `auto/best-reasoning`) running at `http://localhost:20128/v1` with automatic API key discovery from `~/.omniroute/storage.sqlite`.
 4. **Ollama** (`AI_PROVIDER=ollama`): Fully offline local model execution (e.g. `qwen3:4b`).
@@ -195,6 +243,9 @@ python main.py --diagnostics
 # 5. List and Benchmark Microphones:
 python main.py --list-mics
 python main.py --test-mic
+
+# 6. Launch Web Dashboard:
+uvicorn dashboard.server:app --host 0.0.0.0 --port 8080
 ```
 
 ---
@@ -202,7 +253,7 @@ python main.py --test-mic
 ## 🧪 Running Automated Tests
 
 ```powershell
-# Run the full test suite (66+ unit, integration, acceptance, and interaction tests):
+# Run the full test suite (103+ unit, integration, acceptance, and interaction tests):
 python -m unittest discover tests
 
 # Run master acceptance criteria tests:
@@ -210,6 +261,9 @@ python -m unittest tests/test_agent_acceptance.py
 
 # Run tool & safety tests:
 python -m unittest tests/test_tools.py
+
+# Run enhancement tests (new tools, fast paths, provider failover):
+python -m unittest tests/test_enhancements.py
 ```
 
 ---
@@ -225,6 +279,15 @@ python -m unittest tests/test_tools.py
 | **Application launching** | *"TARS, open Brave"* / *"Open File Explorer"* / *"Open Calculator"* |
 | **System volume** | *"TARS, set volume to 50 percent"* / *"Volume up"* / *"Mute"* |
 | **System telemetry** | *"TARS, system status"* / *"Hardware telemetry"* |
+| **Window snapping** | *"Snap left"* / *"Snap Brave right"* / *"Tile up"* |
+| **Virtual desktops** | *"New desktop"* / *"Next desktop"* / *"Close desktop"* |
+| **Screen brightness** | *"Brightness 70"* / *"Set brightness to 50%"* |
+| **Windows Settings** | *"WiFi settings"* / *"Bluetooth settings"* / *"Display settings"* |
+| **Weather** | *"Weather"* / *"Weather in London"* |
+| **Top processes** | *"Top processes"* / *"What's using my CPU"* |
+| **File operations** | *"Write hello to clipboard"* / *"Create folder test on desktop"* |
+| **Memory** | *"Remember my name is Shafy"* / *"Forget my favorite color"* / *"List memories"* |
+| **Reminders** | *"Set timer for 30 seconds"* / *"Remind me to call mom in 2 hours"* |
 | **Voice interruption** | *"Stop talking"* / *"Be quiet"* / *"Cancel"* / Tap Spacebar |
 
 ---

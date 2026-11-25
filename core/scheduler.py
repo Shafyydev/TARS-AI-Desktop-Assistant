@@ -136,6 +136,15 @@ class ReminderScheduler:
             cursor.execute("DELETE FROM reminder_metadata WHERE id = ?", (job_id,))
             return cursor.rowcount > 0
 
+    def cancel_all_reminders(self) -> int:
+        """Cancels all active reminders and returns the count removed."""
+        items = self.list_reminders()
+        removed = 0
+        for item in items:
+            if self.cancel_reminder(item["id"]):
+                removed += 1
+        return removed
+
     def shutdown(self) -> None:
         """Shuts down the scheduler and closes database."""
         try:
@@ -159,21 +168,36 @@ def get_default_scheduler() -> ReminderScheduler:
 
 
 # Tool interfaces for TARS agent and LLM calling
-def set_reminder(message: str, minutes: float = 1.0) -> Dict[str, Any]:
+def set_reminder(
+    message: str,
+    minutes: float = 1.0,
+    seconds: Optional[float] = None,
+    hours: Optional[float] = None,
+) -> Dict[str, Any]:
     """
-    Sets a timer or reminder with spoken alert after a specified delay in minutes.
+    Sets a timer or reminder with spoken alert after a specified delay.
 
     Args:
         message: The task or reminder description (e.g. 'check oven', 'team standup').
-        minutes: The delay duration in minutes (e.g. 5, 0.5, 30).
+        minutes: Delay duration in minutes (default 1.0).
+        seconds: Optional delay in seconds (overrides minutes if provided).
+        hours: Optional delay in hours (overrides minutes if provided).
     """
     scheduler = get_default_scheduler()
-    delay_sec = max(1.0, float(minutes) * 60.0)
+    if seconds is not None:
+        delay_sec = max(1.0, float(seconds))
+        label = f"{seconds} sec"
+    elif hours is not None:
+        delay_sec = max(1.0, float(hours) * 3600.0)
+        label = f"{hours} hr"
+    else:
+        delay_sec = max(1.0, float(minutes) * 60.0)
+        label = f"{minutes} min"
     res = scheduler.add_reminder(message, delay_sec)
     return {
         "success": True,
         "reminder_id": res["id"],
-        "message": f"Reminder set for '{message}' at {res['due_time']} ({minutes} min).",
+        "message": f"Reminder set for '{message}' at {res['due_time']} ({label}).",
         "due_time": res["due_time"]
     }
 
