@@ -294,7 +294,7 @@ def _select_whatsapp_window(windows: List[Any]) -> Any:
 
 def _find_whatsapp_search_edit(window: Any) -> Any:
     """Locates the WhatsApp chat-search input across classic UWP and WebView2 builds."""
-    for attempt in range(8):
+    for attempt in range(5):
         edits = window.descendants(control_type="Edit")
         search_edit = next(
             (edit for edit in edits if "search" in (edit.element_info.name or "").lower()),
@@ -319,8 +319,8 @@ def _find_whatsapp_search_edit(window: Any) -> Any:
                 except Exception:
                     continue
 
-        if attempt < 7:
-            time.sleep(0.35)
+        if attempt < 4:
+            time.sleep(0.25)
     return None
 
 
@@ -479,7 +479,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             gui.press_keys(["ctrl", "v"])
         else:
             search_edit.type_keys(contact, with_spaces=True)
-        time.sleep(1.0)
+        time.sleep(0.6)
 
         normalized_contact = contact.casefold()
         # Keep only actual chat/contact rows. WhatsApp also returns historical
@@ -521,7 +521,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         # without activating it. Enter commits the selected chat row.
         gui.press_keys(["enter"])
         # Allow the WebView2 chat pane & message composer to finish mounting.
-        time.sleep(0.45)
+        time.sleep(0.3)
         return {
             "success": True,
             "contact": contact,
