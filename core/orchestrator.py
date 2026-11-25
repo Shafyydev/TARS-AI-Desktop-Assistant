@@ -526,7 +526,7 @@ class TaskOrchestrator:
         if not isinstance(self.llm, LLMProvider) or os.getenv("TARS_DISABLE_PROVIDER_FAILOVER") == "1":
             return []
 
-        order = ("gemini", "nvidia", "openrouter", "omniroute", "ollama")
+        order = ("nvidia", "gemini", "openrouter", "omniroute", "ollama")
         candidates: List[LLMProvider] = []
         for prov_name in order:
             if prov_name == self.llm.provider:
