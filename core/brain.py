@@ -447,8 +447,8 @@ class TARSAgent:
         if whatsapp_click and any("whatsapp" in title.lower() for title in tools.get_running_windows()):
             contact = whatsapp_click.group(1).strip()
             if (
-                1 <= len(contact.split()) <= 4
-                and contact not in {"ok", "enter", "cancel", "first chat", "first result", "search bar", "search box"}
+                1 <= len(contact.split()) <= 2
+                and contact not in {"ok", "enter", "cancel", "search bar", "search box", "search", "result", "video", "link", "button", "tab", "menu", "first chat", "first result", "first video", "first link", "first item"}
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
                 if res.get("success"):
