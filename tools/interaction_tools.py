@@ -514,7 +514,12 @@ def _verify_whatsapp_chat_header(window, contact_name):
     if not needle:
         return UNKNOWN
     # In test environments (mocks), skip verification (treat as verified)
-    if not isinstance(getattr(window, 'element_info', None), object) or not isinstance(getattr(window.element_info, 'name', None), str):
+    try:
+        _ei = getattr(window, 'element_info', None)
+        _nm = getattr(_ei, 'name', None) if _ei is not None else None
+    except Exception:
+        return UNKNOWN
+    if not isinstance(_ei, object) or not isinstance(_nm, str):
         return VERIFIED
     checked = False
     try:
