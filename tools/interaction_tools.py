@@ -493,7 +493,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             gui.press_keys(["ctrl", "v"])
         else:
             search_edit.type_keys(contact, with_spaces=True)
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         normalized_contact = contact.casefold()
         # Keep only actual chat/contact rows. WhatsApp also returns historical
@@ -520,10 +520,16 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             return SequenceMatcher(None, normalized_contact, candidate).ratio() * 100
 
         match = None
-        if candidates:
-            candidate, candidate_name = max(candidates, key=lambda pair: score(pair[1]))
-            if score(candidate_name) >= 70.0:
-                match = candidate
+        # Prefer exact match first
+        for cand, name in candidates:
+            if name.casefold() == normalized_contact:
+                match = cand
+                break
+        if match is None:
+            if candidates:
+                candidate, candidate_name = max(candidates, key=lambda pair: score(pair[1]))
+                if score(candidate_name) >= 90.0:
+                    match = candidate
         if match is None:
             return {
                 "success": False,
