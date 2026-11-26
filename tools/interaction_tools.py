@@ -479,7 +479,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             gui.press_keys(["ctrl", "v"])
         else:
             search_edit.type_keys(contact, with_spaces=True)
-        time.sleep(0.6)
+        time.sleep(0.2)
 
         normalized_contact = contact.casefold()
         # Keep only actual chat/contact rows. WhatsApp also returns historical
