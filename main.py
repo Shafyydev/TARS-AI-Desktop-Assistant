@@ -248,7 +248,7 @@ def main() -> None:
                     if not listener.listen_for_wake_word():
                         continue
                     console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
-                    raw_speech, status = listener.listen_once(timeout=6, phrase_time_limit=15)
+                    raw_speech, status = listener.listen_once(timeout=3, phrase_time_limit=15)
                     if status == "timeout" or not raw_speech:
                         continue
                     user_input = raw_speech
@@ -263,7 +263,7 @@ def main() -> None:
                     pass
                 else:
                     console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
-                    raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=15) if listener else (None, "no listener")
+                    raw_speech, status = listener.listen_once(timeout=3, phrase_time_limit=15) if listener else (None, "no listener")
                 
                     if status == "timeout":
                         continue

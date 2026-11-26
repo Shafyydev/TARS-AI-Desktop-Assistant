@@ -93,7 +93,7 @@ class VoiceListener:
     def __init__(
         self,
         energy_threshold: int = 250,
-        pause_threshold: float = 0.6,
+        pause_threshold: float = 0.3,
         language: Optional[str] = None,
         mic_index: Optional[int] = None
     ):
@@ -109,7 +109,7 @@ class VoiceListener:
         self._whisper_model = None
         self._fw_model = None
         self._whisper_failed = False
-        self.stt_engine = os.getenv("TARS_STT_ENGINE", "whisper").strip().lower()
+        self.stt_engine = os.getenv("TARS_STT_ENGINE", "google").strip().lower()
         self.whisper_model_name = os.getenv("TARS_STT_MODEL", "base").strip()
         self.last_active_time = 0.0
         self.active_dialogue_window_sec = 30.0
@@ -125,10 +125,10 @@ class VoiceListener:
             # Keep enough silence for natural pauses between clauses and words
             self._recognizer.pause_threshold = self.pause_threshold
             # Short non-speaking duration so end-of-speech is detected quickly
-            self._recognizer.non_speaking_duration = 0.3
+            self._recognizer.non_speaking_duration = 0.2
             self._recognizer.phrase_threshold = 0.2
             # Prevent network timeouts on longer spoken sentences
-            self._recognizer.operation_timeout = 5.0
+            self._recognizer.operation_timeout = 3.0
             # Smooth dynamic adaptation to ambient room sound
             self._recognizer.dynamic_energy_threshold = True
             self._recognizer.dynamic_energy_adjustment_damping = 0.15
