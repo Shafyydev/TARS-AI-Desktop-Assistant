@@ -493,28 +493,35 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             gui.press_keys(["ctrl", "v"])
         else:
             search_edit.type_keys(contact, with_spaces=True)
-        time.sleep(0.5)
+        # Press Enter to commit the search and trigger filtering
+        time.sleep(0.3)
+        gui.press_keys(["enter"])
+        time.sleep(1.0)
 
         normalized_contact = contact.casefold()
-        # Keep only actual chat/contact rows. WhatsApp also returns historical
-        # message matches; selecting one does not reliably open the chat.
-        section = "chats"
+        # Re-enumerate after filtering to avoid stale items
         candidates = []
         for item in window.descendants(control_type="DataItem"):
             name = (item.element_info.name or "").strip()
             lowered = name.casefold()
             if lowered in {"chats", "contacts", "messages"}:
-                section = lowered
                 continue
-            if section not in {"chats", "contacts"} or not name:
+            if not name:
                 continue
             buttons = item.descendants(control_type="Button")
             candidates.append((buttons[0] if buttons else item, name))
+
+        # Filter candidates to only those matching the search
+        filtered = [(c, n) for c, n in candidates if normalized_contact in n.casefold() or n.casefold() in normalized_contact]
+        if filtered:
+            candidates = filtered
 
         def score(candidate_name: str) -> float:
             candidate = candidate_name.casefold()
             if candidate == normalized_contact:
                 return 100.0
+            if candidate.startswith(normalized_contact):
+                return 95.0
             if normalized_contact in candidate:
                 return 90.0
             return SequenceMatcher(None, normalized_contact, candidate).ratio() * 100
@@ -528,7 +535,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         if match is None:
             if candidates:
                 candidate, candidate_name = max(candidates, key=lambda pair: score(pair[1]))
-                if score(candidate_name) >= 90.0:
+                if score(candidate_name) >= 80.0:
                     match = candidate
         if match is None:
             return {
