@@ -442,6 +442,17 @@ class TARSAgent:
                 p_clean = p_clean[len(filler):].strip()
         p_clean = p_clean.strip("?!.,; ")
 
+        # Single-word WhatsApp triggers: "message", "whatsapp", "chat" instantly
+        # launch WhatsApp Desktop and stand by for the contact name.
+        if p_clean in {"message", "whatsapp", "chat", "msg", "text"}:
+            res = self.execute_tool("launch_application", {"app_name": "whatsapp"})
+            msg, ok = self._reply(res, "WhatsApp opened. Who should I message, and what should I say?")
+            return {
+                "response": msg,
+                "steps": [{"tool": "launch_application", "args": {"app_name": "whatsapp"}, "result": res}],
+                "success": ok,
+            }
+
         # Handle a named WhatsApp click before the generic click fast path.
         whatsapp_click = re.match(r"^click(?:\s+on)?\s+(.+)$", p_clean)
         if whatsapp_click and any("whatsapp" in title.lower() for title in tools.get_running_windows()):
