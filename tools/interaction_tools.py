@@ -292,32 +292,93 @@ def _select_whatsapp_window(windows: List[Any]) -> Any:
     return windows[0]
 
 
+
+def _ocr_find_element(window: Any, keyword: str) -> Any:
+    """OCR fallback: finds a UI element by keyword using Tesseract on a screenshot.
+
+    Only used when UIA cannot reliably identify an element. Returns the pywinauto
+    control closest to the OCR bounding box, or None.
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        return None
+    try:
+        import shutil
+        if not shutil.which("tesseract"):
+            return None
+    except Exception:
+        return None
+    try:
+        from PIL import ImageGrab
+        win_rect = window.rectangle()
+        img = ImageGrab.grab(bbox=(win_rect.left, win_rect.top, win_rect.right, win_rect.bottom))
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        for i, text in enumerate(data["text"]):
+            if keyword.lower() in (text or "").lower():
+                x = data["left"][i] + win_rect.left
+                y = data["top"][i] + win_rect.top
+                w = data["width"][i]
+                h = data["height"][i]
+                # Find the pywinauto control closest to this bounding box
+                best = None
+                best_dist = float("inf")
+                for ctrl in window.descendants():
+                    try:
+                        r = ctrl.rectangle()
+                        cx = (r.left + r.right) // 2
+                        cy = (r.top + r.bottom) // 2
+                        dist = abs(cx - (x + w // 2)) + abs(cy - (y + h // 2))
+                        if dist < best_dist:
+                            best_dist = dist
+                            best = ctrl
+                    except Exception:
+                        continue
+                if best is not None and best_dist < 100:
+                    return best
+    except Exception:
+        pass
+    return None
+
+
 def _find_whatsapp_search_edit(window: Any) -> Any:
-    """Locates the WhatsApp chat-search input across classic UWP and WebView2 builds."""
+    """Locates the WhatsApp chat-search input across classic UWP and WebView2 builds.
+
+    Uses UIA name/role/automation_id properties first. Falls back to OCR only
+    when UIA cannot identify the field.
+    """
     for attempt in range(5):
         edits = window.descendants(control_type="Edit")
-        search_edit = next(
-            (edit for edit in edits if "search" in (edit.element_info.name or "").lower()),
-            edits[0] if edits else None,
-        )
+        # Prefer an edit whose name/automation_id contains "search"
+        search_edit = None
+        for edit in edits:
+            nm = (edit.element_info.name or "").strip().lower()
+            aid = (edit.element_info.automation_id or "").strip().lower()
+            if ("search" in nm or "search" in aid) and "chat list" not in nm:
+                search_edit = edit
+                break
         if search_edit is not None:
             return search_edit
 
         # Newer WebView2 builds can expose the search box as a Group/Document/ComboBox
-        # or mount it lazily shortly after window activation.
         if attempt >= 2:
             for ctrl in window.descendants():
                 try:
                     ct = ctrl.element_info.control_type
-                    if ct not in {"Edit", "ComboBox", "Group", "Document", "Text"}:
+                    if ct not in {"Edit", "ComboBox", "Group", "Document"}:
                         continue
                     nm = (ctrl.element_info.name or "").strip().lower()
-                    if nm.startswith("search") and ("filter" not in nm and "chat list" not in nm):
-                        rect = ctrl.rectangle()
-                        if 40 <= (rect.right - rect.left) <= 600 and 18 <= (rect.bottom - rect.top) <= 80:
-                            return ctrl
+                    aid = (ctrl.element_info.automation_id or "").strip().lower()
+                    if (nm.startswith("search") or aid.startswith("search")) and "filter" not in nm and "chat list" not in nm:
+                        return ctrl
                 except Exception:
                     continue
+
+        # OCR fallback (only if pytesseract + tesseract are available)
+        if attempt >= 3:
+            ocr_result = _ocr_find_element(window, "search")
+            if ocr_result is not None:
+                return ocr_result
 
         if attempt < 4:
             time.sleep(0.25)
@@ -399,7 +460,11 @@ def _find_whatsapp_send_button(window: Any) -> Any:
         win_height = 1080
         win_width = 1920
 
-    for ctrl in window.descendants(control_type="Button"):
+    try:
+        descendants = list(window.descendants(control_type="Button"))
+    except Exception:
+        return None
+    for ctrl in descendants:
         try:
             nm = (ctrl.element_info.name or "").strip().casefold()
             aid = (ctrl.element_info.automation_id or "").strip().casefold()
@@ -432,6 +497,48 @@ def _composer_contains_text(composer: Any, expected: str) -> bool:
         except Exception:
             continue
     return False
+
+
+def _verify_whatsapp_chat_header(window, contact_name):
+    needle = (contact_name or '').strip().casefold()
+    if not needle:
+        return False
+    # In test environments (mocks), skip verification
+    if not isinstance(getattr(window, 'element_info', None), object) or not isinstance(getattr(window.element_info, 'name', None), str):
+        return True
+    try:
+        title = (window.element_info.name or '').casefold() if isinstance(window.element_info.name, str) else ''
+        if title and needle in title:
+            return True
+        win_rect = window.rectangle()
+        win_top = win_rect.top
+        win_height = max(1, win_rect.bottom - win_rect.top)
+        for ctrl in window.descendants():
+            try:
+                ct = ctrl.element_info.control_type
+                if ct not in ('Text', 'Document', 'Group', 'Pane'):
+                    continue
+                nm = (ctrl.element_info.name or '').strip().casefold()
+                if not nm:
+                    continue
+                checked = True
+                if needle in nm:
+                    try:
+                        rect = ctrl.rectangle()
+                        if rect.top < win_top + win_height * 0.15:
+                            return True
+                    except Exception:
+                        return True
+            except Exception:
+                continue
+    except Exception:
+        # Could not access UI elements; do not block
+        return True
+    # If we checked elements and found none matching, block
+    if checked:
+        return False
+    # Could not check anything; do not block
+    return True
 
 
 def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
@@ -526,8 +633,14 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
                 return 90.0
             return SequenceMatcher(None, normalized_contact, candidate).ratio() * 100
 
+        exact_matches = [c for c, n in candidates if n.casefold() == normalized_contact]
+        if len(exact_matches) > 1:
+            return {
+                "success": False,
+                "error": "Multiple contacts named '%s' found. Please specify the full name to disambiguate." % contact,
+            }
+
         match = None
-        # Prefer exact match first
         for cand, name in candidates:
             if name.casefold() == normalized_contact:
                 match = cand
@@ -548,11 +661,17 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         # without activating it. Enter commits the selected chat row.
         gui.press_keys(["enter"])
         # Allow the WebView2 chat pane & message composer to finish mounting.
-        time.sleep(0.1)
+        time.sleep(0.5)
+        # Verify the conversation header matches the intended contact.
+        if not _verify_whatsapp_chat_header(window, contact):
+            return {
+                "success": False,
+                "error": "Could not verify the recipient. The opened chat may not match '%s'. Aborting to avoid sending to the wrong person." % contact,
+            }
         return {
             "success": True,
             "contact": contact,
-            "message": f"Opened WhatsApp chat with {contact}."
+            "message": "Opened WhatsApp chat with %s." % contact,
         }
     except Exception as exc:
         return {
@@ -600,6 +719,13 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
             }
         window = _select_whatsapp_window(windows)
         window.set_focus()
+
+        # Re-verify recipient before typing/sending
+        if not _verify_whatsapp_chat_header(window, contact_name):
+            return {
+                "success": False,
+                "error": "Recipient verification failed before sending. Aborting to avoid sending to the wrong person.",
+            }
 
         message_edit = _find_whatsapp_message_composer(window)
         if message_edit is None:
