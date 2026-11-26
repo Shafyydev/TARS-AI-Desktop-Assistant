@@ -519,7 +519,7 @@ def _verify_whatsapp_chat_header(window, contact_name):
     checked = False
     try:
         title = (window.element_info.name or '').casefold() if isinstance(window.element_info.name, str) else ''
-        if title:
+        if title and title not in ('whatsapp', 'whatsapp desktop', ''):
             checked = True
             if needle in title:
                 return VERIFIED
