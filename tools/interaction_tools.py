@@ -452,10 +452,24 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             title_re=".*WhatsApp.*", visible_only=True
         )
         if not windows:
-            return {
-                "success": False,
-                "error": "WhatsApp Desktop is not open. Open WhatsApp first, then ask again."
-            }
+            # Auto-launch WhatsApp Desktop
+            import tools.os_tools as os_tools
+            launch_res = os_tools.launch_application("whatsapp")
+            if not launch_res.get("success"):
+                return {
+                    "success": False,
+                    "error": "WhatsApp Desktop is not open and could not be launched.",
+                }
+            import time as _t
+            _t.sleep(2.0)
+            windows = Desktop(backend="uia").windows(
+                title_re=".*WhatsApp.*", visible_only=True
+            )
+            if not windows:
+                return {
+                    "success": False,
+                    "error": "WhatsApp Desktop launched but window not found.",
+                }
 
         window = _select_whatsapp_window(windows)
         window.set_focus()
@@ -543,6 +557,20 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
     clean_message = (message or "").strip()
     if not clean_message:
         return {"success": False, "error": "No WhatsApp message was provided."}
+
+    # Auto-launch WhatsApp Desktop if it's not already running
+    try:
+        from pywinauto import Desktop
+        windows = Desktop(backend="uia").windows(title_re=".*WhatsApp.*", visible_only=True)
+        if not windows:
+            import tools.os_tools as os_tools
+            launch_res = os_tools.launch_application("whatsapp")
+            if not launch_res.get("success"):
+                return {"success": False, "error": "Could not launch WhatsApp Desktop."}
+            import time as _t
+            _t.sleep(2.0)
+    except Exception:
+        pass
 
     opened = open_whatsapp_chat(contact_name)
     if not opened.get("success"):
