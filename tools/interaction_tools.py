@@ -499,17 +499,30 @@ def _composer_contains_text(composer: Any, expected: str) -> bool:
     return False
 
 
+VERIFIED = "verified"
+MISMATCH = "mismatch"
+UNKNOWN = "unknown"
+
 def _verify_whatsapp_chat_header(window, contact_name):
+    """Returns VERIFIED, MISMATCH, or UNKNOWN.
+
+    VERIFIED: intended recipient positively identified.
+    MISMATCH: a different recipient was positively identified.
+    UNKNOWN: identity could not be established (no UIA access, empty elements).
+    """
     needle = (contact_name or '').strip().casefold()
     if not needle:
-        return False
-    # In test environments (mocks), skip verification
+        return UNKNOWN
+    # In test environments (mocks), skip verification (treat as verified)
     if not isinstance(getattr(window, 'element_info', None), object) or not isinstance(getattr(window.element_info, 'name', None), str):
-        return True
+        return VERIFIED
+    checked = False
     try:
         title = (window.element_info.name or '').casefold() if isinstance(window.element_info.name, str) else ''
-        if title and needle in title:
-            return True
+        if title:
+            checked = True
+            if needle in title:
+                return VERIFIED
         win_rect = window.rectangle()
         win_top = win_rect.top
         win_height = max(1, win_rect.bottom - win_rect.top)
@@ -526,19 +539,20 @@ def _verify_whatsapp_chat_header(window, contact_name):
                     try:
                         rect = ctrl.rectangle()
                         if rect.top < win_top + win_height * 0.15:
-                            return True
+                            return VERIFIED
                     except Exception:
-                        return True
+                        # Could not get rect; treat as verified if name matches
+                        return VERIFIED
             except Exception:
                 continue
     except Exception:
-        # Could not access UI elements; do not block
-        return True
-    # If we checked elements and found none matching, block
+        # Could not access UI elements; identity cannot be established
+        return UNKNOWN
+    # If we checked elements and found none matching, it's a mismatch
     if checked:
-        return False
-    # Could not check anything; do not block
-    return True
+        return MISMATCH
+    # Could not check anything; identity cannot be established
+    return UNKNOWN
 
 
 def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
@@ -663,10 +677,11 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         # Allow the WebView2 chat pane & message composer to finish mounting.
         time.sleep(0.5)
         # Verify the conversation header matches the intended contact.
-        if not _verify_whatsapp_chat_header(window, contact):
+        _vresult = _verify_whatsapp_chat_header(window, contact)
+        if _vresult != VERIFIED:
             return {
                 "success": False,
-                "error": "Could not verify the recipient. The opened chat may not match '%s'. Aborting to avoid sending to the wrong person." % contact,
+                "error": "Recipient verification %s. Aborting to avoid sending to the wrong person." % _vresult,
             }
         return {
             "success": True,
@@ -721,10 +736,11 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
         window.set_focus()
 
         # Re-verify recipient before typing/sending
-        if not _verify_whatsapp_chat_header(window, contact_name):
+        _vresult = _verify_whatsapp_chat_header(window, contact_name)
+        if _vresult != VERIFIED:
             return {
                 "success": False,
-                "error": "Recipient verification failed before sending. Aborting to avoid sending to the wrong person.",
+                "error": "Recipient verification %s before sending. Aborting to avoid sending to the wrong person." % _vresult,
             }
 
         message_edit = _find_whatsapp_message_composer(window)
