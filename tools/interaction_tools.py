@@ -521,7 +521,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         # without activating it. Enter commits the selected chat row.
         gui.press_keys(["enter"])
         # Allow the WebView2 chat pane & message composer to finish mounting.
-        time.sleep(0.3)
+        time.sleep(0.1)
         return {
             "success": True,
             "contact": contact,
