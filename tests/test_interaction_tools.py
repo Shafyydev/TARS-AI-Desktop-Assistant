@@ -169,6 +169,69 @@ class TestInteractionTools(unittest.TestCase):
         self.assertFalse(res["success"])
         self.assertIn("could not type", res["error"].lower())
 
+    @patch("tools.interaction_tools.gui.press_keys")
+    @patch("tools.interaction_tools.copy_to_clipboard", return_value=True)
+    @patch("tools.interaction_tools.open_whatsapp_chat", return_value={"success": True, "contact": "Reshmaa"})
+    @patch("pywinauto.Desktop")
+    def test_send_whatsapp_message_verified_header(self, mock_desktop, _mock_open, mock_copy, _mock_keys):
+        """VERIFIED: header contains contact name -> message sent."""
+        window = MagicMock()
+        window.element_info.name = "Chat with Reshmaa"
+        window.rectangle.return_value = MagicMock(top=0, left=0, right=1920, bottom=1200)
+        composer = MagicMock()
+        composer.element_info.name = "Type a message"
+        composer.element_info.control_type = "Edit"
+        send_btn = MagicMock()
+        send_btn.element_info.name = "Send"
+        send_btn.element_info.automation_id = "send"
+        send_btn.rectangle.return_value = MagicMock(top=1100, left=1800, right=1860, bottom=1150)
+        window.descendants.side_effect = [[composer], [send_btn]]
+        mock_desktop.return_value.windows.return_value = [window]
+
+        res = it.send_whatsapp_message("Reshmaa", "hello there")
+
+        self.assertTrue(res["success"])
+        send_btn.click_input.assert_called_once()
+
+    @patch("tools.interaction_tools.gui.press_keys")
+    @patch("tools.interaction_tools.copy_to_clipboard", return_value=True)
+    @patch("tools.interaction_tools.open_whatsapp_chat", return_value={"success": True, "contact": "Reshmaa"})
+    @patch("pywinauto.Desktop")
+    def test_send_whatsapp_message_mismatch_header(self, mock_desktop, _mock_open, mock_copy, _mock_keys):
+        """MISMATCH: header shows different person -> message NOT sent."""
+        window = MagicMock()
+        window.element_info.name = "WhatsApp"
+        window.rectangle.return_value = MagicMock(top=0, left=0, right=1920, bottom=1200)
+        # Header element with a DIFFERENT name in the top 15%
+        header_ctrl = MagicMock()
+        header_ctrl.element_info.control_type = "Text"
+        header_ctrl.element_info.name = "John Doe"
+        header_ctrl.rectangle.return_value = MagicMock(top=50, left=100, right=300, bottom=80)
+        window.descendants.side_effect = [[header_ctrl], [], []]
+        mock_desktop.return_value.windows.return_value = [window]
+
+        res = it.send_whatsapp_message("Reshmaa", "hello there")
+
+        self.assertFalse(res["success"])
+        self.assertIn("mismatch", res["error"].lower())
+
+    @patch("tools.interaction_tools.gui.press_keys")
+    @patch("tools.interaction_tools.copy_to_clipboard", return_value=True)
+    @patch("tools.interaction_tools.open_whatsapp_chat", return_value={"success": True, "contact": "Reshmaa"})
+    @patch("pywinauto.Desktop")
+    def test_send_whatsapp_message_unknown_header(self, mock_desktop, _mock_open, mock_copy, _mock_keys):
+        """UNKNOWN: cannot access UI elements -> message NOT sent."""
+        window = MagicMock()
+        window.element_info.name = "WhatsApp"
+        window.rectangle.side_effect = Exception("no access")
+        mock_desktop.return_value.windows.return_value = [window]
+
+        res = it.send_whatsapp_message("Reshmaa", "hello there")
+
+        self.assertFalse(res["success"])
+        self.assertIn("unknown", res["error"].lower())
+
+
     @patch("tools.interaction_tools.smart_type")
     @patch("tools.interaction_tools.get_active_window_context")
     def test_smart_search_in_browser(self, mock_ctx, mock_type):
