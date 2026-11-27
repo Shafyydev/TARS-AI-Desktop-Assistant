@@ -886,50 +886,34 @@ class TARSAgent:
             msg, ok = self._reply(res, f"Maximized {max_target}." if max_target else "Window maximized.")
             return {"response": msg, "steps": [{"tool": "maximize_active_window", "args": args, "result": res}], "success": ok}
 
-        if re.search(r"^expand\s+(?:the\s+|this\s+)?window$", p_clean):
-            res = self.execute_tool("maximize_active_window", {})
-            msg, ok = self._reply(res, "Window maximized.")
-            return {"response": msg, "steps": [{"tool": "maximize_active_window", "args": {}, "result": res}], "success": ok}
+        # Window management (simple commands) - data-driven
+        _win_table = [
+            (re.compile(r"^expand\s+(?:the\s+|this\s+)?window$"), "maximize_active_window", {}, "Window maximized."),
+            (re.compile(r"^(?:minimize|minimise|min)\s+(?:all|desktop|everything)$|^(?:show\s+desktop|go\s+to\s+desktop|clear\s+screen|desktop)$"), "minimize_all_windows", {}, "Desktop cleared. All windows minimized."),
+            (re.compile(r"^(?:minimize|minimise|min)(?:\s+(?:the\s+|this\s+|active\s+)?(?:window|terminal|powershell|command\s+prompt))?$"), "minimize_active_window", {}, "Window minimized."),
+            (re.compile(r"^(?:(?:make\s+(?:it|this|the\s+window|screen)|go|switch\s+to|enter)\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode|toggle\s+fullscreen)$"), "press_keys", {"keys": ["f11"]}, "Fullscreen toggled."),
+            (re.compile(r"^(?:snap\s+left|tile\s+left)$"), "snap_window", {"direction": "left"}, "Snapped window left."),
+            (re.compile(r"^(?:snap\s+right|tile\s+right)$"), "snap_window", {"direction": "right"}, "Snapped window right."),
+            (re.compile(r"^(?:snap\s+up|tile\s+up)$"), "snap_window", {"direction": "up"}, "Snapped window up."),
+            (re.compile(r"^(?:snap\s+down|tile\s+down)$"), "snap_window", {"direction": "down"}, "Snapped window down."),
+            (re.compile(r"^(?:new|create|add)\s+(?:virtual\s+)?desktop$"), "manage_virtual_desktop", {"action": "new"}, "Created new virtual desktop."),
+            (re.compile(r"^(?:next|switch\s+(?:to\s+)?next)\s+(?:virtual\s+)?desktop$"), "manage_virtual_desktop", {"action": "next"}, "Switched to next desktop."),
+            (re.compile(r"^(?:prev|previous|switch\s+(?:to\s+)?(?:prev|previous))\s+(?:virtual\s+)?desktop$"), "manage_virtual_desktop", {"action": "prev"}, "Switched to previous desktop."),
+            (re.compile(r"^(?:close|remove)\s+(?:this\s+|current\s+)?(?:virtual\s+)?desktop$"), "manage_virtual_desktop", {"action": "close"}, "Closed virtual desktop."),
+            (re.compile(r"^(?:task\s+view|view\s+desktops|show\s+all\s+windows)$"), "press_keys", {"keys": ["win", "tab"]}, "Opened Task View."),
+            (re.compile(r"^(?:switch\s+(?:the\s+)?(?:window|app|application)|alt\s+tab|next\s+window|switch\s+window)$"), "switch_window", {}, "Switched active window."),
+        ]
+        for _wpat, _wtool, _wargs, _wmsg in _win_table:
+            if _wpat.search(p_clean):
+                res = self.execute_tool(_wtool, _wargs)
+                msg, ok = self._reply(res, _wmsg)
+                return {"response": msg, "steps": [{"tool": _wtool, "args": _wargs, "result": res}], "success": ok}
 
-        if re.search(r"^(?:minimize|minimise|min)\s+(?:all|desktop|everything)$|^(?:show\s+desktop|go\s+to\s+desktop|clear\s+screen|desktop)$", p_clean):
-            res = self.execute_tool("minimize_all_windows", {})
-            msg, ok = self._reply(res, "Desktop cleared. All windows minimized.")
-            return {"response": msg, "steps": [{"tool": "minimize_all_windows", "args": {}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:minimize|minimise|min)(?:\s+(?:the\s+|this\s+|active\s+)?(?:window|terminal|powershell|command\s+prompt))?$", p_clean):
-            res = self.execute_tool("minimize_active_window", {})
-            msg, ok = self._reply(res, "Window minimized.")
-            return {"response": msg, "steps": [{"tool": "minimize_active_window", "args": {}, "result": res}], "success": ok}
-
+        # fullscreen video via smart_click
         if re.search(r"^(?:(?:make|put|toggle)\s+)?(?:the\s+video|video)\s+(?:in\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode)$|^(?:fullscreen|full\s+screen)\s+(?:the\s+)?video$", p_clean):
             res = self.execute_tool("smart_click", {"target": "fullscreen"})
             msg, ok = self._reply(res, "Video fullscreen toggled.")
             return {"response": msg, "steps": [{"tool": "smart_click", "args": {"target": "fullscreen"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:make\s+(?:it|this|the\s+window|screen)|go|switch\s+to|enter)\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode|toggle\s+fullscreen)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["f11"]})
-            msg, ok = self._reply(res, "Fullscreen toggled.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["f11"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:snap\s+left|tile\s+left)$", p_clean):
-            res = self.execute_tool("snap_window", {"direction": "left"})
-            msg, ok = self._reply(res, "Snapped window left.")
-            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "left"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:snap\s+right|tile\s+right)$", p_clean):
-            res = self.execute_tool("snap_window", {"direction": "right"})
-            msg, ok = self._reply(res, "Snapped window right.")
-            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "right"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:snap\s+up|tile\s+up)$", p_clean):
-            res = self.execute_tool("snap_window", {"direction": "up"})
-            msg, ok = self._reply(res, "Snapped window up.")
-            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "up"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:snap\s+down|tile\s+down)$", p_clean):
-            res = self.execute_tool("snap_window", {"direction": "down"})
-            msg, ok = self._reply(res, "Snapped window down.")
-            return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": "down"}, "result": res}], "success": ok}
 
         snap_target_match = re.match(r"^(?:snap|tile)\s+(.+?)\s+(left|right|up|down)$", p_clean)
         if snap_target_match:
@@ -938,37 +922,6 @@ class TARSAgent:
             res = self.execute_tool("snap_window", {"direction": direction, "window_name": win_target})
             msg, ok = self._reply(res, f"Snapped {win_target} {direction}.")
             return {"response": msg, "steps": [{"tool": "snap_window", "args": {"direction": direction, "window_name": win_target}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:new|create|add)\s+(?:virtual\s+)?desktop$", p_clean):
-            res = self.execute_tool("manage_virtual_desktop", {"action": "new"})
-            msg, ok = self._reply(res, "Created new virtual desktop.")
-            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "new"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:next|switch\s+(?:to\s+)?next)\s+(?:virtual\s+)?desktop$", p_clean):
-            res = self.execute_tool("manage_virtual_desktop", {"action": "next"})
-            msg, ok = self._reply(res, "Switched to next desktop.")
-            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "next"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:prev|previous|switch\s+(?:to\s+)?(?:prev|previous))\s+(?:virtual\s+)?desktop$", p_clean):
-            res = self.execute_tool("manage_virtual_desktop", {"action": "prev"})
-            msg, ok = self._reply(res, "Switched to previous desktop.")
-            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "prev"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:close|remove)\s+(?:this\s+|current\s+)?(?:virtual\s+)?desktop$", p_clean):
-            res = self.execute_tool("manage_virtual_desktop", {"action": "close"})
-            msg, ok = self._reply(res, "Closed virtual desktop.")
-            return {"response": msg, "steps": [{"tool": "manage_virtual_desktop", "args": {"action": "close"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:task\s+view|view\s+desktops|show\s+all\s+windows)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "tab"]})
-            msg, ok = self._reply(res, "Opened Task View.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "tab"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:switch\s+(?:the\s+)?(?:window|app|application)|alt\s+tab|next\s+window|switch\s+window)$", p_clean):
-            res = self.execute_tool("switch_window", {})
-            msg, ok = self._reply(res, "Switched active window.")
-            return {"response": msg, "steps": [{"tool": "switch_window", "args": {}, "result": res}], "success": ok}
-
         focus_win_match = re.match(r"^(?:focus(?:\s+on)?|switch\s+to|bring\s+to\s+front)\s+(?:the\s+)?(.+?)(?:\s+window|\s+app)?$", p_clean)
         if focus_win_match:
             win_target = focus_win_match.group(1).strip()
