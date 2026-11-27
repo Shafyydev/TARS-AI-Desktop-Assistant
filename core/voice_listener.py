@@ -1,4 +1,5 @@
 """High-accuracy, locale-aware voice capture and speech recognition listener for TARS."""
+import io
 import os
 import time
 import re
@@ -6,9 +7,58 @@ import locale
 import threading
 import struct
 import math
+import wave
 from typing import Optional, Tuple, Callable, Any
 
 from core.wake_word import WakeWordDetector
+
+
+_WHISPER_HALLUCINATIONS = frozenset({
+    "thank you",
+    "thank you.",
+    "thanks for watching",
+    "thanks for watching.",
+    "you",
+    "you.",
+    "bye",
+    "bye.",
+    "...",
+    "mbc",
+    "amara.org",
+})
+
+
+def _audio_speech_stats(audio: Any) -> Tuple[float, float]:
+    """Computes (duration_sec, peak_window_rms) on 16kHz mono PCM in <1ms."""
+    try:
+        raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
+    except Exception:
+        return 1.0, 9999.0
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) < 4:
+        # Mock objects in unit tests may return non-byte sentinels.
+        return (1.0, 9999.0) if not isinstance(raw, (bytes, bytearray)) else (0.0, 0.0)
+    duration = len(raw) / float(16000 * 2)
+    # 80ms windows = 1280 samples = 2560 bytes
+    step = 2560
+    peak_rms = 0.0
+    for off in range(0, len(raw) - 1, step):
+        chunk = raw[off:off + step]
+        cnt = len(chunk) // 2
+        if cnt <= 0:
+            continue
+        shorts = struct.unpack(f"<{cnt}h", chunk[:cnt * 2])
+        rms = math.sqrt(sum(s * s for s in shorts) / cnt)
+        if rms > peak_rms:
+            peak_rms = rms
+    return duration, peak_rms
+
+
+def _is_whisper_hallucination(text: str, peak_rms: float, threshold: float, duration: float) -> bool:
+    """True when Whisper returns a stock silence hallucination on marginal audio."""
+    clean = (text or "").strip().casefold()
+    if clean not in _WHISPER_HALLUCINATIONS:
+        return False
+    return duration < 1.3 and peak_rms < max(350.0, threshold * 1.4)
 
 
 def detect_system_stt_language() -> str:
@@ -93,12 +143,14 @@ class VoiceListener:
     def __init__(
         self,
         energy_threshold: int = 250,
-        pause_threshold: float = 0.3,
+        pause_threshold: float = 0.35,
         language: Optional[str] = None,
-        mic_index: Optional[int] = None
+        mic_index: Optional[int] = None,
+        stt_engine: Optional[str] = None,
     ):
         self.energy_threshold = int(os.getenv("TARS_STT_ENERGY", str(energy_threshold)))
         self.pause_threshold = float(os.getenv("TARS_STT_PAUSE", str(pause_threshold)))
+        self._min_energy_floor = float(max(120, self.energy_threshold))
         self.language = language or os.getenv("TARS_STT_LANGUAGE") or detect_system_stt_language()
         
         env_mic = os.getenv("TARS_MIC_INDEX")
@@ -106,10 +158,13 @@ class VoiceListener:
 
         self._recognizer = None
         self._microphone = None
+        self._stream_open = False
         self._whisper_model = None
         self._fw_model = None
         self._whisper_failed = False
-        self.stt_engine = os.getenv("TARS_STT_ENGINE", "google").strip().lower()
+        self._http_session = None
+        self._groq_cooldown_until = 0.0
+        self.stt_engine = (stt_engine or os.getenv("TARS_STT_ENGINE") or "auto").strip().lower()
         self.whisper_model_name = os.getenv("TARS_STT_MODEL", "base").strip()
         self.last_active_time = 0.0
         self.active_dialogue_window_sec = 30.0
@@ -125,14 +180,14 @@ class VoiceListener:
             # Keep enough silence for natural pauses between clauses and words
             self._recognizer.pause_threshold = self.pause_threshold
             # Short non-speaking duration so end-of-speech is detected quickly
-            self._recognizer.non_speaking_duration = 0.2
-            self._recognizer.phrase_threshold = 0.2
+            self._recognizer.non_speaking_duration = min(0.15, max(0.05, self.pause_threshold * 0.5))
+            self._recognizer.phrase_threshold = min(0.12, max(0.05, self.pause_threshold * 0.4))
             # Prevent network timeouts on longer spoken sentences
             self._recognizer.operation_timeout = 3.0
             # Smooth dynamic adaptation to ambient room sound
             self._recognizer.dynamic_energy_threshold = True
-            self._recognizer.dynamic_energy_adjustment_damping = 0.15
-            self._recognizer.dynamic_energy_ratio = 1.5
+            self._recognizer.dynamic_energy_adjustment_damping = 0.2
+            self._recognizer.dynamic_energy_ratio = 1.6
 
             self._microphone = sr.Microphone(device_index=self.mic_index)
         except Exception as e:
@@ -140,17 +195,64 @@ class VoiceListener:
             self._recognizer = None
             self._microphone = None
 
-    def calibrate(self, duration: float = 0.8) -> float:
-        """Calibrates microphone for ambient acoustics with a safe noise floor."""
+    def _is_real_mic(self) -> bool:
+        """True when self._microphone is a real SpeechRecognition Microphone instance."""
+        return (
+            self._microphone is not None
+            and getattr(type(self._microphone), "__module__", "").startswith("speech_recognition")
+        )
+
+    def _open_stream(self) -> Any:
+        """Lazily opens the underlying PyAudio stream once and reuses it across idle waits."""
+        if not self._is_real_mic():
+            return self._microphone
+        if not self._stream_open or getattr(self._microphone, "stream", None) is None:
+            self._microphone.__enter__()
+            self._stream_open = True
+        return self._microphone
+
+    def close_stream(self) -> None:
+        """Closes any persistent PyAudio microphone stream cleanly."""
+        if self._stream_open and self._microphone is not None:
+            try:
+                self._microphone.__exit__(None, None, None)
+            except Exception:
+                try:
+                    setattr(self._microphone, "stream", None)
+                except Exception:
+                    pass
+            finally:
+                self._stream_open = False
+
+    def __del__(self) -> None:
+        try:
+            self.close_stream()
+        except Exception:
+            pass
+
+    def calibrate(self, duration: float = 0.45) -> float:
+        """Calibrates microphone for ambient acoustics while skipping initial stream pops."""
         if self._recognizer and self._microphone:
+            self.close_stream()
             try:
                 with self._microphone as source:
-                    self._recognizer.adjust_for_ambient_noise(source, duration=duration)
-                # Keep energy floor safe: never clamp above 800 so end-of-sentence words aren't dropped
-                self._recognizer.energy_threshold = max(150, min(800, self._recognizer.energy_threshold))
-                # Keep dynamic adaptation enabled so background noise doesn't corrupt speech
+                    # Drain ~150ms of hardware-open DC transient before measuring floor.
+                    chunk = getattr(source, "CHUNK", None)
+                    rate = getattr(source, "SAMPLE_RATE", None)
+                    if isinstance(chunk, int) and isinstance(rate, int) and chunk > 0 and rate > 0:
+                        drain_reads = max(0, min(5, int((rate / chunk) * 0.15)))
+                        for _ in range(drain_reads):
+                            try:
+                                source.stream.read(chunk)
+                            except Exception:
+                                break
+                    self._recognizer.adjust_for_ambient_noise(source, duration=max(0.25, min(float(duration), 0.5)))
+                floor = max(180.0, min(1800.0, float(self._recognizer.energy_threshold) * 1.1))
+                self._min_energy_floor = floor
+                self.energy_threshold = int(floor)
+                self._recognizer.energy_threshold = floor
                 self._recognizer.dynamic_energy_threshold = True
-                return self._recognizer.energy_threshold
+                return floor
             except Exception:
                 pass
         return float(self.energy_threshold)
@@ -201,12 +303,59 @@ class VoiceListener:
         return False
 
 
+    def _get_http_session(self) -> Any:
+        if self._http_session is None:
+            import requests
+            self._http_session = requests.Session()
+        return self._http_session
+
+    def _transcribe_groq_whisper(self, audio: Any) -> Optional[str]:
+        """Transcribes 16kHz WAV audio via Groq's low-latency Whisper endpoint (~250ms warm)."""
+        if time.time() < self._groq_cooldown_until:
+            return None
+        api_key = (os.getenv("GROQ_API_KEY") or "").strip()
+        if not api_key or api_key.startswith("your_"):
+            return None
+        try:
+            raw16 = audio.get_raw_data(convert_rate=16000, convert_width=2)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(raw16)
+            model = os.getenv("TARS_GROQ_STT_MODEL", "whisper-large-v3-turbo").strip()
+            sess = self._get_http_session()
+            resp = sess.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": ("cmd.wav", buf.getvalue(), "audio/wav")},
+                data={
+                    "model": model,
+                    "language": (self.language or "en").split("-")[0],
+                    "temperature": "0",
+                    "prompt": "TARS, WhatsApp, Amma, Reshma, Reshmaa, Shafyy, Chrome, Brave, YouTube, Gmail.",
+                    "response_format": "json",
+                },
+                timeout=3.5,
+            )
+            if resp.status_code == 200:
+                payload = resp.json() if hasattr(resp, "json") else {}
+                text = (payload.get("text") or "").strip()
+                return text or None
+            if resp.status_code in (401, 403, 429):
+                self._groq_cooldown_until = time.time() + 60.0
+            return None
+        except Exception:
+            self._groq_cooldown_until = time.time() + 15.0
+            return None
+
     def _transcribe_whisper(self, audio) -> Optional[str]:
         """
         Transcribes a speech_recognition.AudioData object locally.
 
-        Prefers faster-whisper (CTranslate2, 2-4x faster than openai-whisper,
-        int8 quantized on CPU) and falls back to openai-whisper, then Google.
+        Uses faster-whisper with greedy decoding (beam_size=1) and VAD filtering
+        for low CPU latency, falling back to openai-whisper.
         """
         if self._whisper_failed:
             return None
@@ -220,9 +369,18 @@ class VoiceListener:
                 if getattr(self, "_fw_model", None) is None:
                     from faster_whisper import WhisperModel
                     self._fw_model = WhisperModel(
-                        self.whisper_model_name, device="cpu", compute_type="int8"
+                        self.whisper_model_name,
+                        device="cpu",
+                        compute_type="int8",
+                        cpu_threads=min(4, os.cpu_count() or 2),
                     )
-                segments, _ = self._fw_model.transcribe(samples, beam_size=5)
+                segments, _ = self._fw_model.transcribe(
+                    samples,
+                    beam_size=1,
+                    vad_filter=True,
+                    language="en",
+                    condition_on_previous_text=False,
+                )
                 text = " ".join(s.text for s in segments).strip()
                 if text:
                     return text
@@ -241,66 +399,138 @@ class VoiceListener:
             self._whisper_failed = True
             return None
 
+    def _transcribe_google(self, audio: Any, duration: float, peak_rms: float) -> Optional[str]:
+        """Runs Google Web Speech on 16kHz downsampled audio without blind dual-lang noise stalls."""
+        import speech_recognition as sr
+
+        target_audio = audio
+        try:
+            if getattr(audio, "sample_rate", 16000) != 16000:
+                raw16 = audio.get_raw_data(convert_rate=16000, convert_width=2)
+                if isinstance(raw16, (bytes, bytearray)):
+                    target_audio = sr.AudioData(raw16, 16000, 2)
+        except Exception:
+            target_audio = audio
+
+        try:
+            return self._recognizer.recognize_google(target_audio, language=self.language)
+        except sr.UnknownValueError:
+            retry_dual = (
+                os.getenv("TARS_STT_DUAL_LANG") == "1"
+                or (duration >= 1.0 and peak_rms >= max(350.0, self._min_energy_floor * 1.8))
+            )
+            if retry_dual and self.language and self.language != "en-US":
+                try:
+                    return self._recognizer.recognize_google(target_audio, language="en-US")
+                except Exception:
+                    return None
+            return None
+
     def listen_once(
         self,
-        timeout: int = 6,
-        phrase_time_limit: Optional[int] = 15,
+        timeout: int = 8,
+        phrase_time_limit: Optional[int] = 10,
         on_listening_start: Optional[Callable[[], None]] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Listens to the microphone with locale-aware STT and phonetic normalization.
-        Supports full sentences without cutting off between natural word pauses.
+        Listens to the microphone with persistent stream reuse, acoustic gating,
+        and low-latency STT backend selection (Groq Whisper -> faster-whisper -> Google).
         """
         if not self._recognizer or not self._microphone:
             return None, "Microphone not initialized"
 
         import speech_recognition as sr
 
-        self._stt_timings = {"wait_and_record": 0.0, "transcription": 0.0, "end_reason": "unknown"}
+        self._stt_timings = {
+            "wait_and_record": 0.0,
+            "transcription": 0.0,
+            "end_reason": "unknown",
+            "engine": self.stt_engine,
+        }
         try:
             if on_listening_start:
                 on_listening_start()
 
+            # Prevent dynamic_energy_threshold from drifting down to near-zero in quiet moments.
+            try:
+                cur_thresh = float(self._recognizer.energy_threshold)
+                clamped_thresh = max(self._min_energy_floor, min(1800.0, cur_thresh))
+                self._recognizer.energy_threshold = clamped_thresh
+                self.energy_threshold = int(clamped_thresh)
+            except Exception:
+                clamped_thresh = float(self.energy_threshold)
+
             _t0 = time.time()
-            with self._microphone as source:
+            if self._is_real_mic():
+                source = self._open_stream()
                 audio = self._recognizer.listen(
                     source,
                     timeout=timeout,
-                    phrase_time_limit=phrase_time_limit
+                    phrase_time_limit=phrase_time_limit,
                 )
+                # Close once a phrase was captured so TTS / tool execution never fills a stale ring buffer.
+                self.close_stream()
+            else:
+                with self._microphone as source:
+                    audio = self._recognizer.listen(
+                        source,
+                        timeout=timeout,
+                        phrase_time_limit=phrase_time_limit,
+                    )
             _t1 = time.time()
             self._stt_timings["wait_and_record"] = _t1 - _t0
-            # Estimate end reason: if audio duration close to phrase_time_limit, hit limit
             try:
                 audio_dur = audio.duration if hasattr(audio, "duration") else 0
             except Exception:
                 audio_dur = 0
-            if timeout and (_t1 - _t0) >= timeout - 0.1:
+            if timeout and (_t1 - _t0) >= timeout - 0.1 and not audio_dur:
                 self._stt_timings["end_reason"] = "timeout"
             elif phrase_time_limit and audio_dur >= phrase_time_limit - 0.5:
                 self._stt_timings["end_reason"] = "phrase_time_limit"
             else:
                 self._stt_timings["end_reason"] = "silence"
 
-            # Local Whisper first (no network); fall back to Google STT.
+            duration, peak_rms = _audio_speech_stats(audio)
+            if duration < 0.22 or peak_rms < max(110.0, clamped_thresh * 0.72):
+                self._stt_timings["end_reason"] = "noise_gated"
+                return None, "timeout"
+
             text = None
+            used_engine = self.stt_engine
             _t2 = time.time()
-            if self.stt_engine == "whisper":
+            if self.stt_engine in ("auto", "groq"):
+                text = self._transcribe_groq_whisper(audio)
+                if text:
+                    used_engine = "groq"
+                if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                    text = None
+                if not text and self.stt_engine == "auto":
+                    text = self._transcribe_whisper(audio)
+                    if text:
+                        used_engine = "whisper"
+                    if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                        text = None
+                if not text:
+                    text = self._transcribe_google(audio, duration, peak_rms)
+                    if text:
+                        used_engine = "google"
+            elif self.stt_engine == "whisper":
                 text = self._transcribe_whisper(audio)
-            if not text:
-                try:
-                    text = self._recognizer.recognize_google(audio, language=self.language)
-                except sr.UnknownValueError:
-                    if self.language and self.language != "en-US":
-                        try:
-                            text = self._recognizer.recognize_google(audio, language="en-US")
-                        except Exception:
-                            return None, "unrecognized"
-                    else:
-                        return None, "unrecognized"
+                if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                    text = None
+                if text:
+                    used_engine = "whisper"
+                else:
+                    text = self._transcribe_google(audio, duration, peak_rms)
+                    if text:
+                        used_engine = "google"
+            else:
+                text = self._transcribe_google(audio, duration, peak_rms)
+                used_engine = "google"
 
             _t3 = time.time()
             self._stt_timings["transcription"] = _t3 - _t2
+            self._stt_timings["engine"] = used_engine
             if text and text.strip():
                 normalized = normalize_voice_command(text.strip())
                 return normalized, "ok"
@@ -309,14 +539,17 @@ class VoiceListener:
         except sr.WaitTimeoutError:
             return None, "timeout"
         except sr.UnknownValueError:
+            self.close_stream()
             return None, "unrecognized"
         except Exception as e:
+            self.close_stream()
             return None, f"error: {str(e)}"
 
     def create_barge_in_monitor(self) -> Optional["VoiceBargeInMonitor"]:
         """Creates a barge-in audio energy monitor calibrated to current room acoustics."""
         if not self._recognizer or not self._microphone:
             return None
+        self.close_stream()
         # Safe threshold: well above the measured noise floor and above TARS's own
         # playback level, so the assistant does not interrupt itself.
         thresh = max(300, int(self._recognizer.energy_threshold * 1.5))

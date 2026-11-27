@@ -24,10 +24,11 @@ voice:
   voice_name: "en-US-JennyNeural" # Friendly, warm female assistant voice
   rate: "+5%"
   volume: "+0%"
-  stt_energy_threshold: 150
-  stt_pause_threshold: 0.6     # Pause length (in seconds) to wait before considering speech finished
-  stt_timeout: 6
-  stt_phrase_time_limit: 15    # Maximum duration of a spoken phrase
+  stt_engine: "auto"             # Options: "auto" (Groq Whisper -> faster-whisper -> Google) | "groq" | "whisper" | "google"
+  stt_energy_threshold: 250
+  stt_pause_threshold: 0.35      # Pause length (in seconds) to wait before considering speech finished
+  stt_timeout: 8
+  stt_phrase_time_limit: 10      # Maximum duration of a spoken phrase
 
 execution:
   powershell_timeout_seconds: 30

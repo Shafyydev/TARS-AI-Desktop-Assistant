@@ -199,12 +199,15 @@ def main() -> None:
         from core.scheduler import set_alert_callback
         set_alert_callback(lambda msg: speaker.speak(msg, blocking=False))
     v_cfg = agent.settings.get("voice", {})
+    stt_timeout = int(v_cfg.get("stt_timeout", 8))
+    stt_phrase_limit = int(v_cfg.get("stt_phrase_time_limit", 10))
     listener = (
         VoiceListener(
             energy_threshold=v_cfg.get("stt_energy_threshold", 250),
-            pause_threshold=v_cfg.get("stt_pause_threshold", 0.6),
+            pause_threshold=v_cfg.get("stt_pause_threshold", 0.35),
             language=args.language,
-            mic_index=args.mic_index
+            mic_index=args.mic_index,
+            stt_engine=v_cfg.get("stt_engine"),
         )
         if (voice_mode or not args.text_only)
         else None
@@ -232,10 +235,11 @@ def main() -> None:
 
     if listener:
         with console.status("[dim cyan]Calibrating microphone for room acoustics...[/dim cyan]"):
-            listener.calibrate(duration=0.8)
+            listener.calibrate(duration=0.45)
 
     if speaker:
-        speaker.speak("TARS operational. All systems online.", blocking=False)
+        # Block on the brief startup greeting in voice mode so the mic does not capture TARS's own speaker output.
+        speaker.speak("TARS operational. All systems online.", blocking=voice_mode)
 
     if voice_mode:
         console.print("[bold green]🎙️  HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")
@@ -254,153 +258,162 @@ def main() -> None:
         console.print(" • Zero-latency native speech is active by default. (Add [bold green]--neural-voice[/bold green] for cloud Edge-TTS).")
         console.print(" • Type [bold cyan]'exit'[/bold cyan] or [bold cyan]'quit'[/bold cyan] to disarm TARS.\n")
 
-    while True:
-        try:
-            user_input = None
+    listening_banner_shown = False
+    try:
+        while True:
+            try:
+                user_input = None
 
-            if voice_mode:
-                if listener and listener.wake_detector.is_porcupine_active():
-                    console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
-                    if not listener.listen_for_wake_word():
-                        continue
-                    console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
-                    raw_speech, status = listener.listen_once(timeout=3, phrase_time_limit=15)
-                    if status == "timeout" or not raw_speech:
-                        continue
-                    user_input = raw_speech
-                    console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
-                    if speaker and not speaker.fast_voice:
-                        speaker.speak_ack()
-                    # Porcupine already authenticated this interaction; do not run
-                    # transcript substring matching on every microphone capture.
-                    raw_speech = None
-
-                if user_input is not None:
-                    pass
-                else:
-                    console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
-                    _t_stt_start = time.time()
-                    raw_speech, status = listener.listen_once(timeout=3, phrase_time_limit=15) if listener else (None, "no listener")
-                    _t_stt_end = time.time()
-                    _timings = getattr(listener, "_stt_timings", {})
-                    console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s | end_reason: {} | energy_threshold: {}[/dim]".format(
-                        _t_stt_end - _t_stt_start,
-                        _timings.get("wait_and_record", 0),
-                        _timings.get("transcription", 0),
-                        _timings.get("end_reason", "unknown"),
-                        getattr(listener, "energy_threshold", "?")
-                    ))
-                
-                    if status == "timeout":
-                        continue
-                    elif status == "unrecognized":
-                        console.print("[dim yellow]⚡ Audio detected, but speech was unclear. Try speaking slightly closer.[/dim yellow]")
-                        continue
-                    elif not raw_speech:
-                        time.sleep(0.05)
-                        continue
-
-                    # Compatibility path for users who have not configured the
-                    # dedicated Porcupine engine yet.
-                    is_ww, clean_command = listener.check_wake_word(raw_speech)
-                
-                    # If only wake word alone was said ("TARS"), ask user what they want
-                    if is_ww and not clean_command:
-                        console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]{raw_speech}[/bold white]")
-                        if speaker:
-                            speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
-                        console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
-                        follow_speech, _ = listener.listen_once(timeout=6, phrase_time_limit=15)
-                        if not follow_speech:
+                if voice_mode:
+                    if listener and listener.wake_detector.is_porcupine_active():
+                        console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
+                        if not listener.listen_for_wake_word():
                             continue
-                        clean_command = follow_speech
+                        console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
+                        raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
+                        if status == "timeout" or not raw_speech:
+                            continue
+                        user_input = raw_speech
+                        console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+                        if speaker and not speaker.fast_voice:
+                            speaker.speak_ack()
+                        # Porcupine already authenticated this interaction; do not run
+                        # transcript substring matching on every microphone capture.
+                        raw_speech = None
 
-                    user_input = clean_command if (is_ww and clean_command) else raw_speech
-                    console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+                    if user_input is not None:
+                        pass
+                    else:
+                        if not listening_banner_shown:
+                            console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
+                            listening_banner_shown = True
+                        _t_stt_start = time.time()
+                        raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit) if listener else (None, "no listener")
+                        _t_stt_end = time.time()
+                        if status == "timeout":
+                            continue
+                        listening_banner_shown = False
+                        _timings = getattr(listener, "_stt_timings", {})
+                        console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s [{}] | end_reason: {} | energy_threshold: {}[/dim]".format(
+                            _t_stt_end - _t_stt_start,
+                            _timings.get("wait_and_record", 0),
+                            _timings.get("transcription", 0),
+                            _timings.get("engine", "?"),
+                            _timings.get("end_reason", "unknown"),
+                            getattr(listener, "energy_threshold", "?")
+                        ))
 
-                    # If using neural cloud voice, speak an immediate acknowledgment while synthesis begins
-                    if speaker and not speaker.fast_voice:
-                        speaker.speak_ack()
+                        if status == "unrecognized":
+                            console.print("[dim yellow]⚡ Audio detected, but speech was unclear. Try speaking slightly closer.[/dim yellow]")
+                            continue
+                        elif not raw_speech:
+                            time.sleep(0.05)
+                            continue
 
-            else:
-                user_input = Prompt.ask("[bold cyan]TARS >[/bold cyan]")
-                if not user_input or not user_input.strip():
-                    continue
+                        # Compatibility path for users who have not configured the
+                        # dedicated Porcupine engine yet.
+                        is_ww, clean_command = listener.check_wake_word(raw_speech)
 
-                if user_input.strip().lower() in ["exit", "quit", "q"]:
+                        # If only wake word alone was said ("TARS"), ask user what they want
+                        if is_ww and not clean_command:
+                            console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]{raw_speech}[/bold white]")
+                            if speaker:
+                                speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
+                            console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
+                            follow_speech, _ = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
+                            if not follow_speech:
+                                continue
+                            clean_command = follow_speech
+
+                        user_input = clean_command if (is_ww and clean_command) else raw_speech
+                        console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+
+                        # If using neural cloud voice, speak an immediate acknowledgment while synthesis begins
+                        if speaker and not speaker.fast_voice:
+                            speaker.speak_ack()
+
+                else:
+                    user_input = Prompt.ask("[bold cyan]TARS >[/bold cyan]")
+                    if not user_input or not user_input.strip():
+                        continue
+
+                    if user_input.strip().lower() in ["exit", "quit", "q"]:
+                        if speaker:
+                            speaker.speak("Disarming. Goodbye.", blocking=True)
+                        console.print("[dim]TARS offline.[/dim]")
+                        break
+
+                    if user_input.strip().lower() in ["v", "voice"]:
+                        if listener:
+                            console.print("\n[bold yellow]🎙️  Listening... Speak your command clearly.[/bold yellow]")
+                            raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
+                            if not raw_speech:
+                                console.print(f"[dim red]No speech detected ({status}).[/dim red]")
+                                continue
+                            is_ww, clean = listener.check_wake_word(raw_speech)
+                            user_input = clean if (is_ww and clean) else raw_speech
+                            console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
+                        else:
+                            console.print("[red]Microphone listener not initialized.[/red]")
+                            continue
+
+                # Check shutdown commands
+                if user_input.strip().lower() in ["exit", "quit", "disarm", "shutdown", "shut down", "shutdown tars", "shut down tars", "shutdown task", "stop tars"]:
                     if speaker:
                         speaker.speak("Disarming. Goodbye.", blocking=True)
                     console.print("[dim]TARS offline.[/dim]")
                     break
 
-                if user_input.strip().lower() in ["v", "voice"]:
-                    if listener:
-                        console.print("\n[bold yellow]🎙️  Listening... Speak your command clearly.[/bold yellow]")
-                        raw_speech, status = listener.listen_once(timeout=4, phrase_time_limit=15)
-                        if not raw_speech:
-                            console.print(f"[dim red]No speech detected ({status}).[/dim red]")
-                            continue
-                        is_ww, clean = listener.check_wake_word(raw_speech)
-                        user_input = clean if (is_ww and clean) else raw_speech
-                        console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
-                    else:
-                        console.print("[red]Microphone listener not initialized.[/red]")
-                        continue
+                # Status callback
+                def on_status(msg: str) -> None:
+                    console.print(f"[dim yellow]⚡ {msg}[/dim yellow]")
 
-            # Check shutdown commands
-            if user_input.strip().lower() in ["exit", "quit", "disarm", "shutdown", "shut down", "shutdown tars", "shut down tars", "shutdown task", "stop tars"]:
-                if speaker:
-                    speaker.speak("Disarming. Goodbye.", blocking=True)
-                console.print("[dim]TARS offline.[/dim]")
+                # Run through Agent ReAct Loop with precise timing
+                t_exec_start = time.time()
+                with console.status("[bold green]TARS reasoning & executing...[/bold green]", spinner="dots"):
+                    result = agent.run_agent_loop(user_input, on_status_update=on_status)
+                exec_duration = time.time() - t_exec_start
+                console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
+
+                # Output Spoken / Written Response
+                console.print(f"\n[bold green]TARS:[/bold green] {result['response']} [dim green]({exec_duration:.2f}s)[/dim green]\n")
+
+                # Show tool execution details if tools were used
+                if result.get("steps"):
+                    step_table = Table(title="[dim]Tools Executed[/dim]", border_style="dim", box=None)
+                    step_table.add_column("Tool", style="yellow")
+                    step_table.add_column("Status", style="green")
+                    for s in result["steps"]:
+                        step_result = s.get("result")
+                        ok = step_result.get("success", True) if isinstance(step_result, dict) else True
+                        status = "OK" if ok else "FAILED"
+                        step_table.add_row(s["tool"], status)
+                    console.print(step_table)
+
+                # Speak response aloud (with instant keyboard interruption & acoustic voice barge-in)
+                if speaker and result.get("response"):
+                    _t_tts_start = time.time()
+                    interrupted = speaker.speak(
+                        result["response"],
+                        blocking=voice_mode,
+                        listener=listener if voice_mode else None
+                    )
+                    _t_tts_end = time.time()
+                    console.print("[dim]TIMING: TTS took {:.2f}s[/dim]".format(_t_tts_end - _t_tts_start))
+                    if interrupted:
+                        console.print("[dim yellow]⚡ Speech interrupted by user. Standing by...[/dim yellow]")
+                    elif voice_mode:
+                        # Prevent acoustic feedback: clear audio device buffers before listening again
+                        time.sleep(0.15)
+
+            except KeyboardInterrupt:
+                console.print("\n[dim]TARS interrupted. Shutting down.[/dim]")
                 break
-
-            # Status callback
-            def on_status(msg: str) -> None:
-                console.print(f"[dim yellow]⚡ {msg}[/dim yellow]")
-
-            # Run through Agent ReAct Loop with precise timing
-            t_exec_start = time.time()
-            with console.status("[bold green]TARS reasoning & executing...[/bold green]", spinner="dots"):
-                result = agent.run_agent_loop(user_input, on_status_update=on_status)
-            exec_duration = time.time() - t_exec_start
-            console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
-
-            # Output Spoken / Written Response
-            console.print(f"\n[bold green]TARS:[/bold green] {result['response']} [dim green]({exec_duration:.2f}s)[/dim green]\n")
-
-            # Show tool execution details if tools were used
-            if result.get("steps"):
-                step_table = Table(title="[dim]Tools Executed[/dim]", border_style="dim", box=None)
-                step_table.add_column("Tool", style="yellow")
-                step_table.add_column("Status", style="green")
-                for s in result["steps"]:
-                    step_result = s.get("result")
-                    ok = step_result.get("success", True) if isinstance(step_result, dict) else True
-                    status = "OK" if ok else "FAILED"
-                    step_table.add_row(s["tool"], status)
-                console.print(step_table)
-
-            # Speak response aloud (with instant keyboard interruption & acoustic voice barge-in)
-            if speaker and result.get("response"):
-                _t_tts_start = time.time()
-                interrupted = speaker.speak(
-                    result["response"],
-                    blocking=voice_mode,
-                    listener=listener if voice_mode else None
-                )
-                _t_tts_end = time.time()
-                console.print("[dim]TIMING: TTS took {:.2f}s[/dim]".format(_t_tts_end - _t_tts_start))
-                if interrupted:
-                    console.print("[dim yellow]⚡ Speech interrupted by user. Standing by...[/dim yellow]")
-                elif voice_mode:
-                    # Prevent acoustic feedback: clear audio device buffers before listening again
-                    time.sleep(0.15)
-
-        except KeyboardInterrupt:
-            console.print("\n[dim]TARS interrupted. Shutting down.[/dim]")
-            break
-        except Exception as e:
-            console.print(f"[bold red]Unexpected error:[/bold red] {e}")
+            except Exception as e:
+                console.print(f"[bold red]Unexpected error:[/bold red] {e}")
+    finally:
+        if listener:
+            listener.close_stream()
 
 
 if __name__ == "__main__":

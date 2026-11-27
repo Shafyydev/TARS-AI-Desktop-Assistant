@@ -808,5 +808,83 @@ class TestRegressionFixes(unittest.TestCase):
             mock_exec.assert_called_with("send_whatsapp_message", {"contact_name": "amma", "message": "hello"})
 
 
+class TestVoiceListenerSpeedAndFallback(unittest.TestCase):
+    def _make_speech_audio(self, seconds: float = 1.0, amplitude: int = 1200):
+        import struct
+        import speech_recognition as sr
+
+        count = int(16000 * seconds)
+        raw = struct.pack("<" + "h" * count, *([amplitude if i % 2 == 0 else -amplitude for i in range(count)]))
+        return sr.AudioData(raw, 16000, 2)
+
+    def test_acoustic_gate_skips_too_short_or_quiet_audio(self):
+        from core.voice_listener import VoiceListener, _is_whisper_hallucination
+
+        vl = VoiceListener(energy_threshold=250, stt_engine="google")
+        vl._recognizer = MagicMock()
+        vl._microphone = MagicMock()
+        quiet_audio = self._make_speech_audio(seconds=0.8, amplitude=25)
+        vl._recognizer.listen.return_value = quiet_audio
+
+        text, status = vl.listen_once(timeout=3)
+        self.assertIsNone(text)
+        self.assertEqual(status, "timeout")
+        vl._recognizer.recognize_google.assert_not_called()
+
+        self.assertTrue(_is_whisper_hallucination("Thank you.", peak_rms=260, threshold=250, duration=0.8))
+        self.assertFalse(_is_whisper_hallucination("open whatsapp", peak_rms=260, threshold=250, duration=0.8))
+        self.assertFalse(_is_whisper_hallucination("Thank you.", peak_rms=900, threshold=250, duration=1.5))
+
+    def test_auto_engine_uses_groq_whisper_then_falls_back_to_google(self):
+        from core.voice_listener import VoiceListener
+
+        vl = VoiceListener(energy_threshold=200, stt_engine="auto")
+        vl._recognizer = MagicMock()
+        vl._microphone = MagicMock()
+        vl._whisper_failed = True  # skip local whisper in unit test
+        speech_audio = self._make_speech_audio(seconds=1.0, amplitude=1000)
+        vl._recognizer.listen.return_value = speech_audio
+
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"text": "open whatsapp"}
+        vl._http_session = MagicMock()
+        vl._http_session.post.return_value = mock_resp
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "gsk_test_123"}):
+            text, status = vl.listen_once(timeout=3)
+
+        self.assertEqual(status, "ok")
+        self.assertEqual(text, "open whatsapp")
+        self.assertEqual(vl._stt_timings["engine"], "groq")
+        vl._recognizer.recognize_google.assert_not_called()
+
+        # When Groq hits rate limit, falls back seamlessly to 16kHz Google STT
+        vl._http_session.post.return_value = MagicMock(status_code=429, text="rate limit")
+        vl._recognizer.recognize_google.return_value = "close tab"
+        with patch.dict("os.environ", {"GROQ_API_KEY": "gsk_test_123"}):
+            text2, status2 = vl.listen_once(timeout=3)
+
+        self.assertEqual(status2, "ok")
+        self.assertEqual(text2, "close tab")
+        self.assertEqual(vl._stt_timings["engine"], "google")
+
+    def test_calibrate_updates_floor_above_legacy_800_cap(self):
+        from core.voice_listener import VoiceListener
+
+        vl = VoiceListener(energy_threshold=250, stt_engine="google")
+        vl._recognizer = MagicMock()
+        vl._microphone = MagicMock()
+        vl._microphone.CHUNK = 1024
+        vl._microphone.SAMPLE_RATE = 16000
+
+        def fake_adjust(source, duration=0.4):
+            vl._recognizer.energy_threshold = 920.0
+
+        vl._recognizer.adjust_for_ambient_noise.side_effect = fake_adjust
+        thresh = vl.calibrate(duration=0.4)
+        self.assertGreaterEqual(thresh, 920.0)
+        self.assertEqual(vl.energy_threshold, int(thresh))
+
+
 if __name__ == "__main__":
     unittest.main()
