@@ -3,376 +3,1505 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TARS Dashboard</title>
+  <title>T.A.R.S. — Holographic Neural Interface</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%2304191e' stroke='%231ef5d8' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%23a7fff2'/%3E%3C/svg%3E" />
   <style>
     :root {
-      --bg: #0b0f14; --panel: #121922; --panel2: #0f151d; --border: #223040;
-      --text: #e6edf3; --muted: #9fb0c3; --cyan: #39d0ff; --green: #3ddc97; --amber: #ffcc66; --red: #ff6b6b;
+      --bg-core: #04191e;
+      --bg-void: #010407;
+      --holo: #1ef5d8;
+      --holo-bright: #a7fff2;
+      --holo-sky: #3bd4ff;
+      --holo-dim: rgba(30, 245, 216, 0.42);
+      --holo-line: rgba(30, 245, 216, 0.24);
+      --glass-bg: rgba(3, 15, 20, 0.62);
+      --glass-strong: rgba(4, 18, 24, 0.86);
+      --text: #e6fffb;
+      --muted: rgba(167, 255, 242, 0.62);
+      --green: #3ef2a8;
+      --amber: #ffd166;
+      --red: #ff5d7a;
     }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: Segoe UI, system-ui, -apple-system, sans-serif; background: radial-gradient(1200px 600px at 10% -10%, #122033 0%, var(--bg) 50%), var(--bg); color: var(--text); }
-    header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); background: rgba(10,14,20,0.8); backdrop-filter: blur(6px); position: sticky; top: 0; z-index: 5; }
-    .brand { display: flex; gap: 12px; align-items: center; }
-    .logo { font-weight: 800; letter-spacing: 3px; color: var(--cyan); font-size: 20px; }
-    .sub { color: var(--muted); font-size: 12px; }
-    .pill { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--green); background: #0e1712; }
-    .header-actions { display: flex; gap: 8px; align-items: center; }
-    .btn-cancel { background: #2a1015; color: var(--red); border: 1px solid #5a2030; border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .btn-cancel:hover { background: #3a1520; }
-    .layout { display: grid; grid-template-columns: 320px 1fr 360px; gap: 14px; padding: 14px; }
-    .panel { background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; min-height: 120px; }
-    .panel h2 { margin: 0; padding: 10px 12px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--cyan); border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }
-    .panel .body { padding: 10px 12px; }
-    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .stat { background: #0c1219; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
-    .stat .k { font-size: 11px; color: var(--muted); }
-    .stat .v { font-size: 16px; font-weight: 700; margin-top: 2px; }
-    .kv { font-size: 12px; color: var(--muted); margin: 4px 0; }
-    .kv b { color: var(--text); font-weight: 600; }
-    .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 110px); }
-    .chat-log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-    .msg { max-width: 92%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); white-space: pre-wrap; line-height: 1.35; font-size: 14px; }
-    .msg.user { align-self: flex-end; background: #142233; border-color: #27415f; }
-    .msg.assistant { align-self: flex-start; background: #101821; }
-    .msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-    .composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.2); }
-    .composer input { flex: 1; background: #0c1219; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 14px; }
-    .composer button { background: #0f2a36; color: var(--cyan); border: 1px solid #1f5f7a; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
-    .composer button:disabled { opacity: .5; cursor: not-allowed; }
-    .composer button.listening { background: #7f1d1d; border-color: #ef4444; color: #fff; animation: micpulse 1.2s infinite; }
-    .composer button.muted { opacity: .55; }
-    @keyframes micpulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
-    .list { max-height: 220px; overflow: auto; font-size: 12px; }
-    .item { padding: 6px 0; border-bottom: 1px dashed #1d2835; }
-    .item:last-child { border-bottom: none; }
-    .tag { color: var(--amber); font-weight: 600; }
-    .ok { color: var(--green); } .fail { color: var(--red); }
-    .mono { font-family: Consolas, ui-monospace, monospace; font-size: 11px; color: #c9d6e2; }
-    .small { font-size: 11px; color: var(--muted); }
-    a { color: var(--cyan); }
-    .provider-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed #1d2835; font-size: 12px; }
-    .provider-row:last-child { border-bottom: none; }
-    .provider-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-    .provider-dot.up { background: var(--green); }
-    .provider-dot.down { background: var(--red); }
-    .provider-name { font-weight: 600; color: var(--text); min-width: 80px; }
-    .provider-model { color: var(--muted); flex: 1; }
-    .provider-switch { background: #0f2a36; color: var(--cyan); border: 1px solid #1f5f7a; border-radius: 6px; padding: 2px 10px; font-size: 11px; cursor: pointer; }
-    .provider-switch:hover { background: #1a3f50; }
-    .provider-switch.active { background: #0e1712; color: var(--green); border-color: #2a5035; cursor: default; }
-    .tool-count { font-size: 20px; font-weight: 700; color: var(--cyan); }
-    @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .chat-wrap { height: 60vh; } }
+
+    * { box-sizing: border-box; user-select: none; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+      background: radial-gradient(circle at 50% 47%, var(--bg-core) 0%, #020b10 42%, var(--bg-void) 100%);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+
+    /* Fullscreen 3D WebGL Stage */
+    #orbCanvas {
+      position: fixed; inset: 0; width: 100vw; height: 100vh; display: block;
+      z-index: 1; cursor: grab; touch-action: none;
+    }
+    #orbCanvas:active { cursor: grabbing; }
+
+    /* Optical HUD Scanline & Radial Vignette Overlays */
+    .vignette-layer {
+      position: fixed; inset: 0; z-index: 2; pointer-events: none;
+      background:
+        radial-gradient(circle at 50% 47%, transparent 32%, rgba(0, 0, 0, 0.56) 100%),
+        repeating-linear-gradient(
+          to bottom,
+          rgba(30, 245, 216, 0.018) 0px,
+          rgba(30, 245, 216, 0.018) 1px,
+          transparent 1px,
+          transparent 4px
+        );
+    }
+
+    /* HUD Grid Overlay */
+    .hud-layer {
+      position: fixed; inset: 0; z-index: 4; pointer-events: none;
+      padding: 20px 26px;
+    }
+
+    /* Top Header */
+    .hud-top {
+      display: flex; align-items: flex-start; justify-content: space-between;
+    }
+    .brand-block { pointer-events: auto; }
+    .brand-title {
+      font-size: 20px; font-weight: 600; letter-spacing: 0.46em;
+      color: var(--holo-bright);
+      text-shadow: 0 0 18px rgba(30, 245, 216, 0.55);
+    }
+    .brand-sub {
+      margin-top: 5px; font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--muted); font-family: Consolas, ui-monospace, monospace;
+    }
+    .brand-bar {
+      margin-top: 8px; width: 185px; height: 1px;
+      background: linear-gradient(90deg, var(--holo), transparent);
+    }
+
+    .top-right {
+      display: flex; align-items: center; gap: 10px; pointer-events: auto;
+    }
+    .status-chip {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 5px 12px; border-radius: 999px;
+      border: 1px solid var(--holo-line);
+      background: rgba(3, 18, 23, 0.58); backdrop-filter: blur(10px);
+      font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+      font-family: Consolas, ui-monospace, monospace;
+      color: var(--holo-bright);
+      box-shadow: 0 0 18px rgba(30, 245, 216, 0.12);
+    }
+    .pulse-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+      box-shadow: 0 0 10px var(--green); animation: dotPulse 1.8s ease-in-out infinite;
+    }
+    @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
+
+    .mini-btn {
+      background: rgba(4, 18, 24, 0.62); backdrop-filter: blur(10px);
+      border: 1px solid var(--holo-line); color: var(--holo-bright);
+      border-radius: 6px; padding: 6px 11px; font-size: 11px;
+      font-family: Consolas, ui-monospace, monospace; letter-spacing: 0.1em;
+      cursor: pointer; transition: all .2s ease;
+    }
+    .mini-btn:hover {
+      border-color: var(--holo); box-shadow: 0 0 14px rgba(30, 245, 216, 0.28);
+      background: rgba(12, 42, 52, 0.72);
+    }
+    .mini-btn.danger { border-color: rgba(255, 93, 122, 0.42); color: #ffb3c1; }
+    .mini-btn.danger:hover { border-color: var(--red); background: rgba(70, 14, 28, 0.72); box-shadow: 0 0 16px rgba(255, 93, 122, 0.32); }
+
+    /* Left Translucent Diagnostic Feed (mirroring Stark-style stacked left HUD lines) */
+    .left-stream {
+      position: fixed; left: 28px; top: 96px; bottom: 215px; width: 258px;
+      display: flex; flex-direction: column; gap: 5px;
+      overflow: hidden; pointer-events: auto;
+      font-family: Consolas, ui-monospace, monospace;
+    }
+    .stream-section-title {
+      font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
+      color: var(--holo-dim); margin: 8px 0 3px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .stream-section-title::after {
+      content: ""; flex: 1; height: 1px;
+      background: linear-gradient(90deg, rgba(30, 245, 216, 0.28), transparent);
+    }
+    .diag-line {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11px; line-height: 1.35; color: rgba(196, 255, 246, 0.78);
+      text-shadow: 0 0 8px rgba(30, 245, 216, 0.18);
+      transition: color .2s ease, transform .2s ease;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .diag-line:hover { color: #ffffff; transform: translateX(3px); }
+    .diag-dot {
+      width: 4px; height: 4px; border-radius: 50%; flex-shrink: 0;
+      background: var(--holo); box-shadow: 0 0 6px var(--holo);
+    }
+    .diag-dot.ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .diag-dot.fail { background: var(--red); box-shadow: 0 0 6px var(--red); }
+    .diag-k { color: var(--muted); flex-shrink: 0; }
+    .diag-v { color: var(--holo-bright); font-weight: 600; margin-left: auto; }
+    .diag-bar-wrap {
+      width: 52px; height: 3px; background: rgba(30, 245, 216, 0.12);
+      border-radius: 2px; overflow: hidden; margin-left: auto; flex-shrink: 0;
+    }
+    .diag-bar-fill {
+      height: 100%; background: linear-gradient(90deg, var(--holo), var(--holo-bright));
+      box-shadow: 0 0 8px var(--holo); transition: width .5s ease;
+    }
+
+    /* Bottom-Left Cyan Framed Holographic Action Dock */
+    .left-dock {
+      position: fixed; left: 26px; bottom: 24px; width: 174px;
+      padding: 8px; pointer-events: auto;
+      background: rgba(3, 18, 24, 0.56); backdrop-filter: blur(12px);
+      border: 1px solid rgba(30, 245, 216, 0.42);
+      box-shadow: 0 0 26px rgba(30, 245, 216, 0.14), inset 0 0 18px rgba(30, 245, 216, 0.06);
+      border-radius: 4px;
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .left-dock::before {
+      content: ""; position: absolute; top: -1px; left: 10px; right: 10px; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--holo-bright), transparent);
+    }
+    .dock-btn {
+      width: 100%; text-align: left;
+      background: rgba(10, 42, 50, 0.36);
+      border: 1px solid rgba(30, 245, 216, 0.24);
+      color: var(--holo-bright);
+      padding: 6px 10px; border-radius: 3px;
+      font-family: Consolas, ui-monospace, monospace;
+      font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+      cursor: pointer; transition: all .18s ease;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .dock-btn:hover {
+      background: rgba(30, 245, 216, 0.18); border-color: var(--holo);
+      box-shadow: 0 0 14px rgba(30, 245, 216, 0.25); transform: translateX(2px);
+    }
+    .dock-btn.active {
+      background: rgba(30, 245, 216, 0.24); border-color: var(--holo-bright);
+      color: #fff; box-shadow: 0 0 16px rgba(30, 245, 216, 0.38);
+    }
+    .dock-btn.listening {
+      background: rgba(255, 72, 110, 0.26); border-color: var(--red);
+      color: #fff; animation: dockPulse 1.2s infinite;
+    }
+    .dock-btn.danger { border-color: rgba(255, 93, 122, 0.35); color: #ffb3c1; }
+    .dock-btn.danger:hover { background: rgba(255, 72, 110, 0.22); border-color: var(--red); }
+    @keyframes dockPulse { 0%, 100% { box-shadow: 0 0 12px rgba(255, 93, 122, 0.45); } 50% { box-shadow: 0 0 24px rgba(255, 93, 122, 0.85); } }
+
+    /* Right Edge Subtle Telemetry & Palette Pills */
+    .right-rail {
+      position: fixed; right: 28px; top: 96px; width: 235px;
+      text-align: right; pointer-events: auto;
+      font-family: Consolas, ui-monospace, monospace;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .right-item {
+      font-size: 10.5px; color: var(--muted);
+      letter-spacing: 0.08em; line-height: 1.4;
+      text-shadow: 0 0 8px rgba(30, 245, 216, 0.16);
+    }
+    .right-item b { color: var(--holo-bright); font-weight: 600; }
+    .palette-row {
+      display: flex; justify-content: flex-end; gap: 7px; margin-top: 6px;
+    }
+    .swatch {
+      width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      transition: transform .18s ease, box-shadow .18s ease;
+    }
+    .swatch:hover, .swatch.active { transform: scale(1.22); box-shadow: 0 0 12px currentColor; border-color: #fff; }
+
+    /* Orb Interactive Guide Hint */
+    .orb-hint {
+      position: fixed; left: 50%; top: 13%; transform: translateX(-50%);
+      font-family: Consolas, ui-monospace, monospace; font-size: 10px;
+      letter-spacing: 0.22em; text-transform: uppercase;
+      color: rgba(167, 255, 242, 0.46); pointer-events: none;
+      text-shadow: 0 0 10px rgba(30, 245, 216, 0.25);
+      transition: opacity .6s ease;
+    }
+
+    /* Bottom-Center Floating Subtitles + Translucent Command Bar */
+    .center-bottom {
+      position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+      width: min(680px, calc(100vw - 420px)); min-width: 320px;
+      display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+      pointer-events: auto;
+    }
+    .subtitles-stream {
+      display: flex; flex-direction: column; gap: 6px;
+      max-height: 145px; overflow-y: auto; padding: 4px 10px;
+      mask-image: linear-gradient(to bottom, transparent 0%, black 22%, black 100%);
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 22%, black 100%);
+      scrollbar-width: none;
+    }
+    .subtitles-stream::-webkit-scrollbar { display: none; }
+    .sub-line {
+      text-align: center; font-size: 12.5px; line-height: 1.42;
+      color: rgba(226, 255, 250, 0.92);
+      text-shadow: 0 0 12px rgba(30, 245, 216, 0.35), 0 1px 4px rgba(0, 0, 0, 0.9);
+      user-select: text; animation: fadeRise .28s ease;
+    }
+    .sub-line.user { color: rgba(130, 232, 255, 0.85); font-size: 11.5px; }
+    .sub-line .sub-tag {
+      font-family: Consolas, ui-monospace, monospace; font-size: 10px;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--holo); margin-right: 6px; opacity: 0.85;
+    }
+    @keyframes fadeRise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+    .composer-glass {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 14px;
+      background: rgba(3, 17, 22, 0.68); backdrop-filter: blur(14px);
+      border: 1px solid rgba(30, 245, 216, 0.32); border-radius: 999px;
+      box-shadow: 0 0 28px rgba(30, 245, 216, 0.12), inset 0 0 14px rgba(30, 245, 216, 0.05);
+      transition: border-color .2s ease, box-shadow .2s ease;
+    }
+    .composer-glass:focus-within {
+      border-color: var(--holo);
+      box-shadow: 0 0 32px rgba(30, 245, 216, 0.24), inset 0 0 16px rgba(30, 245, 216, 0.08);
+    }
+    .composer-glass input {
+      flex: 1; background: transparent; border: none; outline: none;
+      color: #ffffff; font-size: 13.5px; user-select: text;
+    }
+    .composer-glass input::placeholder { color: rgba(167, 255, 242, 0.45); }
+    .orb-icon-btn {
+      width: 34px; height: 34px; border-radius: 50%;
+      border: 1px solid rgba(30, 245, 216, 0.28);
+      background: rgba(10, 38, 46, 0.65); color: var(--holo-bright);
+      cursor: pointer; display: grid; place-items: center; font-size: 14px;
+      transition: all .18s ease;
+    }
+    .orb-icon-btn:hover { border-color: var(--holo); box-shadow: 0 0 12px rgba(30, 245, 216, 0.35); transform: scale(1.06); }
+    .orb-icon-btn.listening { background: #9b1c31; border-color: var(--red); color: #fff; animation: dockPulse 1.2s infinite; }
+    .orb-icon-btn.muted { opacity: 0.45; }
+    .send-pill {
+      padding: 7px 16px; border-radius: 999px;
+      background: linear-gradient(135deg, rgba(30, 245, 216, 0.26), rgba(59, 212, 255, 0.24));
+      border: 1px solid rgba(30, 245, 216, 0.55);
+      color: #fff; font-weight: 600; font-size: 12px; letter-spacing: 0.08em;
+      text-transform: uppercase; cursor: pointer; transition: all .18s ease;
+    }
+    .send-pill:hover { background: rgba(30, 245, 216, 0.36); box-shadow: 0 0 16px rgba(30, 245, 216, 0.45); }
+    .send-pill:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Expandable Glass Popover Drawer (docked cleanly top-right so center orb & composer never collide) */
+    .glass-drawer {
+      position: fixed; right: 26px; top: 72px;
+      width: min(410px, calc(100vw - 52px)); max-height: calc(100vh - 112px);
+      background: var(--glass-strong); backdrop-filter: blur(20px);
+      border: 1px solid rgba(30, 245, 216, 0.44);
+      border-radius: 8px; padding: 14px 16px;
+      box-shadow: 0 0 44px rgba(0, 0, 0, 0.82), 0 0 28px rgba(30, 245, 216, 0.18);
+      z-index: 20; pointer-events: auto; display: none; flex-direction: column; gap: 10px;
+    }
+    .glass-drawer.open { display: flex; animation: fadeRise .2s ease; }
+    .drawer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid rgba(30, 245, 216, 0.2); padding-bottom: 8px;
+    }
+    .drawer-title {
+      font-family: Consolas, ui-monospace, monospace; font-size: 12px;
+      letter-spacing: 0.18em; text-transform: uppercase; color: var(--holo-bright);
+    }
+    .drawer-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tab-pill {
+      padding: 4px 10px; border-radius: 4px; font-size: 10.5px;
+      font-family: Consolas, ui-monospace, monospace; text-transform: uppercase;
+      background: rgba(30, 245, 216, 0.08); border: 1px solid rgba(30, 245, 216, 0.22);
+      color: var(--muted); cursor: pointer;
+    }
+    .tab-pill.active { background: rgba(30, 245, 216, 0.24); border-color: var(--holo); color: #fff; }
+    .drawer-body { overflow-y: auto; max-height: 48vh; font-size: 12px; user-select: text; }
+    .drawer-row {
+      padding: 7px 6px; border-bottom: 1px dashed rgba(30, 245, 216, 0.16);
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .drawer-row:last-child { border-bottom: none; }
+    .provider-switch {
+      background: rgba(15, 58, 70, 0.65); color: var(--holo-bright);
+      border: 1px solid rgba(30, 245, 216, 0.45); border-radius: 4px;
+      padding: 3px 10px; font-size: 10.5px; cursor: pointer;
+      font-family: Consolas, ui-monospace, monospace;
+    }
+    .provider-switch:hover { background: rgba(30, 245, 216, 0.28); }
+    .provider-switch.active { background: rgba(62, 242, 168, 0.16); color: var(--green); border-color: rgba(62, 242, 168, 0.45); cursor: default; }
+
+    /* Confirmation Modal */
+    .confirm-modal {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(440px, 92vw); padding: 18px;
+      background: rgba(8, 20, 28, 0.94); backdrop-filter: blur(20px);
+      border: 1px solid var(--amber); border-radius: 10px;
+      box-shadow: 0 0 42px rgba(255, 209, 102, 0.28); z-index: 50;
+      display: none; pointer-events: auto;
+    }
+    .confirm-modal.open { display: block; animation: fadeRise .2s ease; }
+
+    /* Responsive adjustments on smaller windows */
+    @media (max-width: 980px) {
+      .left-stream, .right-rail { display: none; }
+      .center-bottom { width: calc(100vw - 220px); left: auto; right: 16px; transform: none; }
+    }
+    @media (max-width: 680px) {
+      .left-dock { display: none; }
+      .center-bottom { width: calc(100vw - 32px); left: 16px; right: 16px; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <div class="logo">TARS</div>
-      <div>
-        <div><b>Tactical Autonomous Robotic System</b> — Local Dashboard</div>
-        <div class="sub">Control &amp; monitor without terminal · <span id="clock">--</span></div>
+  <canvas id="orbCanvas"></canvas>
+  <div class="vignette-layer"></div>
+
+  <div class="hud-layer">
+    <div class="hud-top">
+      <div class="brand-block">
+        <div class="brand-title">T . A . R . S .</div>
+        <div class="brand-sub">Tactical Autonomous Robotic System · <span id="clock">--:--:--</span></div>
+        <div class="brand-bar"></div>
+      </div>
+
+      <div class="top-right">
+        <div class="status-chip"><span class="pulse-dot" id="stateDot"></span><span id="stateLabel">CONNECTING</span></div>
+        <button class="mini-btn" id="drawerToggleBtn" title="Open Systems & Memory Inspector">INSPECTOR</button>
+        <button class="mini-btn danger" id="cancelBtn" title="Abort currently running task">ABORT</button>
       </div>
     </div>
-    <div class="header-actions">
-      <button class="btn-cancel" id="cancelBtn" title="Cancel running task">⬜ Cancel Task</button>
-      <div id="online" class="pill">● CONNECTING</div>
+
+    <div class="orb-hint" id="orbHint">Drag orb to rotate · Scroll to zoom · Touch to pulse · Double-click to speak</div>
+
+    <!-- Left Floating Diagnostic Telemetry & Tool Activity -->
+    <aside class="left-stream">
+      <div class="stream-section-title">CORE TELEMETRY</div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">CPU LOAD</span><span class="diag-bar-wrap"><span class="diag-bar-fill" id="cpuBar" style="width:0%"></span></span><span class="diag-v" id="cpu">--</span></div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">MEMORY</span><span class="diag-bar-wrap"><span class="diag-bar-fill" id="ramBar" style="width:0%"></span></span><span class="diag-v" id="ram">--</span></div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">DISK FREE</span><span class="diag-v" id="disk">--</span></div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">POWER</span><span class="diag-v" id="battery">--</span></div>
+      <div class="diag-line"><span class="diag-dot ok"></span><span class="diag-k">TOOLS READY</span><span class="diag-v" id="toolCount">--</span></div>
+
+      <div class="stream-section-title">PERSONALITY MATRIX</div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">HONESTY</span><span class="diag-v" id="honesty">--</span></div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">HUMOR</span><span class="diag-v" id="humor">--</span></div>
+      <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">SARCASM</span><span class="diag-v" id="sarcasm">--</span></div>
+
+      <div class="stream-section-title">LIVE TOOL STREAM</div>
+      <div id="leftToolsFeed" style="display:flex;flex-direction:column;gap:4px;"></div>
+    </aside>
+
+    <!-- Bottom-Left Translucent Framed Interactive Menu -->
+    <nav class="left-dock">
+      <button class="dock-btn" id="dockMicBtn"><span>🎙 Voice Link</span><span id="dockMicState">OFF</span></button>
+      <button class="dock-btn active" id="dockSpkBtn"><span>🔊 Audio Out</span><span id="dockSpkState">ON</span></button>
+      <button class="dock-btn" id="dockProvBtn"><span>⚡ AI Models</span><span>▸</span></button>
+      <button class="dock-btn" id="dockMemBtn"><span>🧬 Memory</span><span>▸</span></button>
+      <button class="dock-btn" id="dockResetBtn"><span>✦ Reset Orb</span><span>↻</span></button>
+      <button class="dock-btn danger" id="dockCancelBtn"><span>■ Abort Task</span><span>!</span></button>
+    </nav>
+
+    <!-- Right Margin Compact Neural & Reminder Metrics -->
+    <aside class="right-rail">
+      <div class="right-item">ENGINE · <b id="llmName">--</b></div>
+      <div class="right-item">STATE · <b id="llmState">--</b></div>
+      <div class="right-item" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="Current Working Directory">CWD · <b id="cwd">--</b></div>
+      <div class="right-item">AUDIO REACTIVITY · <b id="audioMeter">IDLE</b></div>
+      <div class="right-item" style="margin-top:8px;">UPCOMING REMINDERS</div>
+      <div id="rightReminders" class="right-item" style="color:rgba(205,255,248,0.75);">None</div>
+      <div class="palette-row" title="Switch Hologram Energy Theme">
+        <span class="swatch active" data-theme="aqua" style="background:#1ef5d8;color:#1ef5d8;" title="Stark Aqua"></span>
+        <span class="swatch" data-theme="cobalt" style="background:#3bb4ff;color:#3bb4ff;" title="Cobalt Matrix"></span>
+        <span class="swatch" data-theme="gold" style="background:#ffcc4d;color:#ffcc4d;" title="Solar Gold"></span>
+        <span class="swatch" data-theme="violet" style="background:#b97cff;color:#b97cff;" title="Quantum Violet"></span>
+      </div>
+    </aside>
+
+    <!-- Center-Bottom Floating Subtitles & Command Composer -->
+    <section class="center-bottom">
+      <div id="chat" class="subtitles-stream"></div>
+      <div class="composer-glass">
+        <input id="prompt" placeholder="Speak to TARS or type a command…" autocomplete="off" />
+        <button class="orb-icon-btn" id="spk" title="Toggle spoken replies">🔊</button>
+        <button class="orb-icon-btn" id="mic" title="Toggle hands-free microphone">🎙</button>
+        <button class="send-pill" id="send">Send</button>
+      </div>
+    </section>
+
+    <!-- Expandable Frosted Hologram Inspector Drawer -->
+    <section class="glass-drawer" id="inspectorDrawer">
+      <div class="drawer-head">
+        <div class="drawer-title">Systems &amp; Neural Inspector</div>
+        <button class="mini-btn" id="drawerCloseBtn">✕</button>
+      </div>
+      <div class="drawer-tabs">
+        <button class="tab-pill active" data-tab="providers">Providers</button>
+        <button class="tab-pill" data-tab="history">History</button>
+        <button class="tab-pill" data-tab="prefs">Memory</button>
+        <button class="tab-pill" data-tab="reminders">Reminders</button>
+        <button class="tab-pill" data-tab="tools">Tool Log</button>
+        <button class="tab-pill" data-tab="screen">Screen</button>
+      </div>
+      <div class="drawer-body">
+        <div id="tab-providers"><div style="color:var(--muted)">Scanning neural backends…</div></div>
+        <div id="tab-history" style="display:none"></div>
+        <div id="tab-prefs" style="display:none"></div>
+        <div id="tab-reminders" style="display:none"></div>
+        <div id="tab-tools" style="display:none"></div>
+        <div id="tab-screen" style="display:none">
+          <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="color:var(--muted)">Live Desktop Snapshot</span>
+            <button class="provider-switch" id="refreshShotBtn">Capture Now</button>
+          </div>
+          <img id="shotImg" alt="Desktop capture" style="width:100%;border-radius:6px;border:1px solid var(--holo-line);display:none;" />
+        </div>
+      </div>
+    </section>
+
+    <!-- Destructive Action Confirmation Modal -->
+    <div class="confirm-modal" id="confirmModal">
+      <div style="font-family:Consolas,monospace;color:var(--amber);letter-spacing:.14em;font-size:12px;text-transform:uppercase;margin-bottom:8px;">
+        ⚠ Authorization Required
+      </div>
+      <div id="confirmDesc" style="font-size:13px;line-height:1.45;color:#fff;margin-bottom:14px;"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="mini-btn danger" id="confirmDenyBtn">Deny</button>
+        <button class="mini-btn" id="confirmApproveBtn" style="border-color:var(--green);color:var(--green);">Approve</button>
+      </div>
     </div>
-  </header>
-
-  <div class="layout">
-    <section class="panel" style="grid-row: span 2;">
-      <h2>System Telemetry</h2>
-      <div class="body">
-        <div class="stats">
-          <div class="stat"><div class="k">CPU Load</div><div class="v" id="cpu">--</div></div>
-          <div class="stat"><div class="k">RAM</div><div class="v" id="ram">--</div></div>
-          <div class="stat"><div class="k">Disk Free</div><div class="v" id="disk">--</div></div>
-          <div class="stat"><div class="k">Battery</div><div class="v" id="battery">--</div></div>
-        </div>
-        <div style="margin-top:10px">
-          <div class="kv"><b>LLM:</b> <span id="llm">--</span></div>
-          <div class="kv"><b>Tools:</b> <span id="toolCount" class="tool-count">--</span> registered</div>
-          <div class="kv"><b>Honesty:</b> <span id="honesty">--</span> · <b>Humor:</b> <span id="humor">--</span> · <b>Sarcasm:</b> <span id="sarcasm">--</span></div>
-          <div class="kv"><b>CWD:</b> <span id="cwd" class="mono">--</span></div>
-        </div>
-        <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
-        <div class="kv"><b>AI Providers</b></div>
-        <div id="providers" class="list small">Loading…</div>
-        <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
-        <div class="kv"><b>Reminders</b></div>
-        <div id="reminders" class="list small">Loading…</div>
-        <div class="kv" style="margin-top:10px"><b>Preferences</b></div>
-        <div id="prefs" class="list small">Loading…</div>
-      </div>
-    </section>
-
-    <section class="panel chat-wrap">
-      <h2>Command Console</h2>
-      <div id="chat" class="chat-log"></div>
-      <div class="composer">
-        <input id="prompt" placeholder="Type a command, or tap the mic and just speak…" />
-        <button id="spk" title="Toggle spoken replies">🔊</button>
-        <button id="mic" title="Hands-free voice input">🎙</button>
-        <button id="send">Send</button>
-      </div>
-      <div class="small" style="padding:0 10px 10px;color:var(--muted)">Hands-free: tap 🎙 and speak; TARS answers out loud. Tap 🎙 again to stop. Destructive actions are denied in dashboard mode unless confirmed via terminal.</div>
-    </section>
-
-    <section class="panel" style="grid-row: span 2;">
-      <h2>Activity</h2>
-      <div class="body">
-        <div class="kv"><b>Recent Conversation</b></div>
-        <div id="history" class="list">Loading…</div>
-        <hr style="border:0;border-top:1px solid var(--border);margin:12px 0" />
-        <div class="kv"><b>Tool Call Log (latest)</b></div>
-        <div id="toolslog" class="list mono">Loading…</div>
-      </div>
-    </section>
   </div>
 
+<script src="/static/vendor/three.min.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
-function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
-function addMsg(role, text, meta){
-  const d = document.createElement('div');
-  d.className = 'msg ' + role;
-  d.innerHTML = (meta?`<div class="meta">${esc(meta)}</div>`:'') + esc(text);
-  $('chat').appendChild(d);
-  $('chat').scrollTop = $('chat').scrollHeight;
+function esc(s) {
+  return (s == null ? "" : String(s)).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]));
 }
 
-async function refreshStatus(){
-  try{
-    const r = await fetch('/api/status');
-    const j = await r.json();
-    $('online').textContent = '● ONLINE';
-    $('online').style.color = 'var(--green)';
-    $('clock').textContent = j.time || '--';
-    const t = j.telemetry || {};
-    $('cpu').textContent = (t.cpu_load_percent!=null? t.cpu_load_percent+'%':'--');
-    $('ram').textContent = (t.ram_usage_percent!=null? t.ram_usage_percent+'%':'--');
-    $('disk').textContent = (t.disk_free_gb!=null? t.disk_free_gb+' GB':'--');
-    $('battery').textContent = t.battery || '--';
-    $('cwd').textContent = j.cwd || '--';
-    const llm = j.llm||{};
-    $('llm').textContent = `${llm.model||'n/a'} (${llm.available?'available':'offline/local'})`;
-    const p = j.personality||{};
-    $('honesty').textContent = (p.honesty!=null? p.honesty+'%':'--');
-    $('humor').textContent = (p.humor!=null? p.humor+'%':'--');
-    $('sarcasm').textContent = (p.sarcasm!=null? p.sarcasm+'%':'--');
-  }catch(e){
-    $('online').textContent = '● OFFLINE';
-    $('online').style.color = 'var(--red)';
+/* ==================== 3D INTERACTIVE HOLOGRAPHIC ORB ENGINE ==================== */
+const THEMES = {
+  aqua:   { primary: "#1ef5d8", bright: "#a7fff2", sky: "#3bd4ff", bgCore: "#04191e", p1: 0x1ef5d8, p2: 0x3bd4ff, p3: 0xd8fff9 },
+  cobalt: { primary: "#3bb4ff", bright: "#bfe6ff", sky: "#6b7cff", bgCore: "#051428", p1: 0x3bb4ff, p2: 0x708dff, p3: 0xe6f4ff },
+  gold:   { primary: "#ffcc4d", bright: "#fff1be", sky: "#ff8c42", bgCore: "#1c1304", p1: 0xffcc4d, p2: 0xff8c42, p3: 0xfff8dc },
+  violet: { primary: "#b97cff", bright: "#edd9ff", sky: "#57d4ff", bgCore: "#130824", p1: 0xb97cff, p2: 0x57d4ff, p3: 0xf7ebff }
+};
+
+let orbState = "idle"; // "idle" | "listening" | "thinking" | "speaking" | "error"
+let audioLevel = 0.0;
+let ttsSpeakWave = 0.0;
+let activeTheme = THEMES.aqua;
+
+const HoloEngine = (() => {
+  const canvas = $("orbCanvas");
+  if (typeof THREE === "undefined" || !canvas) {
+    return { setTheme: () => {}, pulse: () => {}, resetView: () => {} };
+  }
+
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
+  } catch (e) {
+    return { setTheme: () => {}, pulse: () => {}, resetView: () => {} };
+  }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 0, 4.45);
+  let targetCamZ = 4.45;
+
+  const holoRoot = new THREE.Group();
+  scene.add(holoRoot);
+
+  // Create soft radial bokeh glow texture programmatically
+  function makeGlowTexture(inner, mid, outer) {
+    const c = document.createElement("canvas");
+    c.width = 256; c.height = 256;
+    const ctx = c.getContext("2d");
+    const g = ctx.createRadialGradient(128, 128, 2, 128, 128, 128);
+    g.addColorStop(0.0, inner);
+    g.addColorStop(0.28, mid);
+    g.addColorStop(0.65, outer);
+    g.addColorStop(1.0, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 256, 256);
+    return new THREE.CanvasTexture(c);
+  }
+
+  const coreTex = makeGlowTexture("rgba(255,255,255,1)", "rgba(180,255,246,0.78)", "rgba(30,245,216,0.14)");
+  const haloTex = makeGlowTexture("rgba(45,255,228,0.58)", "rgba(25,215,198,0.24)", "rgba(10,120,130,0.03)");
+
+  function makeFlareTexture() {
+    const c = document.createElement("canvas");
+    c.width = 512; c.height = 64;
+    const ctx = c.getContext("2d");
+    const hg = ctx.createLinearGradient(0, 32, 512, 32);
+    hg.addColorStop(0.0, "rgba(0,0,0,0)");
+    hg.addColorStop(0.28, "rgba(30,245,216,0.28)");
+    hg.addColorStop(0.5, "rgba(235,255,252,0.95)");
+    hg.addColorStop(0.72, "rgba(30,245,216,0.28)");
+    hg.addColorStop(1.0, "rgba(0,0,0,0)");
+    const vg = ctx.createLinearGradient(256, 0, 256, 64);
+    vg.addColorStop(0.0, "rgba(0,0,0,0)");
+    vg.addColorStop(0.45, "rgba(255,255,255,0.65)");
+    vg.addColorStop(0.5, "rgba(255,255,255,1)");
+    vg.addColorStop(0.55, "rgba(255,255,255,0.65)");
+    vg.addColorStop(1.0, "rgba(0,0,0,0)");
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, 0, 512, 64);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, 512, 64);
+    return new THREE.CanvasTexture(c);
+  }
+
+  // Layer 1: Inner White-Hot Core + Volumetric Halo
+  const coreSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: coreTex, color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  coreSprite.scale.set(0.92, 0.92, 1);
+  holoRoot.add(coreSprite);
+
+  const haloSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: haloTex, color: activeTheme.p1, transparent: true, opacity: 0.80, blending: THREE.AdditiveBlending, depthWrite: false
+  }));
+  haloSprite.scale.set(4.3, 4.3, 1);
+  scene.add(haloSprite);
+
+  // Soft optical anamorphic horizontal lens flare across core
+  const flareMat = new THREE.SpriteMaterial({
+    map: makeFlareTexture(), color: 0xd8fff9, transparent: true, opacity: 0.72,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const flareBeam = new THREE.Sprite(flareMat);
+  flareBeam.scale.set(3.4, 0.24, 1);
+  holoRoot.add(flareBeam);
+
+  // Layer 2: Inner Geodesic Plasma Core Wireframe
+  const innerLatticeMat = new THREE.MeshBasicMaterial({
+    color: activeTheme.p3, wireframe: true, transparent: true, opacity: 0.24,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const innerLattice = new THREE.Mesh(new THREE.IcosahedronGeometry(0.62, 2), innerLatticeMat);
+  holoRoot.add(innerLattice);
+
+  // Layer 3: Mid Latitude-Longitude Hologram Sphere Cage
+  const midCageMat = new THREE.MeshBasicMaterial({
+    color: activeTheme.p1, wireframe: true, transparent: true, opacity: 0.18,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const midCage = new THREE.Mesh(new THREE.SphereGeometry(0.94, 30, 18), midCageMat);
+  holoRoot.add(midCage);
+
+  // Layer 4: Counter-Rotating Multi-Axis Gyroscopic Orbital Rings + Orbiting Nodes
+  const gyroRings = [];
+  const ringConfigs = [
+    { r: 0.78, tube: 0.0040, tilt: [0.45, 0.2, 0.0], speed: [0.008, 0.012, 0.004], col: activeTheme.p3, op: 0.62 },
+    { r: 1.06, tube: 0.0050, tilt: [-0.85, 0.4, 0.2], speed: [-0.006, 0.009, -0.005], col: activeTheme.p1, op: 0.52 },
+    { r: 1.32, tube: 0.0038, tilt: [1.18, -0.5, 0.3], speed: [0.004, -0.007, 0.006], col: activeTheme.p2, op: 0.44 },
+    { r: 1.50, tube: 0.0030, tilt: [0.22, 1.05, -0.4], speed: [-0.003, -0.005, 0.008], col: activeTheme.p1, op: 0.30 }
+  ];
+  ringConfigs.forEach(cfg => {
+    const grp = new THREE.Group();
+    grp.rotation.set(cfg.tilt[0], cfg.tilt[1], cfg.tilt[2]);
+    const mat = new THREE.MeshBasicMaterial({
+      color: cfg.col, transparent: true, opacity: cfg.op,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    });
+    const mesh = new THREE.Mesh(new THREE.TorusGeometry(cfg.r, cfg.tube, 12, 160), mat);
+    grp.add(mesh);
+
+    const nodeMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.020, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending })
+    );
+    nodeMesh.position.set(cfg.r, 0, 0);
+    grp.add(nodeMesh);
+    holoRoot.add(grp);
+    gyroRings.push({ grp, mat, speed: cfg.speed, baseOp: cfg.op });
+  });
+
+  // Layer 5: Outer Interactive Volumetric Fresnel Plasma Shell (Custom GLSL Shaders)
+  const shellUniforms = {
+    uTime:         { value: 0 },
+    uAudio:        { value: 0 },
+    uColorPrimary: { value: new THREE.Color(activeTheme.p1) },
+    uColorAccent:  { value: new THREE.Color(activeTheme.p2) },
+    uHoverPoint:   { value: new THREE.Vector3(0, 0, 1) },
+    uHoverStrength:{ value: 0 },
+    uRippleOrigin: { value: new THREE.Vector3(0, 0, 1) },
+    uRippleTime:   { value: 99.0 }
+  };
+
+  const shellMat = new THREE.ShaderMaterial({
+    uniforms: shellUniforms,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      uniform float uTime;
+      uniform float uAudio;
+      uniform vec3 uHoverPoint;
+      uniform float uHoverStrength;
+      uniform vec3 uRippleOrigin;
+      uniform float uRippleTime;
+      varying vec3 vNormalView;
+      varying vec3 vViewDir;
+      varying vec3 vLocalPos;
+      varying float vRippleWave;
+
+      void main() {
+        vec3 p = position;
+        float w1 = sin(p.x * 4.2 + uTime * 2.1) * cos(p.y * 4.5 - uTime * 1.7) * sin(p.z * 3.8 + uTime * 1.3);
+        float w2 = cos((p.y + p.z) * 7.5 - uTime * 3.1) * 0.45;
+        float disp = (w1 + w2) * (0.010 + uAudio * 0.13);
+
+        vec3 nPos = normalize(p);
+        float hDist = distance(nPos, normalize(uHoverPoint));
+        float hBump = exp(-hDist * hDist * 8.0) * uHoverStrength * 0.085;
+
+        float rDist = distance(nPos, normalize(uRippleOrigin));
+        float front = uRippleTime * 2.5;
+        float rEnv = exp(-pow((rDist - front) * 7.5, 2.0)) * exp(-uRippleTime * 1.8);
+        float rippleDisp = sin((rDist - front) * 20.0) * rEnv * 0.075;
+        vRippleWave = rEnv;
+
+        p += normal * (disp + hBump + rippleDisp);
+        vLocalPos = p;
+
+        vec4 mvPos = modelViewMatrix * vec4(p, 1.0);
+        vNormalView = normalize(normalMatrix * normal);
+        vViewDir = normalize(-mvPos.xyz);
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uAudio;
+      uniform vec3 uColorPrimary;
+      uniform vec3 uColorAccent;
+      uniform float uHoverStrength;
+      varying vec3 vNormalView;
+      varying vec3 vViewDir;
+      varying vec3 vLocalPos;
+      varying float vRippleWave;
+
+      void main() {
+        float ndotv = abs(dot(normalize(vNormalView), normalize(vViewDir)));
+        float fresnel = pow(1.0 - clamp(ndotv, 0.0, 1.0), 2.75);
+        float crispRim = pow(1.0 - clamp(ndotv, 0.0, 1.0), 6.2);
+
+        float bands = 0.5 + 0.5 * sin(vLocalPos.y * 12.0 - uTime * 2.4 + sin(vLocalPos.x * 6.0) * 1.2);
+        vec3 col = mix(uColorPrimary, uColorAccent, clamp(bands * 0.55 + uAudio * 0.25, 0.0, 1.0));
+        col += vec3(0.88, 1.0, 0.98) * (crispRim * 1.15 + vRippleWave * 1.5);
+
+        float alpha = fresnel * (0.58 + uAudio * 0.34 + uHoverStrength * 0.14)
+                    + crispRim * 0.52
+                    + vRippleWave * 0.58;
+        gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.94));
+      }
+    `
+  });
+  const outerShell = new THREE.Mesh(new THREE.SphereGeometry(1.28, 96, 96), shellMat);
+  holoRoot.add(outerShell);
+
+  // Layer 6: Feathered Laser Touch Shockwave Ring (Shader-driven crisp halo, never flat solid geometry)
+  const shockUniforms = {
+    uColor:   { value: new THREE.Color(activeTheme.p3) },
+    uOpacity: { value: 0.0 }
+  };
+  const shockRingMat = new THREE.ShaderMaterial({
+    uniforms: shockUniforms,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      void main() {
+        float radial = length(vUv - vec2(0.5)) * 2.0;
+        float band = exp(-pow((radial - 0.88) * 16.0, 2.0));
+        gl_FragColor = vec4(uColor, band * uOpacity);
+      }
+    `
+  });
+  const shockRing = new THREE.Mesh(new THREE.PlaneGeometry(2.75, 2.75), shockRingMat);
+  holoRoot.add(shockRing);
+  let shockAnim = 99.0;
+
+  // Invisible smooth raycast collider for accurate hover/click/drag on sphere
+  const hitCollider = new THREE.Mesh(
+    new THREE.SphereGeometry(1.48, 24, 24),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  holoRoot.add(hitCollider);
+
+  // Layer 7: Dense Volumetric 3D Bokeh Particle Galaxy (5,200 Custom Shader Points)
+  const P_COUNT = 5200;
+  const pPos = new Float32Array(P_COUNT * 3);
+  const pSeed = new Float32Array(P_COUNT);
+  const pSize = new Float32Array(P_COUNT);
+  const pColorMix = new Float32Array(P_COUNT);
+
+  for (let i = 0; i < P_COUNT; i++) {
+    const u = Math.random();
+    // Rich orbital halo bursting around sphere (r 1.25..2.75) + swirling core & outer nebula
+    const r = u < 0.20
+      ? (0.32 + Math.random() * 0.96)
+      : (u < 0.78 ? (1.26 + Math.pow(Math.random(), 1.25) * 1.48) : (2.45 + Math.random() * 2.35));
+    const theta = Math.random() * Math.PI * 2.0;
+    const phi = Math.acos(2.0 * Math.random() - 1.0);
+    pPos[i * 3 + 0] = r * Math.sin(phi) * Math.cos(theta);
+    pPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) * (u < 0.20 ? 1.0 : 0.86);
+    pPos[i * 3 + 2] = r * Math.cos(phi);
+    pSeed[i] = Math.random() * 100.0;
+    pSize[i] = u < 0.78 ? (2.6 + Math.random() * 5.2) : (1.8 + Math.random() * 4.2);
+    pColorMix[i] = Math.random();
+  }
+  const pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
+  pGeo.setAttribute("aSeed", new THREE.BufferAttribute(pSeed, 1));
+  pGeo.setAttribute("aSize", new THREE.BufferAttribute(pSize, 1));
+  pGeo.setAttribute("aMix", new THREE.BufferAttribute(pColorMix, 1));
+
+  const pUniforms = {
+    uTime:         { value: 0 },
+    uAudio:        { value: 0 },
+    uPixelRatio:   { value: Math.min(window.devicePixelRatio || 1, 2) },
+    uColorPrimary: { value: new THREE.Color(activeTheme.p1) },
+    uColorAccent:  { value: new THREE.Color(activeTheme.p2) },
+    uColorCore:    { value: new THREE.Color(activeTheme.p3) },
+    uPointer3D:    { value: new THREE.Vector3(0, 0, 0) },
+    uHoverActive:  { value: 0 },
+    uBurst:        { value: 0 }
+  };
+
+  const pMat = new THREE.ShaderMaterial({
+    uniforms: pUniforms,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute float aSeed;
+      attribute float aSize;
+      attribute float aMix;
+      uniform float uTime;
+      uniform float uAudio;
+      uniform float uPixelRatio;
+      uniform vec3 uPointer3D;
+      uniform float uHoverActive;
+      uniform float uBurst;
+      varying float vMix;
+      varying float vAlpha;
+
+      void main() {
+        vec3 p = position;
+        float dist0 = length(p);
+
+        // Orbital curl + subtle breathing with voice energy
+        float angle = uTime * (0.14 + 0.12 / (0.6 + dist0)) + aSeed * 0.05;
+        float s = sin(angle * 0.35), c = cos(angle * 0.35);
+        p.xz = mat2(c, -s, s, c) * p.xz;
+
+        p.y += sin(uTime * 1.1 + aSeed) * 0.06;
+        p += normalize(p + vec3(0.0001)) * (uAudio * 0.24 + uBurst * 0.38 / (0.6 + dist0));
+
+        // Magnetic swirl around hovered 3D cursor spot
+        vec3 toPtr = p - uPointer3D;
+        float dPtr = length(toPtr);
+        if (uHoverActive > 0.01 && dPtr < 1.35) {
+          float push = (1.0 - dPtr / 1.35) * uHoverActive * 0.32;
+          p += normalize(toPtr + vec3(0.001)) * push;
+        }
+
+        vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        gl_PointSize = aSize * uPixelRatio * (1.0 + uAudio * 0.9) * (6.8 / max(1.0, -mvPosition.z));
+        vMix = aMix;
+        vAlpha = (0.55 + 0.45 * sin(uTime * 2.2 + aSeed * 3.1)) * smoothstep(5.4, 0.9, dist0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColorPrimary;
+      uniform vec3 uColorAccent;
+      uniform vec3 uColorCore;
+      varying float vMix;
+      varying float vAlpha;
+
+      void main() {
+        vec2 uv = gl_PointCoord - vec2(0.5);
+        float d = length(uv);
+        if (d > 0.5) discard;
+        float soft = pow(1.0 - d * 2.0, 1.75);
+        vec3 col = vMix < 0.55 ? uColorPrimary : (vMix < 0.88 ? uColorAccent : uColorCore);
+        gl_FragColor = vec4(col, soft * clamp(vAlpha + 0.28, 0.0, 0.98));
+      }
+    `
+  });
+  const particleCloud = new THREE.Points(pGeo, pMat);
+  holoRoot.add(particleCloud);
+
+  // ==================== TACTILE POINTER / TOUCH / WHEEL INTERACTION ====================
+  const raycaster = new THREE.Raycaster();
+  const pointerNDC = new THREE.Vector2();
+  let isDragging = false;
+  let dragDistance = 0;
+  let prevX = 0, prevY = 0;
+  let rotVelX = 0.0014, rotVelY = 0.0042; // Gentle luxury spin velocity
+  let targetHoverStrength = 0;
+  let burstVal = 0;
+  let lastTapTime = 0;
+
+  function updatePointerRay(clientX, clientY) {
+    pointerNDC.x = (clientX / window.innerWidth) * 2 - 1;
+    pointerNDC.y = -(clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointerNDC, camera);
+    const hits = raycaster.intersectObject(hitCollider, false);
+    if (hits.length > 0) {
+      const localPt = holoRoot.worldToLocal(hits[0].point.clone());
+      shellUniforms.uHoverPoint.value.copy(localPt);
+      pUniforms.uPointer3D.value.copy(localPt);
+      targetHoverStrength = 1.0;
+      return localPt;
+    }
+    targetHoverStrength = 0.0;
+    return null;
+  }
+
+  function triggerPulseAt(localPt, strong = false) {
+    if (localPt) shellUniforms.uRippleOrigin.value.copy(localPt);
+    else shellUniforms.uRippleOrigin.value.set(0, 0, 1);
+    shellUniforms.uRippleTime.value = 0.0;
+    shockAnim = 0.0;
+    burstVal = strong ? 1.0 : 0.65;
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    isDragging = true;
+    dragDistance = 0;
+    prevX = e.clientX;
+    prevY = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+    const pt = updatePointerRay(e.clientX, e.clientY);
+    if (pt) triggerPulseAt(pt, false);
+    $("orbHint").style.opacity = "0";
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    const pt = updatePointerRay(e.clientX, e.clientY);
+    if (!isDragging) return;
+    const dx = e.clientX - prevX;
+    const dy = e.clientY - prevY;
+    prevX = e.clientX;
+    prevY = e.clientY;
+    dragDistance += Math.hypot(dx, dy);
+    rotVelY = dx * 0.0075;
+    rotVelX = dy * 0.0075;
+    holoRoot.rotation.y += rotVelY;
+    holoRoot.rotation.x += rotVelX;
+    if (pt && Math.random() < 0.14) burstVal = Math.max(burstVal, 0.25);
+  });
+
+  function endDrag(e) {
+    if (!isDragging) return;
+    isDragging = false;
+    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (dragDistance < 6) {
+      const pt = updatePointerRay(e.clientX, e.clientY);
+      triggerPulseAt(pt, true);
+      const now = performance.now();
+      if (pt && now - lastTapTime < 340) {
+        // Double-tap on orb toggles hands-free voice interaction!
+        if (typeof startVoice === "function") startVoice();
+      }
+      lastTapTime = now;
+    }
+  }
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    targetCamZ = Math.max(2.7, Math.min(7.2, targetCamZ + e.deltaY * 0.0024));
+    $("orbHint").style.opacity = "0";
+  }, { passive: false });
+
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    const pr = Math.min(window.devicePixelRatio || 1, 2);
+    renderer.setPixelRatio(pr);
+    pUniforms.uPixelRatio.value = pr;
+  });
+
+  // Main Animation Loop
+  let tPrev = performance.now();
+  function animate(now) {
+    requestAnimationFrame(animate);
+    const dt = Math.min(0.05, (now - tPrev) * 0.001);
+    tPrev = now;
+    const t = now * 0.001;
+
+    // Combine real mic FFT audioLevel + synthesized speech wave
+    let activeEnergy = Math.max(audioLevel, ttsSpeakWave);
+    let speedMult = 1.0;
+    if (orbState === "listening") { activeEnergy = Math.max(activeEnergy, 0.22); speedMult = 1.6; }
+    else if (orbState === "thinking") { activeEnergy = Math.max(activeEnergy, 0.42 + 0.18 * Math.sin(t * 7)); speedMult = 3.2; }
+    else if (orbState === "speaking") { activeEnergy = Math.max(activeEnergy, 0.32 + 0.25 * Math.abs(Math.sin(t * 9.5))); speedMult = 2.1; }
+    else if (orbState === "error") { activeEnergy = 0.55; speedMult = 2.5; }
+
+    // Smooth shader uniform interpolation
+    shellUniforms.uTime.value = t;
+    pUniforms.uTime.value = t;
+    shellUniforms.uAudio.value += (activeEnergy - shellUniforms.uAudio.value) * 0.18;
+    pUniforms.uAudio.value = shellUniforms.uAudio.value;
+    shellUniforms.uHoverStrength.value += (targetHoverStrength - shellUniforms.uHoverStrength.value) * 0.14;
+    pUniforms.uHoverActive.value = shellUniforms.uHoverStrength.value;
+    shellUniforms.uRippleTime.value = Math.min(99.0, shellUniforms.uRippleTime.value + dt);
+
+    burstVal *= 0.90;
+    pUniforms.uBurst.value = burstVal;
+
+    // Dynamic palette lerp according to orb state or selected theme
+    let targetPrimary = new THREE.Color(activeTheme.p1);
+    let targetAccent  = new THREE.Color(activeTheme.p2);
+    if (orbState === "thinking") {
+      targetPrimary = new THREE.Color(0xffd166);
+      targetAccent  = new THREE.Color(activeTheme.p1);
+    } else if (orbState === "error") {
+      targetPrimary = new THREE.Color(0xff5d7a);
+      targetAccent  = new THREE.Color(0xff9f68);
+    } else if (orbState === "listening") {
+      targetPrimary = new THREE.Color(0x38f2ff);
+      targetAccent  = new THREE.Color(activeTheme.p1);
+    }
+    shellUniforms.uColorPrimary.value.lerp(targetPrimary, 0.08);
+    shellUniforms.uColorAccent.value.lerp(targetAccent, 0.08);
+    pUniforms.uColorPrimary.value.copy(shellUniforms.uColorPrimary.value);
+    pUniforms.uColorAccent.value.copy(shellUniforms.uColorAccent.value);
+    haloSprite.material.color.copy(shellUniforms.uColorPrimary.value);
+
+    // Smooth camera spring zoom
+    camera.position.z += (targetCamZ - camera.position.z) * 0.10;
+
+    // Inertia damping + serene idle rotation
+    if (!isDragging) {
+      holoRoot.rotation.y += rotVelY;
+      holoRoot.rotation.x += rotVelX;
+      rotVelY += (0.0036 * speedMult - rotVelY) * 0.035;
+      rotVelX += (0.0009 * Math.sin(t * 0.4) - rotVelX) * 0.035;
+    }
+
+    // Counter-rotating internal wireframe globes & gyroscopic rings
+    innerLattice.rotation.y += 0.009 * speedMult;
+    innerLattice.rotation.x -= 0.006 * speedMult;
+    midCage.rotation.y -= 0.005 * speedMult;
+    midCage.rotation.z += 0.003 * speedMult;
+    flareBeam.scale.set(3.4 + activeEnergy * 1.4, 0.22 + activeEnergy * 0.14, 1);
+    flareMat.opacity = 0.52 + activeEnergy * 0.42;
+
+    const corePulse = 0.85 + Math.sin(t * 3.4) * 0.08 + activeEnergy * 0.65 + burstVal * 0.4;
+    coreSprite.scale.set(corePulse, corePulse, 1);
+
+    gyroRings.forEach((r, idx) => {
+      r.grp.rotation.x += r.speed[0] * speedMult;
+      r.grp.rotation.y += r.speed[1] * speedMult;
+      r.grp.rotation.z += r.speed[2] * speedMult;
+      r.grp.children[1].rotation.z += 0.04;
+      const orbAngle = t * (1.2 + idx * 0.45) * (idx % 2 === 0 ? 1 : -1) * speedMult;
+      const rad = r.grp.children[0].geometry.parameters.radius;
+      r.grp.children[1].position.set(Math.cos(orbAngle) * rad, Math.sin(orbAngle) * rad, 0);
+      r.mat.opacity = Math.min(0.95, r.baseOp + activeEnergy * 0.35);
+      r.mat.color.copy(idx % 2 === 0 ? shellUniforms.uColorPrimary.value : shellUniforms.uColorAccent.value);
+    });
+
+    // Feathered laser shockwave expansion animation
+    if (shockAnim < 1.15) {
+      shockAnim += dt * 1.65;
+      const sc = 1.0 + shockAnim * 1.25;
+      shockRing.scale.set(sc, sc, 1);
+      shockUniforms.uColor.value.copy(shellUniforms.uColorPrimary.value);
+      shockUniforms.uOpacity.value = Math.max(0, (1.0 - shockAnim / 1.15) * 0.85);
+      shockRing.lookAt(camera.position);
+    } else {
+      shockUniforms.uOpacity.value = 0.0;
+    }
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+
+  return {
+    setTheme(key) {
+      const th = THEMES[key] || THEMES.aqua;
+      activeTheme = th;
+      const r = document.documentElement.style;
+      r.setProperty("--holo", th.primary);
+      r.setProperty("--holo-bright", th.bright);
+      r.setProperty("--holo-sky", th.sky);
+      r.setProperty("--bg-core", th.bgCore);
+      innerLatticeMat.color.setHex(th.p3);
+      midCageMat.color.setHex(th.p1);
+      pUniforms.uColorCore.value.setHex(th.p3);
+      triggerPulseAt(null, true);
+    },
+    pulse(strong = true) { triggerPulseAt(null, strong); },
+    resetView() {
+      targetCamZ = 4.45;
+      holoRoot.rotation.set(0, 0, 0);
+      rotVelX = 0.0014; rotVelY = 0.0042;
+      triggerPulseAt(null, true);
+    }
+  };
+})();
+
+/* ==================== HOLOGRAM STATE & AUDIO REACTIVITY ==================== */
+function setOrbState(nextState, labelText) {
+  orbState = nextState;
+  const dot = $("stateDot");
+  const lbl = $("stateLabel");
+  if (labelText) lbl.textContent = labelText;
+  if (nextState === "listening") {
+    dot.style.background = "#38f2ff"; dot.style.boxShadow = "0 0 10px #38f2ff";
+  } else if (nextState === "thinking") {
+    dot.style.background = "#ffd166"; dot.style.boxShadow = "0 0 10px #ffd166";
+  } else if (nextState === "speaking") {
+    dot.style.background = "#2effc3"; dot.style.boxShadow = "0 0 10px #2effc3";
+  } else if (nextState === "error") {
+    dot.style.background = "#ff5d7a"; dot.style.boxShadow = "0 0 10px #ff5d7a";
+  } else {
+    dot.style.background = "#3ef2a8"; dot.style.boxShadow = "0 0 10px #3ef2a8";
   }
 }
 
-async function refreshProviders(){
-  try{
-    const j = await (await fetch('/api/providers')).json();
-    const items = j.providers || [];
-    const current = j.current || {};
-    if(!items.length){ $('providers').innerHTML = '<span class="small">No providers configured.</span>'; return; }
-    $('providers').innerHTML = items.map(p => {
-      const prov = p.provider || p.name || '?';
-      const isCurrent = prov === current.provider;
-      const dot = `<span class="provider-dot ${p.available?'up':'down'}" title="${esc(p.reason||'Available')}"></span>`;
-      const btn = isCurrent
-        ? `<span class="provider-switch active">Active</span>`
-        : (p.available ? `<button class="provider-switch" data-provider="${esc(prov)}" data-model="${esc(p.model||'')}">Switch</button>` : '');
-      return `<div class="provider-row">${dot}<span class="provider-name">${esc(prov)}</span><span class="provider-model">${esc(p.model||'n/a')}</span>${btn}</div>`;
-    }).join('');
-  }catch(e){ $('providers').textContent = 'Unavailable'; }
+let micCtx = null, micAnalyser = null, micStream = null, micData = null, micRaf = null;
+async function startMicSpectrum() {
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    micCtx = new AudioCtx();
+    const src = micCtx.createMediaStreamSource(micStream);
+    micAnalyser = micCtx.createAnalyser();
+    micAnalyser.fftSize = 128;
+    src.connect(micAnalyser);
+    micData = new Uint8Array(micAnalyser.frequencyBinCount);
+    const loop = () => {
+      if (!micAnalyser) return;
+      micAnalyser.getByteFrequencyData(micData);
+      let sum = 0;
+      for (let i = 0; i < micData.length; i++) sum += micData[i];
+      const norm = Math.min(1.0, (sum / micData.length) / 95.0);
+      audioLevel += (norm - audioLevel) * 0.35;
+      $("audioMeter").textContent = audioLevel > 0.08 ? `ACTIVE ${(audioLevel * 100).toFixed(0)}%` : "LISTENING";
+      micRaf = requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (_) {}
+}
+function stopMicSpectrum() {
+  if (micRaf) cancelAnimationFrame(micRaf);
+  micRaf = null; micAnalyser = null; audioLevel = 0;
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (micCtx) { try { micCtx.close(); } catch (_) {} micCtx = null; }
+  $("audioMeter").textContent = "IDLE";
 }
 
-async function refreshToolCount(){
-  try{
-    const j = await (await fetch('/api/tools')).json();
-    $('toolCount').textContent = j.count || '--';
-  }catch(e){ $('toolCount').textContent = '--'; }
+/* ==================== SUBTITLE CHAT & DRAWER INSPECTOR ==================== */
+function addMsg(role, text, meta) {
+  const el = document.createElement("div");
+  el.className = "sub-line " + role;
+  const tag = meta ? meta : (role === "user" ? "YOU" : "TARS");
+  el.innerHTML = `<span class="sub-tag">[${esc(tag)}]</span>${esc(text)}`;
+  $("chat").appendChild(el);
+  while ($("chat").children.length > 24) $("chat").removeChild($("chat").firstChild);
+  $("chat").scrollTop = $("chat").scrollHeight;
 }
 
-async function switchProvider(name, model){
-  try{
-    const r = await fetch('/api/switch-provider', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({provider:name, model: model||null})});
+function openDrawer(tabName) {
+  $("inspectorDrawer").classList.add("open");
+  if (tabName) switchDrawerTab(tabName);
+}
+function closeDrawer() {
+  $("inspectorDrawer").classList.remove("open");
+}
+function switchDrawerTab(tabName) {
+  document.querySelectorAll(".tab-pill").forEach(b => b.classList.toggle("active", b.dataset.tab === tabName));
+  ["providers", "history", "prefs", "reminders", "tools", "screen"].forEach(t => {
+    const node = $("tab-" + t);
+    if (node) node.style.display = (t === tabName) ? "block" : "none";
+  });
+}
+
+/* ==================== BACKEND API WIRING ==================== */
+async function refreshStatus() {
+  try {
+    const r = await fetch("/api/status");
     const j = await r.json();
-    if(j.success){
-      addMsg('assistant', `Switched to ${name} (${j.model||model||'default'}).`, 'System');
+    if (orbState === "idle") setOrbState("idle", "ONLINE");
+    $("clock").textContent = (j.time || "--").split(" ").pop();
+    const t = j.telemetry || {};
+    const cpuVal = t.cpu_load_percent != null ? t.cpu_load_percent : null;
+    const ramVal = t.ram_usage_percent != null ? t.ram_usage_percent : null;
+    $("cpu").textContent = cpuVal != null ? cpuVal + "%" : "--";
+    $("cpuBar").style.width = (cpuVal != null ? Math.min(100, cpuVal) : 0) + "%";
+    $("ram").textContent = ramVal != null ? ramVal + "%" : "--";
+    $("ramBar").style.width = (ramVal != null ? Math.min(100, ramVal) : 0) + "%";
+    $("disk").textContent = t.disk_free_gb != null ? t.disk_free_gb + " GB" : "--";
+    $("battery").textContent = t.battery || "--";
+    $("cwd").textContent = j.cwd || "--";
+    const llm = j.llm || {};
+    $("llmName").textContent = llm.model || "n/a";
+    $("llmState").textContent = llm.available ? "AVAILABLE" : "OFFLINE/LOCAL";
+    const p = j.personality || {};
+    $("honesty").textContent = p.honesty != null ? p.honesty + "%" : "--";
+    $("humor").textContent = p.humor != null ? p.humor + "%" : "--";
+    $("sarcasm").textContent = p.sarcasm != null ? p.sarcasm + "%" : "--";
+  } catch (_) {
+    setOrbState("error", "OFFLINE");
+  }
+}
+
+async function refreshToolCount() {
+  try {
+    const j = await (await fetch("/api/tools")).json();
+    $("toolCount").textContent = j.count || "--";
+  } catch (_) { $("toolCount").textContent = "--"; }
+}
+
+async function refreshProviders() {
+  try {
+    const j = await (await fetch("/api/providers")).json();
+    const items = j.providers || [];
+    const cur = j.current || {};
+    if (!items.length) { $("tab-providers").innerHTML = '<div style="color:var(--muted)">No providers configured.</div>'; return; }
+    $("tab-providers").innerHTML = items.map(p => {
+      const prov = p.provider || p.name || "?";
+      const isCur = prov === cur.provider;
+      const dot = `<span class="diag-dot ${p.available ? "ok" : "fail"}" style="display:inline-block;margin-right:8px;"></span>`;
+      const btn = isCur
+        ? `<span class="provider-switch active">ACTIVE</span>`
+        : (p.available ? `<button class="provider-switch" data-provider="${esc(prov)}" data-model="${esc(p.model || "")}">SWITCH</button>` : `<span style="color:var(--muted);font-size:10px;">UNAVAILABLE</span>`);
+      return `<div class="drawer-row"><div>${dot}<b>${esc(prov.toUpperCase())}</b><div style="color:var(--muted);font-size:10.5px;">${esc(p.model || "n/a")}</div></div>${btn}</div>`;
+    }).join("");
+  } catch (_) { $("tab-providers").textContent = "Unavailable"; }
+}
+
+async function switchProvider(name, model) {
+  try {
+    const r = await fetch("/api/switch-provider", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: name, model: model || null })
+    });
+    const j = await r.json();
+    if (j.success) {
+      addMsg("assistant", `Switched neural backend to ${name} (${j.model || model || "default"}).`, "SYSTEM");
+      HoloEngine.pulse(true);
     } else {
-      addMsg('assistant', `Failed to switch: ${j.error||'unknown error'}.`, 'Error');
+      addMsg("assistant", `Provider switch failed: ${j.error || "unknown"}`, "ERROR");
     }
     refreshProviders(); refreshStatus();
-  }catch(e){ addMsg('assistant', 'Network error switching provider.', 'Error'); }
+  } catch (_) { addMsg("assistant", "Network error switching provider.", "ERROR"); }
 }
 
-async function cancelTask(){
-  try{
-    const j = await (await fetch('/api/cancel-task', {method:'POST'})).json();
-    addMsg('assistant', j.message || 'Cancelled.', 'System');
-  }catch(e){ addMsg('assistant', 'Could not cancel task.', 'Error'); }
-}
-
-async function refreshReminders(){
-  try{
-    const j = await (await fetch('/api/reminders')).json();
+async function refreshReminders() {
+  try {
+    const j = await (await fetch("/api/reminders")).json();
     const items = j.items || [];
-    if(!items.length){ $('reminders').innerHTML = '<span class="small">No upcoming reminders.</span>'; return; }
-    $('reminders').innerHTML = items.map(r=>`<div class="item"><span class="tag">${esc(r.due_time||'')}</span><br>${esc(r.message||'')}</div>`).join('');
-  }catch(e){ $('reminders').textContent = 'Unavailable'; }
-}
-
-async function refreshPrefs(){
-  try{
-    const j = await (await fetch('/api/preferences')).json();
-    const items = (j.items||[]).slice(0,12);
-    if(!items.length){ $('prefs').innerHTML = '<span class="small">No stored facts.</span>'; return; }
-    $('prefs').innerHTML = items.map(r=>`<div class="item"><b>${esc(r.key)}</b>: ${esc(typeof r.value==='string'?r.value:JSON.stringify(r.value))}</div>`).join('');
-  }catch(e){ $('prefs').textContent = 'Unavailable'; }
-}
-
-async function refreshHistory(){
-  try{
-    const j = await (await fetch('/api/history?limit=20')).json();
-    const items = j.items||[];
-    if(!items.length){ $('history').innerHTML = '<span class="small">No conversation yet.</span>'; return; }
-    $('history').innerHTML = items.slice(-20).map(m=>{
-      const role = m.role==='user'?'You':'TARS';
-      const txt = (m.content||'').slice(0,140);
-      return `<div class="item"><span class="tag">${role}</span> ${esc(txt)}${(m.content||'').length>140?'…':''}</div>`;
-    }).join('');
-  }catch(e){ $('history').textContent = 'Unavailable'; }
-}
-
-async function refreshToolLogs(){
-  try{
-    const j = await (await fetch('/api/tool-logs?limit=20')).json();
-    const items = j.items||[];
-    if(!items.length){ $('toolslog').innerHTML = '<span class="small">No tool calls logged.</span>'; return; }
-    $('toolslog').innerHTML = items.map(it=>{
-      if(it.raw) return `<div class="item">${esc(it.raw)}</div>`;
-      const ok = it.result && it.result.success===false ? 'fail':'ok';
-      return `<div class="item"><span class="${ok}">${esc(it.tool_name||'?')}</span> <span class="small">${esc(it.datetime||'')}</span></div>`;
-    }).join('');
-  }catch(e){ $('toolslog').textContent = 'Unavailable'; }
-}
-
-async function sendPrompt(){
-  const input = $('prompt');
-  const text = input.value.trim();
-  if(!text) return;
-  input.value='';
-  $('send').disabled = true;
-  addMsg('user', text, 'You');
-  try{
-    const r = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({prompt:text})});
-    const j = await r.json();
-    if(!r.ok){ addMsg('assistant', j.detail || 'Request failed', 'Error'); }
-    else {
-      let meta = `TARS · ${j.duration_sec||0}s`;
-      if(j.steps && j.steps.length) meta += ` · ${j.steps.length} step(s)`;
-      addMsg('assistant', j.response || '(no response)', meta);
-      if(j.steps && j.steps.length){
-        const lines = j.steps.map(s=>`- ${s.tool||'step'}: ${s.result && s.result.success===false ? 'FAILED':'OK'}`).join('\n');
-        addMsg('assistant', lines, 'Executed steps');
-      }
-      speak(j.response || '');
+    if (!items.length) {
+      $("rightReminders").textContent = "None queued";
+      $("tab-reminders").innerHTML = '<div style="color:var(--muted)">No upcoming reminders.</div>';
+      return;
     }
-  }catch(e){ addMsg('assistant', 'Network error: '+e, 'Error'); }
-  $('send').disabled = false;
-  refreshHistory(); refreshToolLogs(); refreshReminders(); refreshStatus(); refreshProviders();
+    $("rightReminders").innerHTML = items.slice(0, 3).map(r => `<div>• ${esc((r.message || "").slice(0, 28))}</div>`).join("");
+    $("tab-reminders").innerHTML = items.map(r => `<div class="drawer-row"><div><b style="color:var(--amber)">${esc(r.due_time || "")}</b><div>${esc(r.message || "")}</div></div></div>`).join("");
+  } catch (_) { $("tab-reminders").textContent = "Unavailable"; }
 }
 
-/* ---------- Hands-free voice ---------- */
-const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-let voiceOn = false, voiceReplies = true, recognition = null;
+async function refreshPrefs() {
+  try {
+    const j = await (await fetch("/api/preferences")).json();
+    const items = (j.items || []).slice(0, 15);
+    if (!items.length) { $("tab-prefs").innerHTML = '<div style="color:var(--muted)">No stored facts.</div>'; return; }
+    $("tab-prefs").innerHTML = items.map(r => `<div class="drawer-row"><b>${esc(r.key)}</b><span style="color:var(--muted)">${esc(typeof r.value === "string" ? r.value : JSON.stringify(r.value))}</span></div>`).join("");
+  } catch (_) { $("tab-prefs").textContent = "Unavailable"; }
+}
 
-function pickFemaleBrowserVoice(){
-  const voices = window.speechSynthesis.getVoices() || [];
+async function refreshHistory() {
+  try {
+    const j = await (await fetch("/api/history?limit=20")).json();
+    const items = j.items || [];
+    if (!items.length) { $("tab-history").innerHTML = '<div style="color:var(--muted)">No history yet.</div>'; return; }
+    $("tab-history").innerHTML = items.slice(-20).map(m => {
+      const role = m.role === "user" ? "YOU" : "TARS";
+      const txt = (m.content || "").slice(0, 140);
+      return `<div class="drawer-row" style="display:block;"><b style="color:var(--holo)">${role}</b> · ${esc(txt)}${(m.content || "").length > 140 ? "…" : ""}</div>`;
+    }).join("");
+  } catch (_) { $("tab-history").textContent = "Unavailable"; }
+}
+
+async function refreshToolLogs() {
+  try {
+    const j = await (await fetch("/api/tool-logs?limit=20")).json();
+    const items = j.items || [];
+    if (!items.length) {
+      $("leftToolsFeed").innerHTML = '<div class="diag-line"><span class="diag-dot"></span><span class="diag-k">Awaiting tool call</span></div>';
+      $("tab-tools").innerHTML = '<div style="color:var(--muted)">No tool calls logged.</div>';
+      return;
+    }
+    $("leftToolsFeed").innerHTML = items.slice(0, 9).map(it => {
+      if (it.raw) return `<div class="diag-line"><span class="diag-dot"></span><span>${esc(it.raw.slice(0, 28))}</span></div>`;
+      const ok = it.result && it.result.success === false ? "fail" : "ok";
+      const nm = String(it.tool_name || "?").replace(/_/g, " ").toUpperCase();
+      return `<div class="diag-line" title="${esc(it.datetime || "")}"><span class="diag-dot ${ok}"></span><span>${esc(nm)}</span></div>`;
+    }).join("");
+    $("tab-tools").innerHTML = items.map(it => {
+      if (it.raw) return `<div class="drawer-row">${esc(it.raw)}</div>`;
+      const ok = it.result && it.result.success === false ? "fail" : "ok";
+      return `<div class="drawer-row"><span><span class="diag-dot ${ok}" style="display:inline-block;margin-right:8px;"></span>${esc(it.tool_name || "?")}</span><span style="color:var(--muted);font-size:10px;">${esc(it.datetime || "")}</span></div>`;
+    }).join("");
+  } catch (_) {}
+}
+
+let confirmPollTimer = null;
+async function pollPendingConfirm() {
+  try {
+    const j = await (await fetch("/api/confirm/pending")).json();
+    const pend = j.pending;
+    if (pend) {
+      const argsStr = JSON.stringify(pend.arguments || {}).slice(0, 180);
+      $("confirmDesc").textContent = `Execute tool "${pend.tool}" with arguments ${argsStr}?`;
+      $("confirmModal").classList.add("open");
+    } else {
+      $("confirmModal").classList.remove("open");
+    }
+  } catch (_) {}
+}
+
+async function sendConfirm(approved) {
+  $("confirmModal").classList.remove("open");
+  try {
+    await fetch("/api/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved })
+    });
+  } catch (_) {}
+}
+
+async function cancelTask() {
+  try {
+    const j = await (await fetch("/api/cancel-task", { method: "POST" })).json();
+    addMsg("assistant", j.message || "Task cancelled.", "SYSTEM");
+    setOrbState("idle", "ONLINE");
+    HoloEngine.pulse(true);
+  } catch (_) { addMsg("assistant", "Could not cancel task.", "ERROR"); }
+}
+
+async function sendPrompt() {
+  const input = $("prompt");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  $("send").disabled = true;
+  addMsg("user", text, "YOU");
+  setOrbState("thinking", "PROCESSING");
+  HoloEngine.pulse(true);
+
+  if (confirmPollTimer) clearInterval(confirmPollTimer);
+  confirmPollTimer = setInterval(pollPendingConfirm, 500);
+
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: text })
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      setOrbState("error", "FAULT");
+      addMsg("assistant", j.detail || "Request failed", "ERROR");
+      setTimeout(() => setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : "ONLINE"), 1400);
+    } else {
+      const meta = `TARS · ${j.duration_sec || 0}s` + (j.steps && j.steps.length ? ` · ${j.steps.length} STEP(S)` : "");
+      addMsg("assistant", j.response || "(no response)", meta);
+      HoloEngine.pulse(true);
+      speak(j.response || "");
+    }
+  } catch (e) {
+    setOrbState("error", "NET FAULT");
+    addMsg("assistant", "Network error: " + e, "ERROR");
+    setTimeout(() => setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : "ONLINE"), 1400);
+  } finally {
+    if (confirmPollTimer) { clearInterval(confirmPollTimer); confirmPollTimer = null; }
+    $("confirmModal").classList.remove("open");
+    $("send").disabled = false;
+    refreshHistory(); refreshToolLogs(); refreshReminders(); refreshStatus(); refreshProviders();
+  }
+}
+
+/* ==================== VOICE INTERACTION & FEMALE SPEECH ==================== */
+const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voiceOn = false, voiceReplies = true, recognition = null, speakAnimTimer = null;
+
+function pickFemaleBrowserVoice() {
+  const voices = (window.speechSynthesis && window.speechSynthesis.getVoices()) || [];
   const female = voices.find(v => /zira|jenny|aria|hazel|samantha|heera|female|google us english/i.test(v.name) && !/david|mark|george|guy|male/i.test(v.name));
   return female || voices.find(v => /en/i.test(v.lang) && !/david|mark|george|guy|male/i.test(v.name)) || null;
 }
 
-function speak(text){
-  if(!voiceReplies || !text || !('speechSynthesis' in window)) return;
-  try{
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(String(text).slice(0, 600));
-    u.lang = 'en-US'; u.rate = 1.05;
-    const fv = pickFemaleBrowserVoice();
-    if(fv) u.voice = fv;
-    window.speechSynthesis.speak(u);
-  }catch(e){}
-}
-
-function paintMic(){
-  const b = $('mic');
-  b.classList.toggle('listening', voiceOn);
-  b.textContent = voiceOn ? '⏹' : '🎙';
-  b.title = voiceOn ? 'Stop hands-free listening' : 'Hands-free voice input';
-}
-
-function stopVoice(){
-  voiceOn = false; paintMic();
-  if(recognition){ try{ recognition.stop(); }catch(e){} }
-  $('prompt').placeholder = 'Type a command, or tap the mic and just speak…';
-}
-
-function startVoice(){
-  if(!SpeechRecognitionAPI){
-    addMsg('assistant', 'This browser has no speech recognition. Open the dashboard in Chrome or Edge, or type the command.', 'Voice');
+function speak(text) {
+  if (!voiceReplies || !text || !("speechSynthesis" in window)) {
+    setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : "ONLINE");
     return;
   }
-  if(voiceOn){ stopVoice(); return; }
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(text).slice(0, 600));
+    u.lang = "en-US"; u.rate = 1.05;
+    const fv = pickFemaleBrowserVoice();
+    if (fv) u.voice = fv;
+    u.onstart = () => {
+      setOrbState("speaking", "SPEAKING");
+      if (speakAnimTimer) clearInterval(speakAnimTimer);
+      speakAnimTimer = setInterval(() => {
+        ttsSpeakWave = 0.22 + Math.random() * 0.45;
+      }, 85);
+    };
+    const endSpeak = () => {
+      if (speakAnimTimer) { clearInterval(speakAnimTimer); speakAnimTimer = null; }
+      ttsSpeakWave = 0.0;
+      setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : "ONLINE");
+    };
+    u.onend = endSpeak;
+    u.onerror = endSpeak;
+    window.speechSynthesis.speak(u);
+  } catch (_) {
+    setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : "ONLINE");
+  }
+}
+
+function paintMic() {
+  $("mic").classList.toggle("listening", voiceOn);
+  $("mic").textContent = voiceOn ? "⏹" : "🎙";
+  $("dockMicBtn").classList.toggle("listening", voiceOn);
+  $("dockMicState").textContent = voiceOn ? "LIVE" : "OFF";
+}
+
+function stopVoice() {
+  voiceOn = false; paintMic(); stopMicSpectrum();
+  if (recognition) { try { recognition.stop(); } catch (_) {} }
+  $("prompt").placeholder = "Speak to TARS or type a command…";
+  if (orbState === "listening") setOrbState("idle", "ONLINE");
+}
+
+function startVoice() {
+  if (voiceOn) { stopVoice(); return; }
+  if (!SpeechRecognitionAPI) {
+    addMsg("assistant", "Live browser Speech Recognition requires Chrome or Edge. You can still type commands cleanly below.", "VOICE");
+    return;
+  }
   recognition = new SpeechRecognitionAPI();
-  recognition.lang = 'en-US';
+  recognition.lang = "en-US";
   recognition.continuous = true;
   recognition.interimResults = true;
   recognition.onresult = (ev) => {
-    let interim = '', finalText = '';
-    for(let i = ev.resultIndex; i < ev.results.length; i++){
+    let interim = "", finalText = "";
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const t = ev.results[i][0].transcript;
-      if(ev.results[i].isFinal) finalText += t; else interim += t;
+      if (ev.results[i].isFinal) finalText += t; else interim += t;
     }
-    if(interim) $('prompt').placeholder = interim;
-    if(finalText.trim()){
-      $('prompt').value = finalText.trim();
+    if (interim) $("prompt").placeholder = "🎙 " + interim;
+    if (finalText.trim()) {
+      $("prompt").value = finalText.trim();
       sendPrompt();
     }
   };
   recognition.onerror = (e) => {
-    if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
-      addMsg('assistant', 'Microphone access was blocked. Allow the microphone for this page and tap the mic again.', 'Voice');
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      addMsg("assistant", "Microphone permission denied. Enable microphone access and retry.", "VOICE");
       stopVoice();
     }
   };
   recognition.onend = () => {
-    // Keep listening until the user stops it: this is what makes it hands-free.
-    if(voiceOn){ try{ recognition.start(); }catch(e){} } else paintMic();
+    if (voiceOn) { try { recognition.start(); } catch (_) {} } else paintMic();
   };
   voiceOn = true; paintMic();
-  try{ recognition.start(); }catch(e){ voiceOn = false; paintMic(); }
+  setOrbState("listening", "LISTENING");
+  startMicSpectrum();
+  HoloEngine.pulse(true);
+  try { recognition.start(); } catch (_) { stopVoice(); }
 }
 
-$('mic').addEventListener('click', startVoice);
-$('spk').addEventListener('click', () => {
+function toggleAudioOut() {
   voiceReplies = !voiceReplies;
-  $('spk').classList.toggle('muted', !voiceReplies);
-  $('spk').textContent = voiceReplies ? '🔊' : '🔇';
-  if(!voiceReplies && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+  $("spk").classList.toggle("muted", !voiceReplies);
+  $("spk").textContent = voiceReplies ? "🔊" : "🔇";
+  $("dockSpkBtn").classList.toggle("active", voiceReplies);
+  $("dockSpkState").textContent = voiceReplies ? "ON" : "MUTE";
+  if (!voiceReplies && "speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+/* ==================== UI EVENT HOOKS ==================== */
+$("mic").addEventListener("click", startVoice);
+$("dockMicBtn").addEventListener("click", startVoice);
+$("spk").addEventListener("click", toggleAudioOut);
+$("dockSpkBtn").addEventListener("click", toggleAudioOut);
+$("send").addEventListener("click", sendPrompt);
+$("prompt").addEventListener("keydown", (e) => { if (e.key === "Enter") sendPrompt(); });
+$("cancelBtn").addEventListener("click", cancelTask);
+$("dockCancelBtn").addEventListener("click", cancelTask);
+$("dockResetBtn").addEventListener("click", () => HoloEngine.resetView());
+$("dockProvBtn").addEventListener("click", () => openDrawer("providers"));
+$("dockMemBtn").addEventListener("click", () => openDrawer("history"));
+$("drawerToggleBtn").addEventListener("click", () => {
+  if ($("inspectorDrawer").classList.contains("open")) closeDrawer();
+  else openDrawer("providers");
+});
+$("drawerCloseBtn").addEventListener("click", closeDrawer);
+
+document.querySelectorAll(".tab-pill").forEach(btn => {
+  btn.addEventListener("click", () => switchDrawerTab(btn.dataset.tab));
+});
+$("tab-providers").addEventListener("click", (e) => {
+  const btn = e.target.closest("button.provider-switch");
+  if (!btn) return;
+  switchProvider(btn.dataset.provider, btn.dataset.model || "");
+});
+$("refreshShotBtn").addEventListener("click", () => {
+  const img = $("shotImg");
+  img.style.display = "block";
+  img.src = "/api/screenshot?t=" + Date.now();
 });
 
-$('send').addEventListener('click', sendPrompt);
-$('prompt').addEventListener('keydown', (e)=>{ if(e.key==='Enter') sendPrompt(); });
-$('cancelBtn').addEventListener('click', cancelTask);
-$('providers').addEventListener('click', (e)=>{
-  const btn = e.target.closest('button.provider-switch');
-  if(!btn) return;
-  switchProvider(btn.dataset.provider, btn.dataset.model || '');
+document.querySelectorAll(".swatch").forEach(s => {
+  s.addEventListener("click", () => {
+    document.querySelectorAll(".swatch").forEach(x => x.classList.remove("active"));
+    s.classList.add("active");
+    HoloEngine.setTheme(s.dataset.theme);
+  });
 });
 
-addMsg('assistant', 'Dashboard connected. Type a command, or tap 🎙 and just speak — TARS answers out loud.', 'TARS');
+$("confirmApproveBtn").addEventListener("click", () => sendConfirm(true));
+$("confirmDenyBtn").addEventListener("click", () => sendConfirm(false));
+
+// Initialize holographic HUD feed
+addMsg("assistant", "Holographic neural interface online. Drag orb to inspect, scroll to zoom, double-tap core or click Voice Link to speak.", "TARS");
 refreshStatus(); refreshProviders(); refreshToolCount(); refreshReminders(); refreshPrefs(); refreshHistory(); refreshToolLogs();
-setInterval(refreshStatus, 5000);
-setInterval(()=>{ refreshReminders(); refreshHistory(); refreshToolLogs(); refreshProviders(); }, 10000);
+setInterval(refreshStatus, 4500);
+setInterval(() => { refreshReminders(); refreshHistory(); refreshToolLogs(); refreshProviders(); }, 10000);
 </script>
 </body>
 </html>
