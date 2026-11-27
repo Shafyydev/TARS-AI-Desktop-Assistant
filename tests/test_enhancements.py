@@ -527,6 +527,43 @@ class TestDashboardEndpoints(unittest.TestCase):
         self.assertEqual(cancel_resp.status_code, 200)
         self.assertTrue(cancel_resp.json()["success"])
 
+    def test_mic_mute_sync_endpoint_and_runtime_stop(self):
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            self.skipTest("fastapi test client not available")
+
+        import dashboard.server as srv
+        fake_speaker = MagicMock()
+        srv.register_voice_runtime(active=True, speaker=fake_speaker)
+        try:
+            client = TestClient(srv.app)
+            # Initially unmuted
+            r0 = client.post("/api/mic", json={"muted": False})
+            self.assertEqual(r0.status_code, 200)
+            self.assertFalse(srv.is_mic_muted())
+            self.assertFalse(client.get("/api/mic").json()["muted"])
+
+            # Muting sets shared flag, calls speaker.stop(), and reports via /api/status
+            r1 = client.post("/api/mic", json={"muted": True})
+            self.assertEqual(r1.status_code, 200)
+            self.assertTrue(r1.json()["muted"])
+            self.assertTrue(r1.json()["runtime_active"])
+            self.assertTrue(srv.is_mic_muted())
+            fake_speaker.stop.assert_called_once()
+
+            st = client.get("/api/status").json()
+            self.assertTrue(st["mic"]["muted"])
+            self.assertTrue(st["mic"]["runtime_active"])
+
+            # Unmuting resumes cleanly
+            r2 = client.post("/api/mic", json={"muted": False})
+            self.assertEqual(r2.status_code, 200)
+            self.assertFalse(srv.is_mic_muted())
+        finally:
+            srv.register_voice_runtime(active=False, speaker=None)
+            srv._mic_muted = False
+
 
 class TestRegressionFixes(unittest.TestCase):
     """Tests covering bugs diagnosed in logs and live memory traces."""

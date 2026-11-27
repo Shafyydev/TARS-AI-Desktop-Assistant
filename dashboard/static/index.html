@@ -999,10 +999,12 @@ const HoloEngine = (() => {
       triggerPulseAt(pt, true);
       const now = performance.now();
       if (pt && now - lastTapTime < 340) {
-        // Double-tap on orb toggles hands-free voice interaction!
+        // Double-tap on orb toggles hands-free voice interaction once cleanly
+        lastTapTime = 0;
         if (typeof startVoice === "function") startVoice();
+      } else {
+        lastTapTime = now;
       }
-      lastTapTime = now;
     }
   }
   canvas.addEventListener("pointerup", endDrag);
@@ -1246,7 +1248,21 @@ async function refreshStatus() {
   try {
     const r = await fetch("/api/status");
     const j = await r.json();
-    if (orbState === "idle") setOrbState("idle", "ONLINE");
+    const micInfo = j.mic || {};
+    backendVoiceRuntime = !!micInfo.runtime_active;
+    if (backendVoiceRuntime && (performance.now() - lastMicMutationAt) >= 1800) {
+      const wantOn = !micInfo.muted;
+      if (!micSyncedOnce || voiceOn !== wantOn) {
+        micSyncedOnce = true;
+        voiceOn = wantOn;
+        paintMic();
+      }
+    }
+    if (orbState === "idle") {
+      setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : (backendVoiceRuntime ? "MUTED" : "ONLINE"));
+    } else if (orbState === "listening" && !voiceOn) {
+      setOrbState("idle", backendVoiceRuntime ? "MUTED" : "ONLINE");
+    }
     $("clock").textContent = (j.time || "--").split(" ").pop();
     const t = j.telemetry || {};
     const cpuVal = t.cpu_load_percent != null ? t.cpu_load_percent : null;
@@ -1454,6 +1470,22 @@ async function sendPrompt() {
 /* ==================== VOICE INTERACTION & SYNCED SPEECH REACTIVITY ==================== */
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 let voiceOn = false, voiceReplies = true, recognition = null, speakWatchTimer = null, cachedVoices = [];
+let backendVoiceRuntime = false, micSyncedOnce = false, lastMicMutationAt = 0;
+
+async function pushMicMute(muted) {
+  lastMicMutationAt = performance.now();
+  try {
+    const r = await fetch("/api/mic", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ muted: !!muted })
+    });
+    const j = await r.json();
+    if (j && typeof j.runtime_active === "boolean") {
+      backendVoiceRuntime = j.runtime_active;
+    }
+  } catch (_) {}
+}
 
 function refreshVoicesCache() {
   if ("speechSynthesis" in window) {
@@ -1541,27 +1573,54 @@ function speak(text) {
 
 function paintMic() {
   $("mic").classList.toggle("listening", voiceOn);
-  $("mic").title = voiceOn ? "Stop live voice dictation" : "Toggle hands-free dictation";
+  $("mic").title = voiceOn ? "Mute microphone" : "Enable microphone listening";
 }
 
 function stopVoice() {
-  voiceOn = false; paintMic(); stopMicSpectrum();
-  if (recognition) { try { recognition.stop(); } catch (_) {} }
-  $("prompt").placeholder = "Speak to TARS or type a command…";
-  if (orbState === "listening") setOrbState("idle", "ONLINE");
+  voiceOn = false;
+  paintMic();
+  stopMicSpectrum();
+  if (recognition) {
+    const rec = recognition;
+    recognition = null;
+    rec.onresult = null;
+    rec.onerror = null;
+    rec.onend = null;
+    try { rec.abort(); } catch (_) { try { rec.stop(); } catch (_) {} }
+  }
+  $("prompt").placeholder = backendVoiceRuntime
+    ? "Microphone muted — click mic or double-tap orb to resume…"
+    : "Speak to TARS or type a command…";
+  setOrbState("idle", backendVoiceRuntime ? "MUTED" : "ONLINE");
+  pushMicMute(true);
 }
 
 function startVoice() {
   if (voiceOn) { stopVoice(); return; }
+  voiceOn = true;
+  paintMic();
+  setOrbState("listening", "LISTENING");
+  $("prompt").placeholder = "🎙 Listening…";
+  HoloEngine.pulse(true);
+  pushMicMute(false);
+  startMicSpectrum();
+
+  // When main.py's terminal voice loop is running, it owns STT directly so browser SpeechRecognition
+  // does not fire duplicate commands or hit Brave network SpeechRecognition blocks.
+  if (backendVoiceRuntime) return;
+
   if (!SpeechRecognitionAPI) {
-    addMsg("assistant", "Live browser Speech Recognition requires Chrome or Edge. You can still type commands cleanly below.", "VOICE");
+    addMsg("assistant", "Browser Speech Recognition requires Chrome or Edge. You can type commands cleanly below.", "VOICE");
+    stopVoice();
     return;
   }
-  recognition = new SpeechRecognitionAPI();
-  recognition.lang = "en-US";
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.onresult = (ev) => {
+  const rec = new SpeechRecognitionAPI();
+  recognition = rec;
+  rec.lang = "en-US";
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.onresult = (ev) => {
+    if (!voiceOn || recognition !== rec) return;
     let interim = "", finalText = "";
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const t = ev.results[i][0].transcript;
@@ -1573,20 +1632,24 @@ function startVoice() {
       sendPrompt();
     }
   };
-  recognition.onerror = (e) => {
+  rec.onerror = (e) => {
+    if (!voiceOn || recognition !== rec) return;
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
       addMsg("assistant", "Microphone permission denied. Enable microphone access and retry.", "VOICE");
       stopVoice();
+    } else if (e.error === "network" || e.error === "audio-capture") {
+      addMsg("assistant", "Browser speech service unavailable (" + e.error + "). Use python main.py voice mode or type below.", "VOICE");
+      stopVoice();
     }
   };
-  recognition.onend = () => {
-    if (voiceOn) { try { recognition.start(); } catch (_) {} } else paintMic();
+  rec.onend = () => {
+    if (voiceOn && recognition === rec) {
+      try { rec.start(); } catch (_) { stopVoice(); }
+    } else {
+      paintMic();
+    }
   };
-  voiceOn = true; paintMic();
-  setOrbState("listening", "LISTENING");
-  startMicSpectrum();
-  HoloEngine.pulse(true);
-  try { recognition.start(); } catch (_) { stopVoice(); }
+  try { rec.start(); } catch (_) { stopVoice(); }
 }
 
 function toggleAudioOut() {

@@ -213,6 +213,14 @@ def main() -> None:
         else None
     )
 
+    _dash_srv = None
+    if args.dashboard and not args.no_dashboard:
+        try:
+            import dashboard.server as _dash_srv  # shares state with uvicorn daemon in same process
+            _dash_srv.register_voice_runtime(active=bool(voice_mode and listener), speaker=speaker)
+        except Exception:
+            _dash_srv = None
+
     # Wire Central Confirmation Gate for destructive actions
     def confirm_action(tool_name: str, arguments: dict) -> bool:
         # Speak the tool and its arguments, not just the tool name, so a voice
@@ -270,12 +278,26 @@ def main() -> None:
                 user_input = None
 
                 if voice_mode:
+                    if _dash_srv and _dash_srv.is_mic_muted():
+                        if listener:
+                            listener.close_stream()
+                        if listening_banner_shown:
+                            console.print("[dim yellow]🔇 Microphone muted from dashboard. Waiting to unmute...[/dim yellow]")
+                            listening_banner_shown = False
+                        time.sleep(0.25)
+                        continue
+
                     if listener and listener.wake_detector.is_porcupine_active():
                         console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
                         if not listener.listen_for_wake_word():
                             continue
+                        if _dash_srv and _dash_srv.is_mic_muted():
+                            continue
                         console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
                         raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
+                        if _dash_srv and _dash_srv.is_mic_muted():
+                            listener.close_stream()
+                            continue
                         if status == "timeout" or not raw_speech:
                             continue
                         user_input = raw_speech
@@ -293,6 +315,11 @@ def main() -> None:
                         _t_stt_start = time.time()
                         raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit) if listener else (None, "no listener")
                         _t_stt_end = time.time()
+                        if _dash_srv and _dash_srv.is_mic_muted():
+                            if listener:
+                                listener.close_stream()
+                            listening_banner_shown = False
+                            continue
                         if status == "timeout":
                             continue
                         listening_banner_shown = False
@@ -324,7 +351,7 @@ def main() -> None:
                                 speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
                             console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
                             follow_speech, _ = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
-                            if not follow_speech:
+                            if (_dash_srv and _dash_srv.is_mic_muted()) or not follow_speech:
                                 continue
                             clean_command = follow_speech
 

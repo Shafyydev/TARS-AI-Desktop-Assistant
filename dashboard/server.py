@@ -39,10 +39,28 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 _agent_lock = threading.Lock()
 _agent: Optional[TARSAgent] = None
 
+# Interactive voice runtime mute sync between terminal voice loop and dashboard UI.
+_voice_runtime_active = False
+_mic_muted = False
+_voice_speaker: Any = None
+
 # Interactive confirmation state for destructive tools invoked from the dashboard.
 _confirm_event = threading.Event()
 _confirm_result = False
 _confirm_pending: Optional[Dict[str, Any]] = None
+
+
+def register_voice_runtime(active: bool = True, speaker: Any = None) -> None:
+    """Registers the main.py voice loop runtime so dashboard mic mute/unmute controls it."""
+    global _voice_runtime_active, _voice_speaker
+    _voice_runtime_active = bool(active)
+    if speaker is not None:
+        _voice_speaker = speaker
+
+
+def is_mic_muted() -> bool:
+    """Returns True when the user muted microphone listening from the dashboard."""
+    return _mic_muted
 
 
 def _dashboard_confirm(tool_name: str, arguments: dict) -> bool:
@@ -63,6 +81,10 @@ class ChatRequest(BaseModel):
 
 class ConfirmRequest(BaseModel):
     approved: bool = False
+
+
+class MicStateRequest(BaseModel):
+    muted: bool = False
 
 
 def get_agent() -> TARSAgent:
@@ -136,9 +158,29 @@ def status() -> Dict[str, Any]:
             "available": bool(getattr(agent, "client", None)) or bool(getattr(getattr(agent, "llm", None), "available", lambda: False)()),
         },
         "telemetry": telemetry,
+        "mic": {"muted": _mic_muted, "runtime_active": _voice_runtime_active},
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "cwd": str(Path.cwd()),
     }
+
+
+@app.get("/api/mic")
+def get_mic_state() -> Dict[str, Any]:
+    """Returns current dashboard/runtime microphone mute state."""
+    return {"muted": _mic_muted, "runtime_active": _voice_runtime_active}
+
+
+@app.post("/api/mic")
+def set_mic_state(req: MicStateRequest) -> Dict[str, Any]:
+    """Mutes or unmutes hands-free microphone listening across UI and backend."""
+    global _mic_muted
+    _mic_muted = bool(req.muted)
+    if _mic_muted and _voice_speaker is not None:
+        try:
+            _voice_speaker.stop()
+        except Exception:
+            pass
+    return {"muted": _mic_muted, "runtime_active": _voice_runtime_active}
 
 
 @app.get("/api/history")
