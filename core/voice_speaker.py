@@ -84,16 +84,16 @@ class VoiceSpeaker:
         return self._is_speaking
 
     def _init_pygame(self) -> bool:
-        """Initializes pygame mixer once at startup for instant audio playback."""
-        if not self._pygame_initialized:
-            try:
-                import pygame
+        """Initializes or recovers pygame mixer for reliable playback."""
+        try:
+            import pygame
+            if not self._pygame_initialized or not pygame.mixer.get_init():
                 pygame.mixer.init()
                 self._pygame_initialized = True
-                return True
-            except Exception as e:
-                return False
-        return True
+            return True
+        except Exception:
+            self._pygame_initialized = False
+            return False
 
     def _clean_text_for_speech(self, text: str) -> str:
         """Strips markdown, emojis, codeblocks, and raw URLs for crisp speech delivery."""
@@ -106,23 +106,37 @@ class VoiceSpeaker:
         clean = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", clean)
         clean = re.sub(r"https?://\S+", "a web link", clean)
         clean = re.sub(r"[*_~#>]", "", clean)
+        # Drop non-BMP emojis / variation selectors so Edge-TTS won't read emoji names or choke on symbols
+        clean = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf\ufe0f\u200d]+", " ", clean)
         clean = re.sub(r"\s+", " ", clean).strip()
+        clean = re.sub(r"\s+([.,!?;:])", r"\1", clean)
+        if not re.search(r"[A-Za-z0-9]", clean):
+            return ""
         return clean
 
     async def _synthesize_edge_tts(self, text: str, output_path: str) -> bool:
-        """Synthesizes text into an MP3 file using edge-tts."""
-        try:
-            import edge_tts
-            communicate = edge_tts.Communicate(
-                text=text,
-                voice=self.voice_name,
-                rate=self.rate,
-                pitch=self.pitch
-            )
-            await communicate.save(output_path)
-            return True
-        except Exception:
-            return False
+        """Synthesizes text into an MP3 file using edge-tts with 1 automatic transient retry."""
+        import edge_tts
+
+        last_err = None
+        for attempt in range(2):
+            try:
+                communicate = edge_tts.Communicate(
+                    text=text,
+                    voice=self.voice_name,
+                    rate=self.rate,
+                    pitch=self.pitch
+                )
+                await asyncio.wait_for(communicate.save(output_path), timeout=8.0)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return True
+            except Exception as exc:
+                last_err = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
+        if last_err is not None:
+            print(f"[VoiceSpeaker] Edge-TTS failed ({type(last_err).__name__}); falling back to Zira.")
+        return False
 
     def _play_audio_pygame(
         self,
@@ -131,40 +145,58 @@ class VoiceSpeaker:
         utterance_id: Optional[int] = None,
         check_keyboard: bool = False,
     ) -> bool:
-        """Plays the generated audio file using pygame with instant interruption support."""
+        """Plays the generated audio file using pygame with mixer recovery & unload cleanup."""
         if not self._init_pygame():
             return False
 
-        try:
-            import pygame
-            if self._stop_requested or (utterance_id is not None and utterance_id != self._utterance_seq):
-                return False
-            pygame.mixer.music.load(audio_file)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy() and self._is_speaking and not self._stop_requested:
-                if utterance_id is not None and utterance_id != self._utterance_seq:
-                    pygame.mixer.music.stop()
+        import pygame
+        for attempt in range(2):
+            try:
+                if self._stop_requested or (utterance_id is not None and utterance_id != self._utterance_seq):
                     return False
-                if check_keyboard:
+                pygame.mixer.music.load(audio_file)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy() and self._is_speaking and not self._stop_requested:
+                    if utterance_id is not None and utterance_id != self._utterance_seq:
+                        pygame.mixer.music.stop()
+                        return False
+                    if check_keyboard:
+                        try:
+                            import msvcrt
+                            if msvcrt.kbhit():
+                                msvcrt.getch()
+                                self.stop()
+                                return False
+                        except Exception:
+                            pass
+                    if interrupt_check:
+                        try:
+                            if interrupt_check():
+                                self.stop()
+                                return False
+                        except Exception:
+                            pass
+                    pygame.time.Clock().tick(30)
+                return True
+            except Exception as exc:
+                if attempt == 0:
                     try:
-                        import msvcrt
-                        if msvcrt.kbhit():
-                            msvcrt.getch()
-                            self.stop()
-                            return False
+                        pygame.mixer.quit()
                     except Exception:
                         pass
-                if interrupt_check:
-                    try:
-                        if interrupt_check():
-                            self.stop()
-                            return False
-                    except Exception:
-                        pass
-                pygame.time.Clock().tick(30)
-            return True
-        except Exception:
-            return False
+                    self._pygame_initialized = False
+                    if not self._init_pygame():
+                        print(f"[VoiceSpeaker] pygame recovery failed ({type(exc).__name__}); falling back to Zira.")
+                        return False
+                else:
+                    print(f"[VoiceSpeaker] pygame playback failed ({type(exc).__name__}); falling back to Zira.")
+                    return False
+            finally:
+                try:
+                    pygame.mixer.music.unload()
+                except Exception:
+                    pass
+        return False
 
     def _get_thread_sapi_speaker(self) -> Any:
         """Returns a thread-local COM SAPI SpVoice locked to a female voice."""

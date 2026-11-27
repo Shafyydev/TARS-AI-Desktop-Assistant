@@ -986,6 +986,40 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         sp.stop()
         self.assertEqual(com_obj.calls, [("", 2)])
 
+    def test_edge_tts_retries_transient_error_and_drops_empty_symbols(self):
+        import asyncio
+        import os
+        import tempfile
+        from core.voice_speaker import VoiceSpeaker
+
+        sp = VoiceSpeaker(fast_voice=False)
+        self.assertEqual(sp._clean_text_for_speech("... 🤍"), "")
+        self.assertEqual(sp._clean_text_for_speech("Opened Dr. Reshmaa 🫴🏻 🤍."), "Opened Dr. Reshmaa.")
+
+        calls = {"n": 0}
+
+        class _FakeComm:
+            def __init__(self, **kwargs):
+                pass
+
+            async def save(self, out_path):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise RuntimeError("transient websocket drop")
+                with open(out_path, "wb") as f:
+                    f.write(b"ID3" + b"\x00" * 64)
+
+        fd, tmp = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        try:
+            with patch("edge_tts.Communicate", _FakeComm):
+                ok = asyncio.run(sp._synthesize_edge_tts("Hello world.", tmp))
+            self.assertTrue(ok)
+            self.assertEqual(calls["n"], 2)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
 
 if __name__ == "__main__":
     unittest.main()
