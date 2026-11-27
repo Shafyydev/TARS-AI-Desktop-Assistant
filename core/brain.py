@@ -1541,6 +1541,32 @@ class TARSAgent:
                     summary = answer[:250] + ("..." if len(answer) > 250 else "")
                     return {"response": summary, "steps": [{"tool": "get_free_knowledge", "args": {"query": query}, "result": {"answer": summary}}], "success": True}
 
+        # Spotify: play a named song (deterministic multi-step, no LLM planning).
+        spotify_play = re.match(
+            r"^(?:play|play me|put on)\s+(?:a\s+)?(?:song\s+(?:named|called)\s+)?(.+?)(?:\s+(?:on|in|from)\s+spotify)?$",
+            p_clean,
+        )
+        if spotify_play and "spotify" in p_clean or (spotify_play and re.search(r"\bsong\b", p_clean)):
+            pass
+        # Only trigger when Spotify is explicitly mentioned or the phrase contains "song".
+        if spotify_play and ("spotify" in p_clean or "song" in p_clean):
+            song = spotify_play.group(1).strip().strip('"\"').strip()
+            if song and len(song.split()) <= 8:
+                steps = []
+                res = self.execute_tool("launch_application", {"app_name": "spotify"})
+                steps.append({"tool": "launch_application", "args": {"app_name": "spotify"}, "result": res})
+                import time as _t
+                _t.sleep(2.5)
+                res = self.execute_tool("focus_window", {"window_name": "spotify"})
+                steps.append({"tool": "focus_window", "args": {"window_name": "spotify"}, "result": res})
+                _t.sleep(0.5)
+                res = self.execute_tool("press_keys", {"keys": ["ctrl", "k"]})
+                steps.append({"tool": "press_keys", "args": {"keys": ["ctrl", "k"]}, "result": res})
+                _t.sleep(0.5)
+                res = self.execute_tool("smart_type", {"text": song, "press_enter": True})
+                steps.append({"tool": "smart_type", "args": {"text": song, "press_enter": True}, "result": res})
+                return {"response": f"Searching Spotify for {song}.", "steps": steps, "success": True}
+
         return None
 
     def run_agent_loop(self, user_prompt: str, on_status_update: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
