@@ -3,21 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>T.A.R.S. — Holographic Neural Interface</title>
+  <title>T.A.R.S — Holographic Neural Interface</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='26' fill='%2304191e' stroke='%231ef5d8' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%23a7fff2'/%3E%3C/svg%3E" />
   <style>
     :root {
       --bg-core: #04191e;
       --bg-void: #010407;
       --holo: #1ef5d8;
+      --holo-rgb: 30, 245, 216;
       --holo-bright: #a7fff2;
+      --holo-bright-rgb: 167, 255, 242;
       --holo-sky: #3bd4ff;
-      --holo-dim: rgba(30, 245, 216, 0.42);
-      --holo-line: rgba(30, 245, 216, 0.24);
+      --holo-dim: rgba(var(--holo-rgb), 0.45);
+      --holo-line: rgba(var(--holo-rgb), 0.28);
       --glass-bg: rgba(3, 15, 20, 0.62);
-      --glass-strong: rgba(4, 18, 24, 0.86);
+      --glass-strong: rgba(4, 18, 24, 0.88);
       --text: #e6fffb;
-      --muted: rgba(167, 255, 242, 0.62);
+      --muted: rgba(var(--holo-bright-rgb), 0.64);
       --green: #3ef2a8;
       --amber: #ffd166;
       --red: #ff5d7a;
@@ -45,11 +47,53 @@
         radial-gradient(circle at 50% 47%, transparent 32%, rgba(0, 0, 0, 0.56) 100%),
         repeating-linear-gradient(
           to bottom,
-          rgba(30, 245, 216, 0.018) 0px,
-          rgba(30, 245, 216, 0.018) 1px,
+          rgba(var(--holo-rgb), 0.02) 0px,
+          rgba(var(--holo-rgb), 0.02) 1px,
           transparent 1px,
           transparent 4px
         );
+    }
+
+    /* Shared Luxurious Reactive Hologram Button System */
+    .holo-btn {
+      position: relative; overflow: hidden; isolation: isolate;
+      transition:
+        transform .22s cubic-bezier(0.22, 1, 0.36, 1),
+        border-color .22s ease,
+        box-shadow .24s ease,
+        background .24s ease,
+        color .2s ease;
+    }
+    .holo-btn::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+      opacity: 0; transition: opacity .25s ease;
+      background: radial-gradient(
+        110px circle at var(--mx, 50%) var(--my, 50%),
+        rgba(var(--holo-bright-rgb), 0.30),
+        rgba(var(--holo-rgb), 0.08) 55%,
+        transparent 80%
+      );
+    }
+    .holo-btn::after {
+      content: ""; position: absolute; top: -40%; left: -120%; width: 70%; height: 180%;
+      pointer-events: none; z-index: 0; transform: skewX(-24deg);
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.24), transparent);
+      transition: left .55s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .holo-btn:hover::before { opacity: 1; }
+    .holo-btn:hover::after { left: 155%; }
+    .holo-btn:hover { transform: translateY(-1px) scale(1.02); }
+    .holo-btn:active { transform: translateY(0) scale(0.95); }
+    .holo-btn > * { position: relative; z-index: 1; }
+
+    .btn-wave {
+      position: absolute; border-radius: 50%; pointer-events: none; z-index: 0;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.65) 0%, rgba(var(--holo-rgb), 0.38) 45%, transparent 72%);
+      transform: translate(-50%, -50%) scale(0);
+      animation: btnWaveExpand .55s cubic-bezier(0.18, 0.85, 0.32, 1) forwards;
+    }
+    @keyframes btnWaveExpand {
+      to { transform: translate(-50%, -50%) scale(2.8); opacity: 0; }
     }
 
     /* HUD Grid Overlay */
@@ -66,7 +110,7 @@
     .brand-title {
       font-size: 20px; font-weight: 600; letter-spacing: 0.46em;
       color: var(--holo-bright);
-      text-shadow: 0 0 18px rgba(30, 245, 216, 0.55);
+      text-shadow: 0 0 18px rgba(var(--holo-rgb), 0.58);
     }
     .brand-sub {
       margin-top: 5px; font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
@@ -82,13 +126,13 @@
     }
     .status-chip {
       display: inline-flex; align-items: center; gap: 7px;
-      padding: 5px 12px; border-radius: 999px;
+      padding: 6px 13px; border-radius: 999px;
       border: 1px solid var(--holo-line);
-      background: rgba(3, 18, 23, 0.58); backdrop-filter: blur(10px);
+      background: rgba(3, 18, 23, 0.62); backdrop-filter: blur(12px);
       font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
       font-family: Consolas, ui-monospace, monospace;
       color: var(--holo-bright);
-      box-shadow: 0 0 18px rgba(30, 245, 216, 0.12);
+      box-shadow: 0 0 20px rgba(var(--holo-rgb), 0.14);
     }
     .pulse-dot {
       width: 7px; height: 7px; border-radius: 50%; background: var(--green);
@@ -97,39 +141,53 @@
     @keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
 
     .mini-btn {
-      background: rgba(4, 18, 24, 0.62); backdrop-filter: blur(10px);
-      border: 1px solid var(--holo-line); color: var(--holo-bright);
-      border-radius: 6px; padding: 6px 11px; font-size: 11px;
-      font-family: Consolas, ui-monospace, monospace; letter-spacing: 0.1em;
-      cursor: pointer; transition: all .2s ease;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: linear-gradient(145deg, rgba(var(--holo-rgb), 0.12), rgba(4, 18, 24, 0.72));
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(var(--holo-rgb), 0.36); color: var(--holo-bright);
+      border-radius: 6px; padding: 6px 12px; font-size: 10.5px;
+      font-family: Consolas, ui-monospace, monospace; letter-spacing: 0.12em;
+      cursor: pointer;
+      box-shadow: 0 0 14px rgba(var(--holo-rgb), 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     }
     .mini-btn:hover {
-      border-color: var(--holo); box-shadow: 0 0 14px rgba(30, 245, 216, 0.28);
-      background: rgba(12, 42, 52, 0.72);
+      border-color: var(--holo);
+      box-shadow: 0 0 22px rgba(var(--holo-rgb), 0.38), inset 0 0 12px rgba(var(--holo-rgb), 0.16);
+      color: #ffffff;
     }
-    .mini-btn.danger { border-color: rgba(255, 93, 122, 0.42); color: #ffb3c1; }
-    .mini-btn.danger:hover { border-color: var(--red); background: rgba(70, 14, 28, 0.72); box-shadow: 0 0 16px rgba(255, 93, 122, 0.32); }
+    .mini-btn.danger {
+      background: linear-gradient(145deg, rgba(255, 93, 122, 0.16), rgba(32, 8, 16, 0.72));
+      border-color: rgba(255, 93, 122, 0.45); color: #ffc2ce;
+      box-shadow: 0 0 14px rgba(255, 93, 122, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .mini-btn.danger:hover {
+      border-color: var(--red); color: #ffffff;
+      box-shadow: 0 0 24px rgba(255, 93, 122, 0.45), inset 0 0 14px rgba(255, 93, 122, 0.22);
+    }
+    .mini-btn.danger::before {
+      background: radial-gradient(110px circle at var(--mx, 50%) var(--my, 50%), rgba(255, 130, 155, 0.32), transparent 75%);
+    }
 
-    /* Left Translucent Diagnostic Feed (mirroring Stark-style stacked left HUD lines) */
+    /* Left Translucent Diagnostic Feed */
     .left-stream {
-      position: fixed; left: 28px; top: 96px; bottom: 215px; width: 258px;
-      display: flex; flex-direction: column; gap: 5px;
+      position: fixed; left: 28px; top: 96px; width: 258px;
+      display: flex; flex-direction: column; gap: 6px;
       overflow: hidden; pointer-events: auto;
       font-family: Consolas, ui-monospace, monospace;
     }
     .stream-section-title {
       font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
-      color: var(--holo-dim); margin: 8px 0 3px;
+      color: var(--holo-dim); margin: 10px 0 3px;
       display: flex; align-items: center; gap: 8px;
     }
     .stream-section-title::after {
       content: ""; flex: 1; height: 1px;
-      background: linear-gradient(90deg, rgba(30, 245, 216, 0.28), transparent);
+      background: linear-gradient(90deg, rgba(var(--holo-rgb), 0.30), transparent);
     }
     .diag-line {
       display: flex; align-items: center; gap: 8px;
-      font-size: 11px; line-height: 1.35; color: rgba(196, 255, 246, 0.78);
-      text-shadow: 0 0 8px rgba(30, 245, 216, 0.18);
+      font-size: 11px; line-height: 1.38; color: rgba(var(--holo-bright-rgb), 0.82);
+      text-shadow: 0 0 8px rgba(var(--holo-rgb), 0.20);
       transition: color .2s ease, transform .2s ease;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
@@ -143,7 +201,7 @@
     .diag-k { color: var(--muted); flex-shrink: 0; }
     .diag-v { color: var(--holo-bright); font-weight: 600; margin-left: auto; }
     .diag-bar-wrap {
-      width: 52px; height: 3px; background: rgba(30, 245, 216, 0.12);
+      width: 56px; height: 3px; background: rgba(var(--holo-rgb), 0.14);
       border-radius: 2px; overflow: hidden; margin-left: auto; flex-shrink: 0;
     }
     .diag-bar-fill {
@@ -151,84 +209,104 @@
       box-shadow: 0 0 8px var(--holo); transition: width .5s ease;
     }
 
-    /* Bottom-Left Cyan Framed Holographic Action Dock */
+    /* Bottom-Left Theme-Synced Holographic Action Dock */
     .left-dock {
-      position: fixed; left: 26px; bottom: 24px; width: 174px;
-      padding: 8px; pointer-events: auto;
-      background: rgba(3, 18, 24, 0.56); backdrop-filter: blur(12px);
-      border: 1px solid rgba(30, 245, 216, 0.42);
-      box-shadow: 0 0 26px rgba(30, 245, 216, 0.14), inset 0 0 18px rgba(30, 245, 216, 0.06);
-      border-radius: 4px;
-      display: flex; flex-direction: column; gap: 5px;
+      position: fixed; left: 26px; bottom: 24px; width: 188px;
+      padding: 9px; pointer-events: auto;
+      background: linear-gradient(160deg, rgba(var(--holo-rgb), 0.08), rgba(3, 15, 20, 0.72));
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(var(--holo-rgb), 0.44);
+      box-shadow: 0 0 30px rgba(var(--holo-rgb), 0.16), inset 0 0 20px rgba(var(--holo-rgb), 0.06);
+      border-radius: 6px;
+      display: flex; flex-direction: column; gap: 6px;
     }
     .left-dock::before {
-      content: ""; position: absolute; top: -1px; left: 10px; right: 10px; height: 1px;
+      content: ""; position: absolute; top: -1px; left: 12px; right: 12px; height: 1px;
       background: linear-gradient(90deg, transparent, var(--holo-bright), transparent);
     }
     .dock-btn {
       width: 100%; text-align: left;
-      background: rgba(10, 42, 50, 0.36);
-      border: 1px solid rgba(30, 245, 216, 0.24);
+      background: linear-gradient(135deg, rgba(var(--holo-rgb), 0.10), rgba(5, 22, 28, 0.62));
+      border: 1px solid rgba(var(--holo-rgb), 0.26);
       color: var(--holo-bright);
-      padding: 6px 10px; border-radius: 3px;
+      padding: 7px 10px; border-radius: 4px;
       font-family: Consolas, ui-monospace, monospace;
-      font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
-      cursor: pointer; transition: all .18s ease;
+      font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase;
+      cursor: pointer;
       display: flex; align-items: center; justify-content: space-between;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
     .dock-btn:hover {
-      background: rgba(30, 245, 216, 0.18); border-color: var(--holo);
-      box-shadow: 0 0 14px rgba(30, 245, 216, 0.25); transform: translateX(2px);
+      background: linear-gradient(135deg, rgba(var(--holo-rgb), 0.24), rgba(8, 34, 42, 0.78));
+      border-color: var(--holo);
+      box-shadow: 0 0 18px rgba(var(--holo-rgb), 0.32), inset 2px 0 0 var(--holo);
+      color: #ffffff;
     }
     .dock-btn.active {
-      background: rgba(30, 245, 216, 0.24); border-color: var(--holo-bright);
-      color: #fff; box-shadow: 0 0 16px rgba(30, 245, 216, 0.38);
+      background: linear-gradient(135deg, rgba(var(--holo-rgb), 0.28), rgba(10, 42, 50, 0.8));
+      border-color: var(--holo-bright);
+      color: #ffffff;
+      box-shadow: 0 0 20px rgba(var(--holo-rgb), 0.40), inset 3px 0 0 var(--holo-bright);
     }
     .dock-btn.listening {
-      background: rgba(255, 72, 110, 0.26); border-color: var(--red);
-      color: #fff; animation: dockPulse 1.2s infinite;
+      background: linear-gradient(135deg, rgba(255, 72, 110, 0.34), rgba(45, 10, 20, 0.8));
+      border-color: var(--red);
+      color: #ffffff; animation: dockPulse 1.2s infinite;
     }
-    .dock-btn.danger { border-color: rgba(255, 93, 122, 0.35); color: #ffb3c1; }
-    .dock-btn.danger:hover { background: rgba(255, 72, 110, 0.22); border-color: var(--red); }
-    @keyframes dockPulse { 0%, 100% { box-shadow: 0 0 12px rgba(255, 93, 122, 0.45); } 50% { box-shadow: 0 0 24px rgba(255, 93, 122, 0.85); } }
+    .dock-btn.danger {
+      background: linear-gradient(135deg, rgba(255, 93, 122, 0.12), rgba(28, 8, 14, 0.62));
+      border-color: rgba(255, 93, 122, 0.38); color: #ffc2ce;
+    }
+    .dock-btn.danger:hover {
+      background: linear-gradient(135deg, rgba(255, 93, 122, 0.28), rgba(50, 12, 22, 0.8));
+      border-color: var(--red); color: #ffffff;
+      box-shadow: 0 0 20px rgba(255, 93, 122, 0.40), inset 2px 0 0 var(--red);
+    }
+    .dock-btn.danger::before {
+      background: radial-gradient(110px circle at var(--mx, 50%) var(--my, 50%), rgba(255, 130, 155, 0.32), transparent 75%);
+    }
+    .dock-left { display: inline-flex; align-items: center; gap: 7px; }
+    .dock-badge { font-size: 9.5px; opacity: 0.85; padding: 1px 5px; border-radius: 3px; background: rgba(var(--holo-rgb), 0.14); }
+    .btn-svg { width: 13px; height: 13px; flex-shrink: 0; filter: drop-shadow(0 0 5px rgba(var(--holo-rgb), 0.55)); }
+    @keyframes dockPulse { 0%, 100% { box-shadow: 0 0 12px rgba(255, 93, 122, 0.45); } 50% { box-shadow: 0 0 26px rgba(255, 93, 122, 0.90); } }
 
-    /* Right Edge Subtle Telemetry & Palette Pills */
+    /* Right Edge Compact Metrics & Theme Swatches */
     .right-rail {
-      position: fixed; right: 28px; top: 96px; width: 235px;
+      position: fixed; right: 28px; top: 96px; width: 240px;
       text-align: right; pointer-events: auto;
       font-family: Consolas, ui-monospace, monospace;
       display: flex; flex-direction: column; gap: 6px;
     }
     .right-item {
       font-size: 10.5px; color: var(--muted);
-      letter-spacing: 0.08em; line-height: 1.4;
-      text-shadow: 0 0 8px rgba(30, 245, 216, 0.16);
+      letter-spacing: 0.08em; line-height: 1.45;
+      text-shadow: 0 0 8px rgba(var(--holo-rgb), 0.18);
     }
     .right-item b { color: var(--holo-bright); font-weight: 600; }
     .palette-row {
-      display: flex; justify-content: flex-end; gap: 7px; margin-top: 6px;
+      display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;
     }
     .swatch {
-      width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
-      border: 1px solid rgba(255, 255, 255, 0.35);
-      transition: transform .18s ease, box-shadow .18s ease;
+      width: 17px; height: 17px; border-radius: 50%; cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.38);
+      transition: transform .2s cubic-bezier(0.22, 1, 0.36, 1), box-shadow .2s ease;
     }
-    .swatch:hover, .swatch.active { transform: scale(1.22); box-shadow: 0 0 12px currentColor; border-color: #fff; }
+    .swatch:hover, .swatch.active { transform: scale(1.26); box-shadow: 0 0 14px currentColor; border-color: #ffffff; }
 
     /* Orb Interactive Guide Hint */
     .orb-hint {
       position: fixed; left: 50%; top: 13%; transform: translateX(-50%);
       font-family: Consolas, ui-monospace, monospace; font-size: 10px;
       letter-spacing: 0.22em; text-transform: uppercase;
-      color: rgba(167, 255, 242, 0.46); pointer-events: none;
-      text-shadow: 0 0 10px rgba(30, 245, 216, 0.25);
+      color: rgba(var(--holo-bright-rgb), 0.46); pointer-events: none;
+      text-shadow: 0 0 10px rgba(var(--holo-rgb), 0.25);
       transition: opacity .6s ease;
     }
 
-    /* Bottom-Center Floating Subtitles + Translucent Command Bar */
+    /* Bottom-Center Floating Subtitles + Luxurious Reactive Command Bar */
     .center-bottom {
       position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
-      width: min(680px, calc(100vw - 420px)); min-width: 320px;
+      width: min(690px, calc(100vw - 440px)); min-width: 340px;
       display: flex; flex-direction: column; align-items: stretch; gap: 10px;
       pointer-events: auto;
     }
@@ -242,68 +320,104 @@
     .subtitles-stream::-webkit-scrollbar { display: none; }
     .sub-line {
       text-align: center; font-size: 12.5px; line-height: 1.42;
-      color: rgba(226, 255, 250, 0.92);
-      text-shadow: 0 0 12px rgba(30, 245, 216, 0.35), 0 1px 4px rgba(0, 0, 0, 0.9);
+      color: rgba(235, 255, 252, 0.94);
+      text-shadow: 0 0 12px rgba(var(--holo-rgb), 0.35), 0 1px 4px rgba(0, 0, 0, 0.92);
       user-select: text; animation: fadeRise .28s ease;
     }
-    .sub-line.user { color: rgba(130, 232, 255, 0.85); font-size: 11.5px; }
+    .sub-line.user { color: var(--holo-bright); font-size: 11.5px; }
     .sub-line .sub-tag {
       font-family: Consolas, ui-monospace, monospace; font-size: 10px;
       letter-spacing: 0.14em; text-transform: uppercase;
-      color: var(--holo); margin-right: 6px; opacity: 0.85;
+      color: var(--holo); margin-right: 6px; opacity: 0.88;
     }
     @keyframes fadeRise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
     .composer-glass {
-      display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 14px;
-      background: rgba(3, 17, 22, 0.68); backdrop-filter: blur(14px);
-      border: 1px solid rgba(30, 245, 216, 0.32); border-radius: 999px;
-      box-shadow: 0 0 28px rgba(30, 245, 216, 0.12), inset 0 0 14px rgba(30, 245, 216, 0.05);
-      transition: border-color .2s ease, box-shadow .2s ease;
+      display: flex; align-items: center; gap: 9px; padding: 6px 8px 6px 16px;
+      background: linear-gradient(145deg, rgba(var(--holo-rgb), 0.08), rgba(3, 15, 20, 0.78));
+      backdrop-filter: blur(18px);
+      border: 1px solid rgba(var(--holo-rgb), 0.38); border-radius: 999px;
+      box-shadow: 0 0 32px rgba(var(--holo-rgb), 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 18px rgba(var(--holo-rgb), 0.06);
+      transition: border-color .22s ease, box-shadow .22s ease;
     }
     .composer-glass:focus-within {
       border-color: var(--holo);
-      box-shadow: 0 0 32px rgba(30, 245, 216, 0.24), inset 0 0 16px rgba(30, 245, 216, 0.08);
+      box-shadow: 0 0 38px rgba(var(--holo-rgb), 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 20px rgba(var(--holo-rgb), 0.12);
     }
     .composer-glass input {
       flex: 1; background: transparent; border: none; outline: none;
       color: #ffffff; font-size: 13.5px; user-select: text;
     }
-    .composer-glass input::placeholder { color: rgba(167, 255, 242, 0.45); }
-    .orb-icon-btn {
-      width: 34px; height: 34px; border-radius: 50%;
-      border: 1px solid rgba(30, 245, 216, 0.28);
-      background: rgba(10, 38, 46, 0.65); color: var(--holo-bright);
-      cursor: pointer; display: grid; place-items: center; font-size: 14px;
-      transition: all .18s ease;
-    }
-    .orb-icon-btn:hover { border-color: var(--holo); box-shadow: 0 0 12px rgba(30, 245, 216, 0.35); transform: scale(1.06); }
-    .orb-icon-btn.listening { background: #9b1c31; border-color: var(--red); color: #fff; animation: dockPulse 1.2s infinite; }
-    .orb-icon-btn.muted { opacity: 0.45; }
-    .send-pill {
-      padding: 7px 16px; border-radius: 999px;
-      background: linear-gradient(135deg, rgba(30, 245, 216, 0.26), rgba(59, 212, 255, 0.24));
-      border: 1px solid rgba(30, 245, 216, 0.55);
-      color: #fff; font-weight: 600; font-size: 12px; letter-spacing: 0.08em;
-      text-transform: uppercase; cursor: pointer; transition: all .18s ease;
-    }
-    .send-pill:hover { background: rgba(30, 245, 216, 0.36); box-shadow: 0 0 16px rgba(30, 245, 216, 0.45); }
-    .send-pill:disabled { opacity: 0.45; cursor: not-allowed; }
+    .composer-glass input::placeholder { color: rgba(var(--holo-bright-rgb), 0.46); }
 
-    /* Expandable Glass Popover Drawer (docked cleanly top-right so center orb & composer never collide) */
+    .orb-icon-btn {
+      width: 38px; height: 38px; border-radius: 50%;
+      border: 1px solid rgba(var(--holo-rgb), 0.38);
+      background: linear-gradient(145deg, rgba(var(--holo-rgb), 0.18), rgba(6, 28, 36, 0.82));
+      color: var(--holo-bright);
+      cursor: pointer; display: grid; place-items: center;
+      box-shadow: 0 0 14px rgba(var(--holo-rgb), 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    }
+    .orb-icon-btn svg {
+      width: 17px; height: 17px;
+      filter: drop-shadow(0 0 6px rgba(var(--holo-rgb), 0.65));
+      transition: transform .22s ease, filter .22s ease;
+    }
+    .orb-icon-btn:hover {
+      border-color: var(--holo-bright);
+      background: linear-gradient(145deg, rgba(var(--holo-rgb), 0.32), rgba(8, 38, 48, 0.90));
+      box-shadow: 0 0 22px rgba(var(--holo-rgb), 0.48), inset 0 0 12px rgba(var(--holo-rgb), 0.22);
+      color: #ffffff;
+    }
+    .orb-icon-btn:hover svg { transform: scale(1.1); filter: drop-shadow(0 0 9px var(--holo)); }
+    .orb-icon-btn.listening {
+      background: linear-gradient(145deg, rgba(255, 72, 110, 0.45), rgba(110, 14, 34, 0.9));
+      border-color: var(--red); color: #ffffff;
+      animation: dockPulse 1.15s infinite;
+    }
+    .orb-icon-btn.listening::after { opacity: 0; }
+    .mic-pulse-ring {
+      position: absolute; inset: -4px; border-radius: 50%;
+      border: 1.5px solid var(--red); opacity: 0; pointer-events: none;
+    }
+    .orb-icon-btn.listening .mic-pulse-ring { animation: micWaveRing 1.3s ease-out infinite; }
+    @keyframes micWaveRing { 0% { transform: scale(0.92); opacity: 0.9; } 100% { transform: scale(1.48); opacity: 0; } }
+    .orb-icon-btn.muted { opacity: 0.56; border-color: rgba(var(--holo-rgb), 0.20); }
+    .orb-icon-btn #spkWaves { transition: opacity .2s ease; }
+    .orb-icon-btn.muted #spkWaves { opacity: 0.15; }
+    .orb-icon-btn #spkMuteBar { opacity: 0; transition: opacity .2s ease; }
+    .orb-icon-btn.muted #spkMuteBar { opacity: 1; }
+
+    .send-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 9px 18px; border-radius: 999px;
+      background: linear-gradient(135deg, rgba(var(--holo-rgb), 0.30), rgba(var(--holo-bright-rgb), 0.14));
+      border: 1px solid rgba(var(--holo-rgb), 0.62);
+      color: #ffffff; font-weight: 600; font-size: 11.5px; letter-spacing: 0.12em;
+      text-transform: uppercase; cursor: pointer;
+      box-shadow: 0 0 20px rgba(var(--holo-rgb), 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    }
+    .send-pill:hover {
+      background: linear-gradient(135deg, rgba(var(--holo-rgb), 0.48), rgba(var(--holo-bright-rgb), 0.24));
+      border-color: var(--holo-bright);
+      box-shadow: 0 0 28px rgba(var(--holo-rgb), 0.56), inset 0 0 14px rgba(255, 255, 255, 0.18);
+    }
+    .send-pill:disabled { opacity: 0.42; cursor: not-allowed; transform: none; }
+
+    /* Expandable Glass Popover Drawer (docked cleanly top-right) */
     .glass-drawer {
       position: fixed; right: 26px; top: 72px;
       width: min(410px, calc(100vw - 52px)); max-height: calc(100vh - 112px);
       background: var(--glass-strong); backdrop-filter: blur(20px);
-      border: 1px solid rgba(30, 245, 216, 0.44);
+      border: 1px solid rgba(var(--holo-rgb), 0.44);
       border-radius: 8px; padding: 14px 16px;
-      box-shadow: 0 0 44px rgba(0, 0, 0, 0.82), 0 0 28px rgba(30, 245, 216, 0.18);
+      box-shadow: 0 0 44px rgba(0, 0, 0, 0.82), 0 0 28px rgba(var(--holo-rgb), 0.18);
       z-index: 20; pointer-events: auto; display: none; flex-direction: column; gap: 10px;
     }
     .glass-drawer.open { display: flex; animation: fadeRise .2s ease; }
     .drawer-head {
       display: flex; align-items: center; justify-content: space-between;
-      border-bottom: 1px solid rgba(30, 245, 216, 0.2); padding-bottom: 8px;
+      border-bottom: 1px solid rgba(var(--holo-rgb), 0.22); padding-bottom: 8px;
     }
     .drawer-title {
       font-family: Consolas, ui-monospace, monospace; font-size: 12px;
@@ -311,26 +425,34 @@
     }
     .drawer-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
     .tab-pill {
-      padding: 4px 10px; border-radius: 4px; font-size: 10.5px;
+      padding: 5px 10px; border-radius: 4px; font-size: 10.5px;
       font-family: Consolas, ui-monospace, monospace; text-transform: uppercase;
-      background: rgba(30, 245, 216, 0.08); border: 1px solid rgba(30, 245, 216, 0.22);
+      background: rgba(var(--holo-rgb), 0.08); border: 1px solid rgba(var(--holo-rgb), 0.24);
       color: var(--muted); cursor: pointer;
     }
-    .tab-pill.active { background: rgba(30, 245, 216, 0.24); border-color: var(--holo); color: #fff; }
+    .tab-pill:hover { border-color: var(--holo); color: #ffffff; }
+    .tab-pill.active {
+      background: rgba(var(--holo-rgb), 0.28); border-color: var(--holo-bright);
+      color: #ffffff; box-shadow: 0 0 14px rgba(var(--holo-rgb), 0.30);
+    }
     .drawer-body { overflow-y: auto; max-height: 48vh; font-size: 12px; user-select: text; }
     .drawer-row {
-      padding: 7px 6px; border-bottom: 1px dashed rgba(30, 245, 216, 0.16);
+      padding: 7px 6px; border-bottom: 1px dashed rgba(var(--holo-rgb), 0.16);
       display: flex; align-items: center; justify-content: space-between; gap: 10px;
     }
     .drawer-row:last-child { border-bottom: none; }
     .provider-switch {
-      background: rgba(15, 58, 70, 0.65); color: var(--holo-bright);
-      border: 1px solid rgba(30, 245, 216, 0.45); border-radius: 4px;
-      padding: 3px 10px; font-size: 10.5px; cursor: pointer;
-      font-family: Consolas, ui-monospace, monospace;
+      background: linear-gradient(135deg, rgba(var(--holo-rgb), 0.18), rgba(10, 38, 48, 0.72));
+      color: var(--holo-bright);
+      border: 1px solid rgba(var(--holo-rgb), 0.48); border-radius: 4px;
+      padding: 4px 11px; font-size: 10.5px; cursor: pointer;
+      font-family: Consolas, ui-monospace, monospace; letter-spacing: 0.08em;
     }
-    .provider-switch:hover { background: rgba(30, 245, 216, 0.28); }
-    .provider-switch.active { background: rgba(62, 242, 168, 0.16); color: var(--green); border-color: rgba(62, 242, 168, 0.45); cursor: default; }
+    .provider-switch:hover {
+      background: rgba(var(--holo-rgb), 0.32); border-color: var(--holo-bright); color: #fff;
+      box-shadow: 0 0 16px rgba(var(--holo-rgb), 0.38);
+    }
+    .provider-switch.active { background: rgba(62, 242, 168, 0.16); color: var(--green); border-color: rgba(62, 242, 168, 0.45); cursor: default; transform: none; }
 
     /* Confirmation Modal */
     .confirm-modal {
@@ -346,7 +468,7 @@
     /* Responsive adjustments on smaller windows */
     @media (max-width: 980px) {
       .left-stream, .right-rail { display: none; }
-      .center-bottom { width: calc(100vw - 220px); left: auto; right: 16px; transform: none; }
+      .center-bottom { width: calc(100vw - 230px); left: auto; right: 16px; transform: none; }
     }
     @media (max-width: 680px) {
       .left-dock { display: none; }
@@ -368,14 +490,20 @@
 
       <div class="top-right">
         <div class="status-chip"><span class="pulse-dot" id="stateDot"></span><span id="stateLabel">CONNECTING</span></div>
-        <button class="mini-btn" id="drawerToggleBtn" title="Open Systems & Memory Inspector">INSPECTOR</button>
-        <button class="mini-btn danger" id="cancelBtn" title="Abort currently running task">ABORT</button>
+        <button class="mini-btn holo-btn" id="drawerToggleBtn" title="Open Systems & Memory Inspector">
+          <svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span>INSPECTOR</span>
+        </button>
+        <button class="mini-btn danger holo-btn" id="cancelBtn" title="Abort currently running task">
+          <svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span>ABORT</span>
+        </button>
       </div>
     </div>
 
     <div class="orb-hint" id="orbHint">Drag orb to rotate · Scroll to zoom · Touch to pulse · Double-click to speak</div>
 
-    <!-- Left Floating Diagnostic Telemetry & Tool Activity -->
+    <!-- Left Floating Diagnostic Telemetry -->
     <aside class="left-stream">
       <div class="stream-section-title">CORE TELEMETRY</div>
       <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">CPU LOAD</span><span class="diag-bar-wrap"><span class="diag-bar-fill" id="cpuBar" style="width:0%"></span></span><span class="diag-v" id="cpu">--</span></div>
@@ -388,29 +516,41 @@
       <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">HONESTY</span><span class="diag-v" id="honesty">--</span></div>
       <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">HUMOR</span><span class="diag-v" id="humor">--</span></div>
       <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">SARCASM</span><span class="diag-v" id="sarcasm">--</span></div>
-
-      <div class="stream-section-title">LIVE TOOL STREAM</div>
-      <div id="leftToolsFeed" style="display:flex;flex-direction:column;gap:4px;"></div>
     </aside>
 
-    <!-- Bottom-Left Translucent Framed Interactive Menu -->
+    <!-- Bottom-Left Theme-Matched Holographic Action Dock -->
     <nav class="left-dock">
-      <button class="dock-btn" id="dockMicBtn"><span>🎙 Voice Link</span><span id="dockMicState">OFF</span></button>
-      <button class="dock-btn active" id="dockSpkBtn"><span>🔊 Audio Out</span><span id="dockSpkState">ON</span></button>
-      <button class="dock-btn" id="dockProvBtn"><span>⚡ AI Models</span><span>▸</span></button>
-      <button class="dock-btn" id="dockMemBtn"><span>🧬 Memory</span><span>▸</span></button>
-      <button class="dock-btn" id="dockResetBtn"><span>✦ Reset Orb</span><span>↻</span></button>
-      <button class="dock-btn danger" id="dockCancelBtn"><span>■ Abort Task</span><span>!</span></button>
+      <button class="dock-btn holo-btn" id="dockMicBtn">
+        <span class="dock-left"><svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg><span>Voice Link</span></span>
+        <span class="dock-badge" id="dockMicState">OFF</span>
+      </button>
+      <button class="dock-btn holo-btn active" id="dockSpkBtn">
+        <span class="dock-left"><svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg><span>Audio Out</span></span>
+        <span class="dock-badge" id="dockSpkState">ON</span>
+      </button>
+      <button class="dock-btn holo-btn" id="dockProvBtn">
+        <span class="dock-left"><svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>AI Models</span></span>
+        <span class="dock-badge">▸</span>
+      </button>
+      <button class="dock-btn holo-btn" id="dockMemBtn">
+        <span class="dock-left"><svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg><span>Memory</span></span>
+        <span class="dock-badge">▸</span>
+      </button>
+      <button class="dock-btn holo-btn" id="dockResetBtn">
+        <span class="dock-left"><svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg><span>Reset Orb</span></span>
+        <span class="dock-badge">↻</span>
+      </button>
+      <button class="dock-btn danger holo-btn" id="dockCancelBtn">
+        <span class="dock-left"><svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6"/></svg><span>Abort Task</span></span>
+        <span class="dock-badge">!</span>
+      </button>
     </nav>
 
-    <!-- Right Margin Compact Neural & Reminder Metrics -->
+    <!-- Right Margin Neural State & Theme Selector -->
     <aside class="right-rail">
       <div class="right-item">ENGINE · <b id="llmName">--</b></div>
       <div class="right-item">STATE · <b id="llmState">--</b></div>
-      <div class="right-item" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="Current Working Directory">CWD · <b id="cwd">--</b></div>
       <div class="right-item">AUDIO REACTIVITY · <b id="audioMeter">IDLE</b></div>
-      <div class="right-item" style="margin-top:8px;">UPCOMING REMINDERS</div>
-      <div id="rightReminders" class="right-item" style="color:rgba(205,255,248,0.75);">None</div>
       <div class="palette-row" title="Switch Hologram Energy Theme">
         <span class="swatch active" data-theme="aqua" style="background:#1ef5d8;color:#1ef5d8;" title="Stark Aqua"></span>
         <span class="swatch" data-theme="cobalt" style="background:#3bb4ff;color:#3bb4ff;" title="Cobalt Matrix"></span>
@@ -419,14 +559,31 @@
       </div>
     </aside>
 
-    <!-- Center-Bottom Floating Subtitles & Command Composer -->
+    <!-- Center-Bottom Floating Subtitles & Reactive Command Composer -->
     <section class="center-bottom">
       <div id="chat" class="subtitles-stream"></div>
       <div class="composer-glass">
         <input id="prompt" placeholder="Speak to TARS or type a command…" autocomplete="off" />
-        <button class="orb-icon-btn" id="spk" title="Toggle spoken replies">🔊</button>
-        <button class="orb-icon-btn" id="mic" title="Toggle hands-free microphone">🎙</button>
-        <button class="send-pill" id="send">Send</button>
+        <button class="orb-icon-btn holo-btn" id="spk" title="Toggle spoken replies" aria-label="Toggle spoken replies">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <g id="spkWaves"><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></g>
+            <line id="spkMuteBar" x1="22" y1="3" x2="2" y2="21"/>
+          </svg>
+        </button>
+        <button class="orb-icon-btn holo-btn" id="mic" title="Toggle hands-free dictation" aria-label="Toggle hands-free dictation">
+          <span class="mic-pulse-ring"></span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="2" width="6" height="12" rx="3"/>
+            <path d="M5 10v2a7 7 0 0 0 14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+            <line x1="8" y1="22" x2="16" y2="22"/>
+          </svg>
+        </button>
+        <button class="send-pill holo-btn" id="send" title="Send command">
+          <span>SEND</span>
+          <svg class="btn-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
       </div>
     </section>
 
@@ -434,15 +591,15 @@
     <section class="glass-drawer" id="inspectorDrawer">
       <div class="drawer-head">
         <div class="drawer-title">Systems &amp; Neural Inspector</div>
-        <button class="mini-btn" id="drawerCloseBtn">✕</button>
+        <button class="mini-btn holo-btn" id="drawerCloseBtn"><span>✕</span></button>
       </div>
       <div class="drawer-tabs">
-        <button class="tab-pill active" data-tab="providers">Providers</button>
-        <button class="tab-pill" data-tab="history">History</button>
-        <button class="tab-pill" data-tab="prefs">Memory</button>
-        <button class="tab-pill" data-tab="reminders">Reminders</button>
-        <button class="tab-pill" data-tab="tools">Tool Log</button>
-        <button class="tab-pill" data-tab="screen">Screen</button>
+        <button class="tab-pill holo-btn active" data-tab="providers"><span>Providers</span></button>
+        <button class="tab-pill holo-btn" data-tab="history"><span>History</span></button>
+        <button class="tab-pill holo-btn" data-tab="prefs"><span>Memory</span></button>
+        <button class="tab-pill holo-btn" data-tab="reminders"><span>Reminders</span></button>
+        <button class="tab-pill holo-btn" data-tab="tools"><span>Tool Log</span></button>
+        <button class="tab-pill holo-btn" data-tab="screen"><span>Screen</span></button>
       </div>
       <div class="drawer-body">
         <div id="tab-providers"><div style="color:var(--muted)">Scanning neural backends…</div></div>
@@ -453,7 +610,7 @@
         <div id="tab-screen" style="display:none">
           <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
             <span style="color:var(--muted)">Live Desktop Snapshot</span>
-            <button class="provider-switch" id="refreshShotBtn">Capture Now</button>
+            <button class="provider-switch holo-btn" id="refreshShotBtn"><span>Capture Now</span></button>
           </div>
           <img id="shotImg" alt="Desktop capture" style="width:100%;border-radius:6px;border:1px solid var(--holo-line);display:none;" />
         </div>
@@ -467,8 +624,8 @@
       </div>
       <div id="confirmDesc" style="font-size:13px;line-height:1.45;color:#fff;margin-bottom:14px;"></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;">
-        <button class="mini-btn danger" id="confirmDenyBtn">Deny</button>
-        <button class="mini-btn" id="confirmApproveBtn" style="border-color:var(--green);color:var(--green);">Approve</button>
+        <button class="mini-btn danger holo-btn" id="confirmDenyBtn"><span>Deny</span></button>
+        <button class="mini-btn holo-btn" id="confirmApproveBtn" style="border-color:var(--green);color:var(--green);"><span>Approve</span></button>
       </div>
     </div>
   </div>
@@ -482,10 +639,10 @@ function esc(s) {
 
 /* ==================== 3D INTERACTIVE HOLOGRAPHIC ORB ENGINE ==================== */
 const THEMES = {
-  aqua:   { primary: "#1ef5d8", bright: "#a7fff2", sky: "#3bd4ff", bgCore: "#04191e", p1: 0x1ef5d8, p2: 0x3bd4ff, p3: 0xd8fff9 },
-  cobalt: { primary: "#3bb4ff", bright: "#bfe6ff", sky: "#6b7cff", bgCore: "#051428", p1: 0x3bb4ff, p2: 0x708dff, p3: 0xe6f4ff },
-  gold:   { primary: "#ffcc4d", bright: "#fff1be", sky: "#ff8c42", bgCore: "#1c1304", p1: 0xffcc4d, p2: 0xff8c42, p3: 0xfff8dc },
-  violet: { primary: "#b97cff", bright: "#edd9ff", sky: "#57d4ff", bgCore: "#130824", p1: 0xb97cff, p2: 0x57d4ff, p3: 0xf7ebff }
+  aqua:   { primary: "#1ef5d8", rgb: "30, 245, 216", bright: "#a7fff2", brightRgb: "167, 255, 242", sky: "#3bd4ff", bgCore: "#04191e", p1: 0x1ef5d8, p2: 0x3bd4ff, p3: 0xd8fff9 },
+  cobalt: { primary: "#3bb4ff", rgb: "59, 180, 255", bright: "#bfe6ff", brightRgb: "191, 230, 255", sky: "#6b7cff", bgCore: "#051428", p1: 0x3bb4ff, p2: 0x708dff, p3: 0xe6f4ff },
+  gold:   { primary: "#ffcc4d", rgb: "255, 204, 77", bright: "#fff1be", brightRgb: "255, 241, 190", sky: "#ff8c42", bgCore: "#1c1304", p1: 0xffcc4d, p2: 0xff8c42, p3: 0xfff8dc },
+  violet: { primary: "#b97cff", rgb: "185, 124, 255", bright: "#edd9ff", brightRgb: "237, 217, 255", sky: "#57d4ff", bgCore: "#130824", p1: 0xb97cff, p2: 0x57d4ff, p3: 0xf7ebff }
 };
 
 let orbState = "idle"; // "idle" | "listening" | "thinking" | "speaking" | "error"
@@ -1048,7 +1205,9 @@ const HoloEngine = (() => {
       activeTheme = th;
       const r = document.documentElement.style;
       r.setProperty("--holo", th.primary);
+      r.setProperty("--holo-rgb", th.rgb);
       r.setProperty("--holo-bright", th.bright);
+      r.setProperty("--holo-bright-rgb", th.brightRgb);
       r.setProperty("--holo-sky", th.sky);
       r.setProperty("--bg-core", th.bgCore);
       innerLatticeMat.color.setHex(th.p3);
@@ -1160,7 +1319,7 @@ async function refreshStatus() {
     $("ramBar").style.width = (ramVal != null ? Math.min(100, ramVal) : 0) + "%";
     $("disk").textContent = t.disk_free_gb != null ? t.disk_free_gb + " GB" : "--";
     $("battery").textContent = t.battery || "--";
-    $("cwd").textContent = j.cwd || "--";
+    if ($("cwd")) $("cwd").textContent = j.cwd || "--";
     const llm = j.llm || {};
     $("llmName").textContent = llm.model || "n/a";
     $("llmState").textContent = llm.available ? "AVAILABLE" : "OFFLINE/LOCAL";
@@ -1192,7 +1351,7 @@ async function refreshProviders() {
       const dot = `<span class="diag-dot ${p.available ? "ok" : "fail"}" style="display:inline-block;margin-right:8px;"></span>`;
       const btn = isCur
         ? `<span class="provider-switch active">ACTIVE</span>`
-        : (p.available ? `<button class="provider-switch" data-provider="${esc(prov)}" data-model="${esc(p.model || "")}">SWITCH</button>` : `<span style="color:var(--muted);font-size:10px;">UNAVAILABLE</span>`);
+        : (p.available ? `<button class="provider-switch holo-btn" data-provider="${esc(prov)}" data-model="${esc(p.model || "")}"><span>SWITCH</span></button>` : `<span style="color:var(--muted);font-size:10px;">UNAVAILABLE</span>`);
       return `<div class="drawer-row"><div>${dot}<b>${esc(prov.toUpperCase())}</b><div style="color:var(--muted);font-size:10.5px;">${esc(p.model || "n/a")}</div></div>${btn}</div>`;
     }).join("");
   } catch (_) { $("tab-providers").textContent = "Unavailable"; }
@@ -1221,11 +1380,11 @@ async function refreshReminders() {
     const j = await (await fetch("/api/reminders")).json();
     const items = j.items || [];
     if (!items.length) {
-      $("rightReminders").textContent = "None queued";
+      if ($("rightReminders")) $("rightReminders").textContent = "None queued";
       $("tab-reminders").innerHTML = '<div style="color:var(--muted)">No upcoming reminders.</div>';
       return;
     }
-    $("rightReminders").innerHTML = items.slice(0, 3).map(r => `<div>• ${esc((r.message || "").slice(0, 28))}</div>`).join("");
+    if ($("rightReminders")) $("rightReminders").innerHTML = items.slice(0, 3).map(r => `<div>• ${esc((r.message || "").slice(0, 28))}</div>`).join("");
     $("tab-reminders").innerHTML = items.map(r => `<div class="drawer-row"><div><b style="color:var(--amber)">${esc(r.due_time || "")}</b><div>${esc(r.message || "")}</div></div></div>`).join("");
   } catch (_) { $("tab-reminders").textContent = "Unavailable"; }
 }
@@ -1257,16 +1416,18 @@ async function refreshToolLogs() {
     const j = await (await fetch("/api/tool-logs?limit=20")).json();
     const items = j.items || [];
     if (!items.length) {
-      $("leftToolsFeed").innerHTML = '<div class="diag-line"><span class="diag-dot"></span><span class="diag-k">Awaiting tool call</span></div>';
+      if ($("leftToolsFeed")) $("leftToolsFeed").innerHTML = '<div class="diag-line"><span class="diag-dot"></span><span class="diag-k">Awaiting tool call</span></div>';
       $("tab-tools").innerHTML = '<div style="color:var(--muted)">No tool calls logged.</div>';
       return;
     }
-    $("leftToolsFeed").innerHTML = items.slice(0, 9).map(it => {
-      if (it.raw) return `<div class="diag-line"><span class="diag-dot"></span><span>${esc(it.raw.slice(0, 28))}</span></div>`;
-      const ok = it.result && it.result.success === false ? "fail" : "ok";
-      const nm = String(it.tool_name || "?").replace(/_/g, " ").toUpperCase();
-      return `<div class="diag-line" title="${esc(it.datetime || "")}"><span class="diag-dot ${ok}"></span><span>${esc(nm)}</span></div>`;
-    }).join("");
+    if ($("leftToolsFeed")) {
+      $("leftToolsFeed").innerHTML = items.slice(0, 9).map(it => {
+        if (it.raw) return `<div class="diag-line"><span class="diag-dot"></span><span>${esc(it.raw.slice(0, 28))}</span></div>`;
+        const ok = it.result && it.result.success === false ? "fail" : "ok";
+        const nm = String(it.tool_name || "?").replace(/_/g, " ").toUpperCase();
+        return `<div class="diag-line" title="${esc(it.datetime || "")}"><span class="diag-dot ${ok}"></span><span>${esc(nm)}</span></div>`;
+      }).join("");
+    }
     $("tab-tools").innerHTML = items.map(it => {
       if (it.raw) return `<div class="drawer-row">${esc(it.raw)}</div>`;
       const ok = it.result && it.result.success === false ? "fail" : "ok";
@@ -1395,7 +1556,7 @@ function speak(text) {
 
 function paintMic() {
   $("mic").classList.toggle("listening", voiceOn);
-  $("mic").textContent = voiceOn ? "⏹" : "🎙";
+  $("mic").title = voiceOn ? "Stop live voice dictation" : "Toggle hands-free dictation";
   $("dockMicBtn").classList.toggle("listening", voiceOn);
   $("dockMicState").textContent = voiceOn ? "LIVE" : "OFF";
 }
@@ -1448,11 +1609,36 @@ function startVoice() {
 function toggleAudioOut() {
   voiceReplies = !voiceReplies;
   $("spk").classList.toggle("muted", !voiceReplies);
-  $("spk").textContent = voiceReplies ? "🔊" : "🔇";
+  $("spk").title = voiceReplies ? "Mute spoken replies" : "Enable spoken replies";
   $("dockSpkBtn").classList.toggle("active", voiceReplies);
   $("dockSpkState").textContent = voiceReplies ? "ON" : "MUTE";
   if (!voiceReplies && "speechSynthesis" in window) window.speechSynthesis.cancel();
 }
+
+/* ==================== REACTIVE BUTTON RIPPLE & SPOTLIGHT ==================== */
+document.addEventListener("pointermove", (e) => {
+  const btn = e.target.closest(".holo-btn");
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  btn.style.setProperty("--mx", (e.clientX - rect.left) + "px");
+  btn.style.setProperty("--my", (e.clientY - rect.top) + "px");
+});
+
+document.addEventListener("pointerdown", (e) => {
+  const btn = e.target.closest(".holo-btn");
+  if (!btn || btn.disabled) return;
+  const rect = btn.getBoundingClientRect();
+  const wave = document.createElement("span");
+  wave.className = "btn-wave";
+  const sz = Math.max(rect.width, rect.height);
+  wave.style.width = sz + "px";
+  wave.style.height = sz + "px";
+  wave.style.left = (e.clientX - rect.left) + "px";
+  wave.style.top = (e.clientY - rect.top) + "px";
+  btn.appendChild(wave);
+  setTimeout(() => wave.remove(), 580);
+  HoloEngine.pulse(false);
+});
 
 /* ==================== UI EVENT HOOKS ==================== */
 $("mic").addEventListener("click", startVoice);
