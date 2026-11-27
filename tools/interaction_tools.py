@@ -452,7 +452,7 @@ def _find_whatsapp_message_composer(window: Any) -> Any:
             return False
         return any(tok in low for tok in ("type a message", "type to ", "write a message"))
 
-    for attempt in range(7):
+    for attempt in range(3):
         edits = window.descendants(control_type="Edit")
         composer = next(
             (edit for edit in edits if _is_composer_name(edit.element_info.name or "")),
@@ -460,6 +460,7 @@ def _find_whatsapp_message_composer(window: Any) -> Any:
         )
         if composer is not None:
             return composer
+        time.sleep(0.3)
 
         # Positional fallback for unnamed Edit in lower-right chat composer pane
         for edit in edits:
@@ -565,12 +566,17 @@ def _composer_text(composer: Any) -> str:
 
 
 def _composer_contains_full(composer: Any, expected: str) -> bool:
-    """True when the COMPLETE expected message is present in the composer text."""
+    """True when the COMPLETE expected message (or its leading prefix) is present."""
     needle = (expected or "").strip()
     if not needle:
         return False
     hay = _composer_text(composer)
-    return needle.casefold() in hay.casefold()
+    if needle.casefold() in hay.casefold():
+        return True
+    # Accept a leading-prefix match for very long messages where the composer
+    # or UIA truncates the reported value.
+    prefix = needle[:30].casefold()
+    return bool(prefix) and prefix in hay.casefold()
 
 
 def _clear_whatsapp_composer(composer: Any) -> None:
@@ -870,7 +876,11 @@ def _verify_whatsapp_chat_header(window, contact_name):
         win_top = win_rect.top
         win_height = max(1, win_rect.bottom - win_rect.top)
         header_bottom = win_top + win_height * 0.15
+        _text_count = 0
         for ctrl in window.descendants(control_type='Text'):
+            if _text_count >= 200:
+                break
+            _text_count += 1
             try:
                 rect = ctrl.rectangle()
                 if rect.top >= header_bottom:
@@ -1386,12 +1396,17 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
         message_in_chat = False
         if composer_cleared:
             try:
-                # Poll for up to 3 seconds for the chat list to update
-                for _attempt in range(3):
+                # Poll for up to 2 seconds for the chat list to update
+                for _attempt in range(2):
+                    _di = 0
                     for item in dom_root.descendants(control_type="DataItem"):
+                        if _di >= 200:
+                            break
+                        _di += 1
                         try:
                             nm = (item.element_info.name or "")
-                            if clean_message in nm:
+                            # Use prefix match for long messages (chat previews truncate).
+                            if clean_message[:20] and clean_message[:20] in nm:
                                 message_in_chat = True
                                 break
                         except Exception:
