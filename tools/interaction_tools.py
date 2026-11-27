@@ -154,6 +154,9 @@ def smart_click(target: str) -> Dict[str, Any]:
         if clean_target in ["pause", "resume", "play pause"]:
             gui.press_keys(["space"])
             return {"success": True, "message": "Toggled Spotify playback.", "method": "hotkey:space"}
+
+    # 2. Search Bar / Address Bar / URL Bar
+    if any(kw in clean_target for kw in ["search", "address", "url", "input", "find"]):
         if cat == "browser":
             # Focus browser address/search bar (Ctrl+L)
             gui.press_keys(["ctrl", "l"])
@@ -285,10 +288,34 @@ def smart_click(target: str) -> Dict[str, Any]:
             imgs = []
             for child in active.descendants():
                 try:
-                    if (getattr(child.element_info, "control_type", "") or "").lower() in ("image", "picture"):
+                    ct = (getattr(child.element_info, "control_type", "") or "").lower()
+                    if ct in ("image", "picture"):
                         imgs.append(child)
                 except Exception:
                     continue
+            if not imgs:
+                # Fallback: largest non-text element in the lower 60% of the window.
+                try:
+                    win_rect = active.rectangle()
+                    win_h = win_rect.bottom - win_rect.top
+                    win_w = win_rect.right - win_rect.left
+                    min_top = win_rect.top + int(win_h * 0.3)
+                    for child in active.descendants():
+                        try:
+                            ct = (getattr(child.element_info, "control_type", "") or "").lower()
+                            if ct in ("text", "edit", "scrollbar", "titlebar", "menubar"):
+                                continue
+                            rect = child.rectangle()
+                            if rect.top < min_top:
+                                continue
+                            area = (rect.right - rect.left) * (rect.bottom - rect.top)
+                            if area < 4000:
+                                continue
+                            imgs.append(child)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             if imgs:
                 # Pick the largest image (likely the chat media thumbnail)
                 def _area(c):
