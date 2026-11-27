@@ -561,7 +561,7 @@ class VoiceListener:
             self._recognizer,
             self._microphone,
             energy_threshold=thresh,
-            grace_period=0.35,
+            grace_period=0.25,
             required_frames=3,
             ref_audio=ref_audio,
             pos_fn=pos_fn,
@@ -571,7 +571,7 @@ class VoiceListener:
 class VoiceBargeInMonitor:
     """
     Echo-aware voice barge-in monitor that detects user speech over TARS's own
-    speaker playback using playback-reference envelope gating and Silero VAD.
+    speaker playback using lag-aligned echo subtraction and stateful Silero VAD.
     """
 
     def __init__(
@@ -579,7 +579,7 @@ class VoiceBargeInMonitor:
         recognizer: Any,
         microphone: Any,
         energy_threshold: int = 350,
-        grace_period: float = 0.35,
+        grace_period: float = 0.25,
         required_frames: int = 3,
         ref_audio: Any = None,
         pos_fn: Optional[Callable[[], float]] = None,
@@ -596,16 +596,26 @@ class VoiceBargeInMonitor:
         self._ref_lock = threading.Lock()
         self._ref_audio = ref_audio
         self._pos_fn = pos_fn
-        self._echo_gain = 0.35
+        self._had_ref_pos = False
+        self._echo_gain = 0.18
         self._vad_model = None
         self._vad_checked = False
+        self._vad_h = None
+        self._vad_c = None
+        self._vad_ctx = None
         self._recent_hits: list = []
+
+    def _reset_vad_state(self) -> None:
+        self._vad_h = None
+        self._vad_c = None
+        self._vad_ctx = None
 
     def set_reference_audio(self, ref_audio: Any, pos_fn: Optional[Callable[[], float]] = None) -> None:
         """Updates the active 16kHz playback reference waveform and playback clock."""
         with self._ref_lock:
             self._ref_audio = ref_audio
             self._pos_fn = pos_fn
+            self._had_ref_pos = False
             self._recent_hits.clear()
 
     def _get_vad(self) -> Any:
@@ -619,12 +629,16 @@ class VoiceBargeInMonitor:
         return self._vad_model
 
     def start(self) -> None:
-        """Starts background monitoring."""
+        """Starts background monitoring, pre-warming Silero VAD for real mics."""
         if not self.microphone or not self.recognizer:
             return
         self._stop_event.clear()
         self._triggered.clear()
         self._recent_hits.clear()
+        self._had_ref_pos = False
+        self._reset_vad_state()
+        if isinstance(getattr(self.microphone, "SAMPLE_RATE", None), int):
+            self._get_vad()
         self._started_at = time.time()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -639,25 +653,84 @@ class VoiceBargeInMonitor:
         """Returns True if sustained user speech was detected."""
         return self._triggered.is_set()
 
-    def _ref_window_rms(self, pos_ms: Optional[float]) -> Optional[float]:
-        """Returns local speaker reference RMS around ``pos_ms`` (covering 180ms echo window)."""
+    def _extract_ref_window(self, pos_ms: Optional[float]) -> tuple[Any, Optional[float]]:
+        """Returns ``(ref_segment, peak_32ms_rms)`` across the [-180ms, +40ms] echo window."""
         with self._ref_lock:
             ref = self._ref_audio
         if ref is None or pos_ms is None or pos_ms < 0:
-            return None
+            return None, None
         try:
             import numpy as np
             center = int(pos_ms * 16.0)
             lo = max(0, center - 2880)  # -180ms speaker->mic latency + room reverb
             hi = min(len(ref), center + 640)
             if hi <= lo:
-                return 0.0
+                return None, 0.0
             win = ref[lo:hi]
-            # Peak 32ms block RMS inside echo window handles transient syllables accurately.
             if len(win) <= 512:
-                return float(np.sqrt(np.mean(win * win)))
+                return win, float(np.sqrt(np.mean(win * win)))
             trimmed = win[: (len(win) // 512) * 512].reshape(-1, 512)
-            return float(np.max(np.sqrt(np.mean(trimmed * trimmed, axis=1))))
+            return win, float(np.max(np.sqrt(np.mean(trimmed * trimmed, axis=1))))
+        except Exception:
+            return None, None
+
+    def _ref_window_rms(self, pos_ms: Optional[float]) -> Optional[float]:
+        """Returns local speaker reference RMS around ``pos_ms`` (covering 180ms echo window)."""
+        _, ref_rms = self._extract_ref_window(pos_ms)
+        return ref_rms
+
+    def _subtract_echo(self, mic_16k: Any, ref_seg: Any) -> Any:
+        """Subtracts the best lag-aligned linear projection of speaker audio from ``mic_16k``."""
+        try:
+            import numpy as np
+
+            frame_len = len(mic_16k)
+            if ref_seg is None or len(ref_seg) < frame_len:
+                return mic_16k
+            mic_z = mic_16k - float(np.mean(mic_16k))
+            mic_norm = float(np.sqrt(float(np.sum(mic_z * mic_z))))
+            if mic_norm <= 1e-6:
+                return mic_16k
+
+            wins = np.lib.stride_tricks.sliding_window_view(ref_seg, frame_len)[::8]
+            if len(wins) == 0:
+                return mic_16k
+            dots = wins @ mic_z
+            norms = np.sum(wins * wins, axis=1)
+            scores = np.abs(dots) / (mic_norm * np.sqrt(np.maximum(norms, 1e-12)))
+            best_idx = int(np.argmax(scores))
+            if float(scores[best_idx]) <= 0.25:
+                return mic_16k
+            denom = float(norms[best_idx])
+            if denom <= 1e-8:
+                return mic_16k
+            alpha = float(np.clip(dots[best_idx] / denom, -0.45, 0.45))
+            return (mic_16k - alpha * wins[best_idx]).astype(np.float32)
+        except Exception:
+            return mic_16k
+
+    def _run_vad(self, audio_16k: Any) -> Optional[float]:
+        """Evaluates Silero VAD statefully when ONNX session is available, else callable fallback."""
+        import numpy as np
+
+        vad_model = self._get_vad()
+        if vad_model is None:
+            return None
+        try:
+            f32 = audio_16k.astype(np.float32)
+            session = getattr(vad_model, "session", None)
+            if session is not None:
+                if self._vad_h is None:
+                    self._vad_h = np.zeros((1, 1, 128), dtype=np.float32)
+                    self._vad_c = np.zeros((1, 1, 128), dtype=np.float32)
+                    self._vad_ctx = np.zeros(64, dtype=np.float32)
+                inp = np.concatenate([self._vad_ctx, f32]).reshape(1, -1)
+                out, self._vad_h, self._vad_c = session.run(
+                    None, {"input": inp, "h": self._vad_h, "c": self._vad_c}
+                )
+                self._vad_ctx = f32[-64:]
+                return float(out.reshape(-1)[0])
+            return float(vad_model(f32)[0])
         except Exception:
             return None
 
@@ -669,26 +742,33 @@ class VoiceBargeInMonitor:
         mic_rms_int16 = mic_rms_f * 32768.0
         min_floor = float(max(240, self.energy_threshold))
 
-        ref_rms = self._ref_window_rms(pos_ms)
-        vad_prob = None
-        if use_vad and mic_rms_int16 >= min_floor * 0.8:
-            vad_model = self._get_vad()
-            if vad_model is not None:
-                try:
-                    vad_prob = float(vad_model(mic_16k.astype(np.float32))[0])
-                except Exception:
-                    vad_prob = None
+        with self._ref_lock:
+            has_ref = self._ref_audio is not None
+            if pos_ms is not None and pos_ms >= 0:
+                self._had_ref_pos = True
+            trailing_reverb = has_ref and pos_ms is not None and pos_ms < 0 and self._had_ref_pos
+
+        if trailing_reverb:
+            return False
+
+        ref_seg, ref_rms = self._extract_ref_window(pos_ms)
+        signal_16k = self._subtract_echo(mic_16k, ref_seg) if ref_seg is not None else mic_16k
+        sig_rms_f = float(np.sqrt(np.mean(signal_16k * signal_16k)))
+        sig_rms_int16 = sig_rms_f * 32768.0
+
+        vad_prob = self._run_vad(signal_16k) if use_vad else None
 
         if ref_rms is not None:
-            if ref_rms > 0.015 and (vad_prob is None or vad_prob < 0.45):
-                sample_gain = min(0.65, max(0.18, mic_rms_f / ref_rms))
+            ratio = (sig_rms_f / ref_rms) if ref_rms > 0 else 0.0
+            if ref_rms > 0.015 and ratio < 0.22:
+                sample_gain = min(0.35, max(0.04, ratio))
                 self._echo_gain = 0.85 * self._echo_gain + 0.15 * sample_gain
-            echo_ceiling = max(min_floor / 32768.0, ref_rms * max(self._echo_gain * 1.25, 0.40))
-            if mic_rms_f <= echo_ceiling:
+            echo_ceiling = max(min_floor / 32768.0, ref_rms * max(self._echo_gain * 1.45, 0.20))
+            if sig_rms_f <= echo_ceiling:
                 return False
             if vad_prob is not None and vad_prob < 0.50:
                 return False
-            return mic_rms_int16 >= min_floor
+            return sig_rms_int16 >= min_floor
 
         # Fallback without reference audio (SAPI / offline): require higher threshold + VAD
         fallback_floor = max(900.0, float(self.energy_threshold) * 2.5)
@@ -703,22 +783,19 @@ class VoiceBargeInMonitor:
             import numpy as np
 
             with self.microphone as source:
-                rate = getattr(source, "SAMPLE_RATE", 16000)
-                chunk = getattr(source, "CHUNK", 1024)
-                if not isinstance(rate, int) or rate <= 0:
-                    rate = 16000
-                if not isinstance(chunk, int) or chunk <= 0:
-                    chunk = 1024
+                raw_rate = getattr(source, "SAMPLE_RATE", None)
+                raw_chunk = getattr(source, "CHUNK", None)
+                has_real_mic = isinstance(raw_rate, int) and raw_rate > 0
+                rate = raw_rate if has_real_mic else 16000
+                chunk = raw_chunk if isinstance(raw_chunk, int) and raw_chunk > 0 else 1024
                 buf16 = np.array([], dtype=np.float32)
-                use_echo_model = not isinstance(source, object) or hasattr(source, "SAMPLE_RATE")
+                use_echo_model = has_real_mic
                 while not self._stop_event.is_set():
                     try:
                         raw = source.stream.read(chunk)
                         if not raw:
                             continue
-                        if (time.time() - self._started_at) < self.grace_period:
-                            self._recent_hits.clear()
-                            continue
+                        in_grace = (time.time() - self._started_at) < self.grace_period
 
                         with self._ref_lock:
                             ref_audio = self._ref_audio
@@ -736,7 +813,10 @@ class VoiceBargeInMonitor:
                             idx = np.linspace(0, max(0, len(x) - 1), out_len)
                             x16 = np.interp(idx, np.arange(len(x)), x).astype(np.float32)
 
-                        if ref_audio is None and not hasattr(self._microphone, "SAMPLE_RATE"):
+                        if ref_audio is None and not has_real_mic:
+                            if in_grace:
+                                self._recent_hits.clear()
+                                continue
                             rms = int(math.sqrt(float(np.mean(x16 * x16))) * 32768.0)
                             hit = rms >= self.energy_threshold
                             self._recent_hits.append(1 if hit else 0)
@@ -757,15 +837,22 @@ class VoiceBargeInMonitor:
                                     pos_ms = float(pos_fn())
                                 except Exception:
                                     pos_ms = None
+                            # Always evaluate during grace so stateful VAD + _echo_gain converge cleanly.
                             hit = self._evaluate_frame(frame, pos_ms=pos_ms, use_vad=use_echo_model)
+                            if in_grace:
+                                self._recent_hits.clear()
+                                continue
                             self._recent_hits.append(1 if hit else 0)
-                            win_len = max(4, self.required_frames + 1)
+                            win_len = max(5, self.required_frames + 2)
                             if len(self._recent_hits) > win_len:
                                 self._recent_hits.pop(0)
                             if sum(self._recent_hits) >= self.required_frames:
                                 self._triggered.set()
                                 return
-                    except Exception:
+                    except Exception as exc:
+                        if "overflow" in str(exc).lower() and not self._stop_event.is_set():
+                            time.sleep(0.005)
+                            continue
                         break
         except Exception:
             pass

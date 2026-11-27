@@ -1067,6 +1067,93 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         user_frame = np.full(512, 0.12, dtype=np.float32)
         self.assertTrue(mon._evaluate_frame(user_frame, pos_ms=500.0, use_vad=True))
 
+    def test_barge_in_lag_echo_subtraction_stateful_vad_and_null_ref_safety(self):
+        import time as _time
+        import numpy as np
+        from core.voice_listener import VoiceBargeInMonitor
+
+        # 1. Delayed AC speaker bleed (18% at 20ms lag) is subtracted cleanly while stateful VAD runs
+        t = np.arange(16000, dtype=np.float32) / 16000.0
+        ref = 0.22 * np.sin(2.0 * np.pi * 440.0 * t) + 0.10 * np.sin(2.0 * np.pi * 780.0 * t)
+
+        fake_session = MagicMock()
+
+        def _fake_session_run(_out, feed):
+            self.assertEqual(feed["input"].shape, (1, 576))
+            self.assertEqual(feed["h"].shape, (1, 1, 128))
+            self.assertEqual(feed["c"].shape, (1, 1, 128))
+            return np.array([[0.82]], dtype=np.float32), feed["h"] + 0.1, feed["c"] + 0.1
+
+        fake_session.run.side_effect = _fake_session_run
+        fake_vad = MagicMock()
+        fake_vad.session = fake_session
+
+        mon = VoiceBargeInMonitor(MagicMock(), MagicMock(), energy_threshold=260, required_frames=3)
+        mon.set_reference_audio(ref, lambda: 500.0)
+        mon._vad_model = fake_vad
+        mon._vad_checked = True
+
+        # Pure speaker echo delayed by 320 samples (20ms) relative to pos_ms=500ms:
+        # evaluate across warmup frames (like grace_period) so _echo_gain adapts cleanly to 0.20 floor
+        echo_delayed = 0.18 * ref[8000 - 320 : 8000 - 320 + 512]
+        for _ in range(6):
+            self.assertFalse(mon._evaluate_frame(echo_delayed, pos_ms=500.0, use_vad=True))
+        self.assertEqual(fake_session.run.call_count, 6)
+        self.assertLess(mon._echo_gain, 0.11)
+
+        # Overlapping user speech (~1275 int16 RMS at non-aligned frequency) triggers reliably
+        ut = np.arange(512, dtype=np.float32) / 16000.0
+        user_voice = 0.055 * np.sin(2.0 * np.pi * 230.0 * ut)
+        mixed = echo_delayed + user_voice
+        self.assertTrue(mon._evaluate_frame(mixed, pos_ms=500.0, use_vad=True))
+        # Stateful LSTM hidden state advanced continuously across evaluated frames
+        last_call_feed = fake_session.run.call_args_list[-1][0][1]
+        self.assertAlmostEqual(float(last_call_feed["h"][0, 0, 0]), 0.6, places=4)
+
+        # Trailing chunk-end pos_ms == -1 after valid playback position must NOT trigger false reverb
+        self.assertFalse(mon._evaluate_frame(user_voice, pos_ms=-1.0, use_vad=True))
+
+        # 2. Background _run() with ref_audio=None (synthesizing chunk 0 / SAPI) must not crash
+        #    on missing _microphone attribute and must detect sustained speech after grace_period
+        class _FakeSource:
+            def __init__(self, frames):
+                self._frames = list(frames)
+                self.stream = self
+
+            def read(self, _chunk):
+                if self._frames:
+                    return self._frames.pop(0)
+                _time.sleep(0.01)
+                return b""
+
+        class _FakeMic:
+            def __init__(self, frames):
+                self._src = _FakeSource(frames)
+
+            def __enter__(self):
+                return self._src
+
+            def __exit__(self, *args):
+                return False
+
+        loud_pcm = (np.full(1024, 1800, dtype=np.int16)).tobytes()
+        mic = _FakeMic([loud_pcm] * 8)
+        bg_mon = VoiceBargeInMonitor(
+            MagicMock(),
+            mic,
+            energy_threshold=300,
+            grace_period=0.0,
+            required_frames=2,
+            ref_audio=None,
+        )
+        bg_mon.start()
+        deadline = _time.time() + 1.5
+        while not bg_mon.is_triggered() and _time.time() < deadline:
+            _time.sleep(0.02)
+        triggered = bg_mon.is_triggered()
+        bg_mon.stop()
+        self.assertTrue(triggered)
+
 
 if __name__ == "__main__":
     unittest.main()
