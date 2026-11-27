@@ -1027,3 +1027,26 @@ def open_windows_setting(setting_name: str) -> Dict[str, Any]:
         return {"success": True, "uri": uri, "message": f"Opened Windows {clean or 'main'} settings."}
     except Exception as e:
         return {"success": False, "error": f"Could not open settings '{setting_name}': {e}"}
+
+
+def set_system_mute(mute: bool) -> Dict[str, Any]:
+    """Explicitly mute or unmute the default audio endpoint (state-aware, not a toggle)."""
+    try:
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from comtypes import CLSCTX_ALL
+        import ctypes
+
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = ctypes.cast(interface, ctypes.POINTER(IAudioEndpointVolume))
+        volume.SetMute(bool(mute), None)
+        return {"success": True, "message": "Muted." if mute else "Unmuted."}
+    except Exception as exc:
+        # Fallback to the media-key toggle if the audio API is unavailable.
+        try:
+            import ctypes
+            ctypes.windll.user32.keybd_event(0xAD, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(0xAD, 0, 2, 0)
+            return {"success": True, "message": f"Mute toggled (fallback): {exc}"}
+        except Exception as exc2:
+            return {"success": False, "error": f"Could not set mute state: {exc2}"}

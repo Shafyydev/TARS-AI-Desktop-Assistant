@@ -588,7 +588,7 @@ def close_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
 
 
 def maximize_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
-    """Maximizes the named window if given, otherwise the active window (Win+Up)."""
+    """Maximizes the named window if given, otherwise the active (foreground) window."""
     if window_name:
         focused = focus_window(window_name)
         if not focused.get("success"):
@@ -597,11 +597,24 @@ def maximize_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
         if result.get("success"):
             result["message"] = f"Maximized '{focused.get('window') or window_name}'."
         return result
+    # Operate directly on the foreground window handle: more reliable than the
+    # Win+Up shortcut, which some applications (e.g. Brave/Chrome) ignore.
+    try:
+        import win32con
+        import win32gui
+
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+            title = win32gui.GetWindowText(hwnd) or "active window"
+            return {"success": True, "message": f"Maximized '{title}'."}
+    except Exception as exc:
+        pass
     return press_keys(["win", "up"])
 
 
 def minimize_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
-    """Minimizes the named window if given, otherwise the active window (Win+Down)."""
+    """Minimizes the named window if given, otherwise the active (foreground) window."""
     if window_name:
         focused = focus_window(window_name)
         if not focused.get("success"):
@@ -610,4 +623,14 @@ def minimize_active_window(window_name: Optional[str] = None) -> Dict[str, Any]:
         if result.get("success"):
             result["message"] = f"Minimized '{focused.get('window') or window_name}'."
         return result
+    try:
+        import win32con
+        import win32gui
+
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+            return {"success": True, "message": "Minimized active window."}
+    except Exception as exc:
+        pass
     return press_keys(["win", "down"])

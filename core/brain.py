@@ -169,6 +169,7 @@ class TARSAgent:
             "get_system_telemetry": tools.get_system_telemetry,
             "set_system_volume": tools.set_system_volume,
             "media_control": tools.media_control,
+            "set_system_mute": tools.set_system_mute,
             "get_running_windows": tools.get_running_windows,
             "minimize_all_windows": tools.minimize_all_windows,
             "read_clipboard": tools.read_clipboard,
@@ -982,8 +983,18 @@ class TARSAgent:
                 return {"response": msg, "steps": [{"tool": "smart_search", "args": {"query": s_query, "engine": "google"}, "result": res}], "success": ok}
 
         # 14. Media Playback Controls (Anchored) - data-driven
+        # Explicit mute/unmute (state-aware) instead of a toggle, so "mute" and
+        # "unmute" never get confused regardless of the current state.
+        if re.search(r"^(?:mute|silence)$", p_clean):
+            res = self.execute_tool("set_system_mute", {"mute": True})
+            msg, ok = self._reply(res, res.get("message", "Muted."))
+            return {"response": msg, "steps": [{"tool": "set_system_mute", "args": {"mute": True}, "result": res}], "success": res.get("success", ok)}
+        if re.search(r"^(?:unmute)$", p_clean):
+            res = self.execute_tool("set_system_mute", {"mute": False})
+            msg, ok = self._reply(res, res.get("message", "Unmuted."))
+            return {"response": msg, "steps": [{"tool": "set_system_mute", "args": {"mute": False}, "result": res}], "success": res.get("success", ok)}
+
         _media_table = [
-            (re.compile(r"^(?:mute|unmute|silence)$"), "mute", "Mute toggled."),
             (re.compile(r"^(?:play|pause|resume|play\s+pause|stop\s+music)$"), "play_pause", "Playback toggled."),
             (re.compile(r"^(?:next\s+track|next\s+song|skip\s+song)$"), "next", "Skipped to next track."),
             (re.compile(r"^(?:previous\s+track|prev\s+track|prev\s+song)$"), "prev", "Restarted track."),
