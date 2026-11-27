@@ -1567,6 +1567,12 @@ class TARSAgent:
                 steps.append({"tool": "smart_type", "args": {"text": song, "press_enter": True}, "result": res})
                 return {"response": f"Searching Spotify for {song}.", "steps": steps, "success": True}
 
+        # Click an image in the active chat/window (e.g. WhatsApp media).
+        if re.search(r"^(?:click|tap|open|view)\s+(?:that|the|this)\s+(?:image|photo|picture|media)$", p_clean):
+            res = self.execute_tool("smart_click", {"target": "image"})
+            msg, ok = self._reply(res, "Clicked the image.")
+            return {"response": msg, "steps": [{"tool": "smart_click", "args": {"target": "image"}, "result": res}], "success": ok}
+
         return None
 
     def run_agent_loop(self, user_prompt: str, on_status_update: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
