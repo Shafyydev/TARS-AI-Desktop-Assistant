@@ -224,6 +224,11 @@ def main() -> None:
                 blocking=True,
             )
             speech, _ = listener.listen_once(timeout=6, phrase_time_limit=4)
+            if not (speech or "").strip():
+                # Retry once if STT returned nothing (short utterance / mic lag).
+                speaker.speak("I did not catch that. Say yes or no.", blocking=True)
+                speech, _ = listener.listen_once(timeout=6, phrase_time_limit=4)
+            print(f"[confirm] heard: {speech!r}")
             return is_affirmative(speech or "")
         else:
             ans = Prompt.ask(f"[bold red]CONFIRMATION REQUIRED[/bold red] - Execute [bold yellow]{tool_name}[/bold yellow] ({arg_summary})? (yes/no)", default="no")

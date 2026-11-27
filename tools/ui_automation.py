@@ -143,8 +143,29 @@ def click_ui_element(name: str, window_title: Optional[str] = None) -> Dict[str,
         # Try direct child match first
         try:
             ctrl = win.child_window(title=name, found_index=0)
-            ctrl.click_input()
-            return {"success": True, "message": f"Clicked UI element '{name}' via direct match."}
+            # Prefer Invoke pattern (works for dialog buttons that ignore mouse clicks)
+            try:
+                if ctrl.iface_invoke is not None:
+                    ctrl.iface_invoke.Invoke()
+                    return {"success": True, "message": f"Invoked UI element '{name}' via Invoke pattern."}
+            except Exception:
+                pass
+            try:
+                ctrl.click_input()
+                return {"success": True, "message": f"Clicked UI element '{name}' via direct match."}
+            except Exception:
+                pass
+            # Coordinate-click fallback on the element's center
+            try:
+                rect = ctrl.rectangle()
+                cx = (rect.left + rect.right) // 2
+                cy = (rect.top + rect.bottom) // 2
+                if cx > 0 and cy > 0:
+                    import pyautogui
+                    pyautogui.click(cx, cy)
+                    return {"success": True, "message": f"Clicked UI element '{name}' at ({cx},{cy})."}
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -152,9 +173,28 @@ def click_ui_element(name: str, window_title: Optional[str] = None) -> Dict[str,
         for child in win.descendants():
             try:
                 child_text = child.window_text()
-                if name.lower() in child_text.lower():
-                    child.click_input()
-                    return {"success": True, "message": f"Clicked UI element matching '{name}' ('{child_text}')."}
+                if name.lower() in (child_text or "").lower():
+                    try:
+                        if child.iface_invoke is not None:
+                            child.iface_invoke.Invoke()
+                            return {"success": True, "message": f"Invoked UI element matching '{name}' ('{child_text}')."}
+                    except Exception:
+                        pass
+                    try:
+                        child.click_input()
+                        return {"success": True, "message": f"Clicked UI element matching '{name}' ('{child_text}')."}
+                    except Exception:
+                        pass
+                    try:
+                        rect = child.rectangle()
+                        cx = (rect.left + rect.right) // 2
+                        cy = (rect.top + rect.bottom) // 2
+                        if cx > 0 and cy > 0:
+                            import pyautogui
+                            pyautogui.click(cx, cy)
+                            return {"success": True, "message": f"Clicked UI element matching '{name}' at ({cx},{cy})."}
+                    except Exception:
+                        pass
             except Exception:
                 continue
 
