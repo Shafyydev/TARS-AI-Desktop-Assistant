@@ -190,7 +190,18 @@ def smart_click(target: str) -> Dict[str, Any]:
         gui.press_keys(keys)
         return {"success": True, "message": f"Executed '{clean_target}' via shortcut {' + '.join(keys)}.", "method": "hotkey"}
 
-    # 5. Media Controls (YouTube, Spotify, VLC, video players)
+    # 4b. Download / Save (common in browsers, WhatsApp, dialogs)
+    if any(kw in clean_target for kw in ["download", "save image", "save file", "save as"]):
+        # Try UIA button first
+        dl_res = uia.click_ui_element("download")
+        if dl_res.get("success"):
+            return dl_res
+        dl_res = uia.click_ui_element("save")
+        if dl_res.get("success"):
+            return dl_res
+        # Fallback: common save shortcut
+        gui.press_keys(["ctrl", "s"])
+        return {"success": True, "message": "Sent save shortcut (Ctrl+S).", "method": "hotkey:ctrl+s"}
     media_controls = {
         "play": ["space"],
         "pause": ["space"],
