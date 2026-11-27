@@ -354,7 +354,7 @@ def _find_whatsapp_search_edit(window: Any) -> Any:
         for edit in edits:
             nm = (edit.element_info.name or "").strip().lower()
             aid = (edit.element_info.automation_id or "").strip().lower()
-            if ("search" in nm or "search" in aid) and "chat list" not in nm:
+            if ("search" in nm or "search" in aid or aid == "_r_e_") and "chat list" not in nm:
                 search_edit = edit
                 break
         if search_edit is not None:
@@ -402,7 +402,9 @@ def _find_whatsapp_message_composer(window: Any) -> Any:
         low = (name or "").casefold()
         if "search" in low:
             return False
-        return any(tok in low for tok in ("type a message", "type to ", "write a message", "message"))
+        if any(tok in low for tok in ("your personal messages", "end-to-end", "encrypted", "no messages", "select a chat", "start a conversation", "learn more")):
+            return False
+        return any(tok in low for tok in ("type a message", "type to ", "write a message"))
 
     for attempt in range(7):
         edits = window.descendants(control_type="Edit")
@@ -480,6 +482,74 @@ def _find_whatsapp_send_button(window: Any) -> Any:
     return None
 
 
+def _composer_text(composer: Any) -> str:
+    """Aggregate all readable text from a composer control."""
+    parts = []
+    for getter in (
+        lambda: composer.get_value(),
+        lambda: getattr(getattr(composer, "iface_value", None), "CurrentValue", None),
+        lambda: composer.window_text(),
+        lambda: " ".join(composer.texts()) if hasattr(composer, "texts") else "",
+    ):
+        try:
+            val = getter()
+            if isinstance(val, str):
+                parts.append(val)
+        except Exception:
+            continue
+    try:
+        descs = composer.descendants()
+        if isinstance(descs, (list, tuple)):
+            for c in descs:
+                try:
+                    nm = getattr(getattr(c, "element_info", None), "name", None)
+                    if isinstance(nm, str):
+                        parts.append(nm)
+                except Exception:
+                    pass
+                try:
+                    wt = c.window_text()
+                    if isinstance(wt, str):
+                        parts.append(wt)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return "\n".join(parts)
+
+
+def _composer_contains_full(composer: Any, expected: str) -> bool:
+    """True when the COMPLETE expected message is present in the composer text."""
+    needle = (expected or "").strip()
+    if not needle:
+        return False
+    hay = _composer_text(composer)
+    return needle.casefold() in hay.casefold()
+
+
+def _clear_whatsapp_composer(composer: Any) -> None:
+    """Best-effort clearing of the WhatsApp composer without raising."""
+    try:
+        composer.iface_value.SetValue("")
+        time.sleep(0.1)
+        return
+    except Exception:
+        pass
+    try:
+        composer.type_keys("^a{DEL}", with_spaces=True)
+        time.sleep(0.1)
+        return
+    except Exception:
+        pass
+    try:
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.05)
+        pyautogui.press("backspace")
+        time.sleep(0.1)
+    except Exception:
+        pass
+
+
 def _composer_contains_text(composer: Any, expected: str) -> bool:
     """True when the UIA composer control exposes non-empty or expected text."""
     needle = (expected or "").strip().casefold()[:16]
@@ -503,6 +573,8 @@ VERIFIED = "verified"
 MISMATCH = "mismatch"
 UNKNOWN = "unknown"
 
+_header_verify_cache = {"contact": None, "result": None, "time": 0.0}
+
 def _verify_whatsapp_chat_header(window, contact_name):
     """Returns VERIFIED, MISMATCH, or UNKNOWN.
 
@@ -523,41 +595,87 @@ def _verify_whatsapp_chat_header(window, contact_name):
         return VERIFIED
     checked = False
     try:
+        import time as _t
+        # Cache hit
+        if (_header_verify_cache["contact"] == needle and
+                _header_verify_cache["result"] == VERIFIED and
+                _t.time() - _header_verify_cache["time"] < 10):
+            return VERIFIED
         title = (window.element_info.name or '').casefold() if isinstance(window.element_info.name, str) else ''
         if title and title not in ('whatsapp', 'whatsapp desktop', ''):
             checked = True
-            if needle in title:
+            if needle in title.split() or title == needle:
+                _header_verify_cache["contact"] = needle
+                _header_verify_cache["result"] = VERIFIED
+                _header_verify_cache["time"] = _t.time()
                 return VERIFIED
         win_rect = window.rectangle()
         win_top = win_rect.top
         win_height = max(1, win_rect.bottom - win_rect.top)
-        for ctrl in window.descendants():
+        header_bottom = win_top + win_height * 0.15
+        for ctrl in window.descendants(control_type='Text'):
             try:
-                ct = ctrl.element_info.control_type
-                if ct not in ('Text', 'Document', 'Group', 'Pane'):
+                rect = ctrl.rectangle()
+                if rect.top >= header_bottom:
                     continue
-                nm = (ctrl.element_info.name or '').strip().casefold()
-                if not nm:
-                    continue
-                checked = True
-                if needle in nm:
-                    try:
-                        rect = ctrl.rectangle()
-                        if rect.top < win_top + win_height * 0.15:
-                            return VERIFIED
-                    except Exception:
-                        # Could not get rect; treat as verified if name matches
-                        return VERIFIED
             except Exception:
                 continue
+            try:
+                nm = (ctrl.element_info.name or '').strip().casefold()
+            except Exception:
+                continue
+            if not nm:
+                continue
+            checked = True
+            words = nm.split()
+            if needle in words or nm == needle:
+                _header_verify_cache["contact"] = needle
+                _header_verify_cache["result"] = VERIFIED
+                _header_verify_cache["time"] = _t.time()
+                return VERIFIED
     except Exception:
-        # Could not access UI elements; identity cannot be established
         return UNKNOWN
-    # If we checked elements and found none matching, it's a mismatch
     if checked:
         return MISMATCH
-    # Could not check anything; identity cannot be established
     return UNKNOWN
+
+
+def _resolve_whatsapp_alias(contact_name: str) -> str:
+    """Resolve a natural-language contact name via config/whatsapp_aliases.json."""
+    import json
+    from pathlib import Path
+    alias_path = Path(__file__).resolve().parent.parent / "config" / "whatsapp_aliases.json"
+    try:
+        if alias_path.exists():
+            data = json.loads(alias_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                key = contact_name.strip().casefold()
+                if key in data:
+                    return str(data[key]).strip()
+    except Exception:
+        pass
+    return contact_name
+
+
+def _extract_chat_name(chat_item_name: str) -> str:
+    """Extract the contact name from a WhatsApp chat list item."""
+    import re
+    date_tokens = {"yesterday", "today", "monday", "tuesday", "wednesday", "thursday",
+                   "friday", "saturday", "sunday", "january", "february", "march",
+                   "april", "may", "june", "july", "august", "september", "october",
+                   "november", "december"}
+    parts = chat_item_name.split()
+    name_parts = []
+    for part in parts:
+        low = part.casefold().rstrip(".,")
+        if low in date_tokens:
+            break
+        if re.match(r"\d{1,2}[/.]\d{1,2}", part):
+            break
+        if re.match(r"\d{1,2}:\d{2}", part):
+            break
+        name_parts.append(part)
+    return " ".join(name_parts).strip()
 
 
 def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
@@ -568,6 +686,8 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
     message; it only selects the requested conversation.
     """
     contact = (contact_name or "").strip()
+    resolved_contact = _resolve_whatsapp_alias(contact)
+    contact = resolved_contact
     if not contact:
         return {"success": False, "error": "No WhatsApp contact name was provided."}
 
@@ -607,18 +727,32 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
                 "error": "Could not find WhatsApp's chat search field."
             }
 
+        # Ensure OS-level foreground focus (Alt key trick)
+        try:
+            import ctypes, win32gui, win32con
+            hwnd = window.handle
+            ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+            time.sleep(0.05)
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.05)
+            ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+            time.sleep(0.3)
+        except Exception:
+            pass
         search_edit.set_focus()
         try:
             search_edit.click_input()
         except Exception:
             pass
-        search_edit.type_keys("^a{BACKSPACE}")
-        # WhatsApp Desktop is Chromium-based; direct UIA typing is unreliable in
-        # its search field. Clipboard paste delivers the exact contact text.
+        time.sleep(0.3)
+        search_edit.type_keys("^a{DEL}")
+        time.sleep(0.3)
+        # WhatsApp Desktop is Chromium-based; clipboard paste delivers the exact contact text.
         if copy_to_clipboard(contact):
             gui.press_keys(["ctrl", "v"])
         else:
             search_edit.type_keys(contact, with_spaces=True)
+        time.sleep(0.5)
         # Press Enter to commit the search and trigger filtering
         time.sleep(0.3)
         gui.press_keys(["enter"])
@@ -626,54 +760,79 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
 
         normalized_contact = contact.casefold()
         # Re-enumerate after filtering to avoid stale items
-        candidates = []
+        # WhatsApp search results are categorized: Chats, Contacts, Groups in common, Messages
+        current_section = None
+        contact_candidates = []
+        chat_candidates = []
+        all_sections = []
+        _di_count = 0
         for item in window.descendants(control_type="DataItem"):
-            name = (item.element_info.name or "").strip()
-            lowered = name.casefold()
-            if lowered in {"chats", "contacts", "messages"}:
+            _di_count += 1
+            if _di_count > 300:
+                break
+            try:
+                name = (item.element_info.name or "").strip()
+            except Exception:
                 continue
             if not name:
                 continue
+            lowered = name.casefold()
+            if lowered in {"chats", "contacts", "messages", "groups in common"}:
+                current_section = lowered
+                if lowered not in all_sections:
+                    all_sections.append(lowered)
+                if lowered == "messages":
+                    _seen = True
+                continue
             buttons = item.descendants(control_type="Button")
-            candidates.append((buttons[0] if buttons else item, name))
+            ctrl = buttons[0] if buttons else item
+            if current_section == "contacts":
+                contact_candidates.append((ctrl, name))
+            elif current_section == "chats":
+                chat_name = _extract_chat_name(name)
+                if chat_name:
+                    chat_candidates.append((ctrl, chat_name, name))
 
-        # Filter candidates to only those matching the search
-        filtered = [(c, n) for c, n in candidates if normalized_contact in n.casefold() or n.casefold() in normalized_contact]
-        if filtered:
-            candidates = filtered
+        # Exact match only (no fuzzy)
+        # Priority 1: exact match in Contacts section
+        exact_matches = [(c, n) for c, n in contact_candidates if n.casefold() == normalized_contact]
+        # Priority 2: prefix match in Chats section
+        if not exact_matches:
+            prefix_matches = [(c, n) for c, n, _ in chat_candidates if n.casefold().startswith(normalized_contact)]
+            seen_names = set()
+            unique_prefix = []
+            for c, n in prefix_matches:
+                if n.casefold() not in seen_names:
+                    seen_names.add(n.casefold())
+                    unique_prefix.append((c, n))
+            if len(unique_prefix) == 1:
+                exact_matches = unique_prefix
+            elif len(unique_prefix) > 1:
+                names = set(n.casefold() for _, n in unique_prefix)
+                if len(names) == 1:
+                    exact_matches = [unique_prefix[0]]
+                else:
+                    return {
+                        "success": False,
+                        "error": "Multiple contacts match '%s': %s. Please specify the full name." % (resolved_contact, sorted(names)),
+                    }
 
-        def score(candidate_name: str) -> float:
-            candidate = candidate_name.casefold()
-            if candidate == normalized_contact:
-                return 100.0
-            if candidate.startswith(normalized_contact):
-                return 95.0
-            if normalized_contact in candidate:
-                return 90.0
-            return SequenceMatcher(None, normalized_contact, candidate).ratio() * 100
-
-        exact_matches = [c for c, n in candidates if n.casefold() == normalized_contact]
-        if len(exact_matches) > 1:
+        # Deduplicate exact matches by name (WebView2 returns duplicates)
+        unique_names = set(n.casefold() for _, n in exact_matches)
+        if len(unique_names) > 1:
             return {
                 "success": False,
-                "error": "Multiple contacts named '%s' found. Please specify the full name to disambiguate." % contact,
+                "error": "Multiple contacts named '%s' found: %s. Please specify the full name to disambiguate." % (resolved_contact, sorted(unique_names)),
             }
 
-        match = None
-        for cand, name in candidates:
-            if name.casefold() == normalized_contact:
-                match = cand
-                break
-        if match is None:
-            if candidates:
-                candidate, candidate_name = max(candidates, key=lambda pair: score(pair[1]))
-                if score(candidate_name) >= 80.0:
-                    match = candidate
-        if match is None:
+        if not exact_matches:
+            available = sorted(set(n for _, n in contact_candidates) | set(n for _, n, _ in chat_candidates))
             return {
                 "success": False,
-                "error": f"No WhatsApp chat/contact matching '{contact}' was found. Say the full name shown in WhatsApp."
+                "error": "No contact match for '%s'. Available: %s" % (resolved_contact, available),
             }
+
+        match, match_name = exact_matches[0]
 
         match.click_input()
         # Chromium-based WhatsApp sometimes highlights the result after a click
@@ -682,7 +841,7 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
         # Allow the WebView2 chat pane & message composer to finish mounting.
         time.sleep(0.5)
         # Verify the conversation header matches the intended contact.
-        _vresult = _verify_whatsapp_chat_header(window, contact)
+        _vresult = _verify_whatsapp_chat_header(window, resolved_contact)
         if _vresult != VERIFIED:
             return {
                 "success": False,
@@ -690,8 +849,8 @@ def open_whatsapp_chat(contact_name: str) -> Dict[str, Any]:
             }
         return {
             "success": True,
-            "contact": contact,
-            "message": "Opened WhatsApp chat with %s." % contact,
+            "contact": resolved_contact,
+            "message": "Opened WhatsApp chat with %s." % resolved_contact,
         }
     except Exception as exc:
         return {
@@ -740,8 +899,10 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
         window = _select_whatsapp_window(windows)
         window.set_focus()
 
+        resolved_name = _resolve_whatsapp_alias(contact_name)
+
         # Re-verify recipient before typing/sending
-        _vresult = _verify_whatsapp_chat_header(window, contact_name)
+        _vresult = _verify_whatsapp_chat_header(window, resolved_name)
         if _vresult != VERIFIED:
             return {
                 "success": False,
@@ -755,69 +916,198 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
                 "error": "WhatsApp chat opened, but its message field was not found."
             }
 
-        def _focus_and_insert(use_direct_type: bool = False) -> None:
-            # In WebView2/Chromium WhatsApp, UIA set_focus() alone often leaves
-            # the Lexical contenteditable editor without a text caret; a real
-            # click is required so pasted/typed text lands inside the composer.
-            clicked = False
+        # --- Ensure WhatsApp has OS-level foreground focus (Alt key trick) ---
+        try:
+            import ctypes, win32gui, win32con
+            hwnd = window.handle
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+            time.sleep(0.05)
+            win32gui.SetForegroundWindow(hwnd)
+            time.sleep(0.05)
+            ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+            time.sleep(0.5)
+        except Exception:
             try:
-                message_edit.click_input()
-                clicked = True
+                window.set_focus()
+                time.sleep(0.5)
             except Exception:
                 pass
-            if not clicked:
-                try:
-                    rect = message_edit.rectangle()
-                    cx = (rect.left + rect.right) // 2
-                    cy = (rect.top + rect.bottom) // 2
-                    pyautogui.click(cx, cy)
-                    clicked = True
-                except Exception:
+
+        # --- Verify foreground window is WhatsApp ---
+        try:
+            import win32gui as _wg
+            fg_hwnd = _wg.GetForegroundWindow()
+            try:
+                if not _wg.IsWindow(int(window.handle)):
                     pass
+                elif int(window.handle) == fg_hwnd:
+                    pass
+                else:
+                    fg_title = _wg.GetWindowText(fg_hwnd)
+                    if "whatsapp" not in fg_title.lower():
+                        return {
+                            "success": False,
+                            "error": "Could not bring WhatsApp to foreground (active: %r). Aborting." % fg_title,
+                        }
+            except (ValueError, TypeError):
+                pass
+        except Exception:
+            pass
+
+        # --- Focus composer via UI Automation (primary; no coordinate dependence) ---
+        focused = False
+        try:
             message_edit.set_focus()
-            time.sleep(0.15)
+            time.sleep(0.1)
+            message_edit.click_input()
+            focused = True
+        except Exception:
+            focused = False
+        if not focused:
+            # Coordinate click is only a fallback when UIA click_input is unavailable.
+            try:
+                rect = message_edit.rectangle()
+                cx = (rect.left + rect.right) // 2
+                cy = (rect.top + rect.bottom) // 2
+                pyautogui.click(cx, cy)
+                focused = True
+            except Exception:
+                focused = False
+        time.sleep(0.3)
 
-            if not use_direct_type and copy_to_clipboard(clean_message):
-                gui.press_keys(["ctrl", "v"])
-            else:
-                try:
-                    message_edit.type_keys(clean_message, with_spaces=True)
-                except Exception:
-                    pyautogui.write(clean_message, interval=0.015)
-            time.sleep(0.25)
+        # --- Clear any residual text in the composer (best effort) ---
+        _clear_whatsapp_composer(message_edit)
+        time.sleep(0.2)
 
-        _focus_and_insert(use_direct_type=False)
-        send_btn = _find_whatsapp_send_button(window)
-        text_verified = (send_btn is not None) or _composer_contains_text(message_edit, clean_message)
+        # --- Insert the message using the most reliable method, verifying the
+        #     COMPLETE text is present before sending. Never trust a successful
+        #     keyboard call alone. ---
+        inserted = False
 
-        if not text_verified:
-            # Fallback attempt: focus composer explicitly and type directly
-            _focus_and_insert(use_direct_type=True)
-            send_btn = _find_whatsapp_send_button(window)
-            text_verified = (send_btn is not None) or _composer_contains_text(message_edit, clean_message)
+        # Method 1: UIA ValuePattern.SetValue (most reliable for WebView2).
+        try:
+            message_edit.iface_value.SetValue(clean_message)
+            time.sleep(0.3)
+            if _composer_contains_full(message_edit, clean_message):
+                inserted = True
+        except Exception:
+            inserted = False
 
-        if not text_verified:
+        # Method 2: clipboard paste (proven reliable on WhatsApp Desktop).
+        if not inserted:
+            try:
+                if copy_to_clipboard(clean_message):
+                    try:
+                        message_edit.set_focus()
+                        message_edit.click_input()
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                    gui.press_keys(["ctrl", "v"])
+                    time.sleep(0.5)
+                    if _composer_contains_full(message_edit, clean_message):
+                        inserted = True
+            except Exception:
+                inserted = False
+
+        # Method 3: OS-level keystrokes (last resort).
+        if not inserted:
+            try:
+                pyautogui.write(clean_message, interval=0.02)
+                time.sleep(0.3)
+                if _composer_contains_full(message_edit, clean_message):
+                    inserted = True
+            except Exception:
+                inserted = False
+
+        # Method 4: pywinauto type_keys (last resort).
+        if not inserted:
+            try:
+                message_edit.type_keys(clean_message, with_spaces=True)
+                time.sleep(0.3)
+                if _composer_contains_full(message_edit, clean_message):
+                    inserted = True
+            except Exception:
+                inserted = False
+
+        if not inserted:
             return {
                 "success": False,
-                "error": (
-                    f"Opened WhatsApp chat with {contact_name}, but could not type "
-                    "the message into the composer box."
-                ),
+                "contact": resolved_name,
+                "error": "Message was not entered into the composer. Aborting send.",
+                "verification": "FAILED",
             }
 
-        if send_btn is not None:
-            try:
-                send_btn.click_input()
-            except Exception:
-                gui.press_keys(["enter"])
-        else:
-            gui.press_keys(["enter"])
+        # --- Send via Enter ---
+        gui.press_keys(["enter"])
+        time.sleep(2.0)
 
-        return {
-            "success": True,
-            "contact": contact_name,
-            "message": f"Sent WhatsApp message to {contact_name}."
-        }
+        # --- Verify message was sent ---
+        # Strategy 1: composer cleared (message consumed by Enter)
+        composer_cleared = False
+        # Allow time for UI to update after Enter
+        time.sleep(1.0)
+        try:
+            val = message_edit.get_value() or ""
+            if val.strip() == "" or val.strip() == "\n":
+                composer_cleared = True
+        except Exception:
+            # Element may be stale; treat as unknown
+            composer_cleared = False
+        if not composer_cleared:
+            try:
+                val = message_edit.iface_value.CurrentValue or ""
+                if val.strip() == "" or val.strip() == "\n":
+                    composer_cleared = True
+            except Exception:
+                composer_cleared = False
+
+        # Strategy 2: message text appears in chat list DataItem (outgoing preview)
+        # Use exact substring match on the full message, not just first 10 chars
+        message_in_chat = False
+        if composer_cleared:
+            try:
+                # Poll for up to 3 seconds for the chat list to update
+                for _attempt in range(3):
+                    for item in window.descendants(control_type="DataItem"):
+                        try:
+                            nm = (item.element_info.name or "")
+                            if clean_message in nm:
+                                message_in_chat = True
+                                break
+                        except Exception:
+                            continue
+                    if message_in_chat:
+                        break
+                    time.sleep(1.0)
+            except Exception:
+                pass
+
+        # Determine verification status
+        if composer_cleared and message_in_chat:
+            return {
+                "success": True,
+                "contact": resolved_name,
+                "message": "WhatsApp message VERIFIED as sent to %s." % resolved_name,
+                "verification": "VERIFIED",
+            }
+        elif composer_cleared:
+            return {
+                "success": True,
+                "contact": resolved_name,
+                "message": "Message likely sent to %s but delivery could NOT be confirmed. Do NOT tell the user it was definitely delivered. Ask them to check WhatsApp manually." % resolved_name,
+                "verification": "UNCONFIRMED",
+                "warning": "DELIVERY_UNCONFIRMED",
+            }
+        else:
+            return {
+                "success": False,
+                "contact": resolved_name,
+                "error": "Message may not have been sent (composer not cleared).",
+                "verification": "FAILED",
+            }
+
     except Exception as exc:
         return {
             "success": False,
