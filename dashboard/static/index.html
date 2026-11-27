@@ -285,12 +285,20 @@ async function sendPrompt(){
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 let voiceOn = false, voiceReplies = true, recognition = null;
 
+function pickFemaleBrowserVoice(){
+  const voices = window.speechSynthesis.getVoices() || [];
+  const female = voices.find(v => /zira|jenny|aria|hazel|samantha|heera|female|google us english/i.test(v.name) && !/david|mark|george|guy|male/i.test(v.name));
+  return female || voices.find(v => /en/i.test(v.lang) && !/david|mark|george|guy|male/i.test(v.name)) || null;
+}
+
 function speak(text){
   if(!voiceReplies || !text || !('speechSynthesis' in window)) return;
   try{
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(String(text).slice(0, 600));
     u.lang = 'en-US'; u.rate = 1.05;
+    const fv = pickFemaleBrowserVoice();
+    if(fv) u.voice = fv;
     window.speechSynthesis.speak(u);
   }catch(e){}
 }

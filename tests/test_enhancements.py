@@ -886,5 +886,42 @@ class TestVoiceListenerSpeedAndFallback(unittest.TestCase):
         self.assertEqual(vl.energy_threshold, int(thresh))
 
 
+class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
+    def test_rejects_male_edge_voice_and_selects_female_sapi(self):
+        from core.voice_speaker import VoiceSpeaker, DEFAULT_FEMALE_VOICE, _pick_female_sapi_voice
+
+        with patch.dict("os.environ", {"TARS_VOICE": "en-US-GuyNeural"}):
+            sp = VoiceSpeaker()
+        self.assertEqual(sp.voice_name, DEFAULT_FEMALE_VOICE)
+
+        with patch.dict("os.environ", {"TARS_VOICE": "en-US-JennyNeural"}):
+            sp_custom = VoiceSpeaker()
+        self.assertEqual(sp_custom.voice_name, "en-US-JennyNeural")
+
+        david = MagicMock()
+        david.GetDescription.return_value = "Microsoft David Desktop - English (United States)"
+        zira = MagicMock()
+        zira.GetDescription.return_value = "Microsoft Zira Desktop - English (United States)"
+        fake_sapi = MagicMock()
+        fake_sapi.GetVoices.return_value = [david, zira]
+        self.assertIs(_pick_female_sapi_voice(fake_sapi), zira)
+
+    def test_powershell_fallback_enforces_female_voice_and_stops_prior_utterances(self):
+        from core.voice_speaker import VoiceSpeaker
+
+        sp = VoiceSpeaker(fast_voice=False)
+        uid1 = sp._begin_utterance()
+        uid2 = sp._begin_utterance()
+        self.assertGreater(uid2, uid1)
+
+        with patch("win32com.client.Dispatch", side_effect=RuntimeError("no com")), \
+             patch("subprocess.run") as mock_sub:
+            ok = sp._speak_sapi("Hello there", async_mode=True)
+        self.assertTrue(ok)
+        cmd = mock_sub.call_args[0][0][3]
+        self.assertIn("Gender]::Female", cmd)
+        self.assertIn("Zira", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

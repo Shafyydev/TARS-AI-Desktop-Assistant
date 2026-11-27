@@ -11,11 +11,41 @@ from typing import Optional, Callable, Any
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
+DEFAULT_FEMALE_VOICE = "en-US-JennyNeural"
+_MALE_VOICE_MARKERS = (
+    "guyneural", "christopherneural", "ericneural", "ryanneural",
+    "andrewneural", "brianneural", "davisneural", "tonyneural",
+    "jasonneural", "steffanneural", "brandonneural", "jacobneural",
+    "david", "mark", "george", "richard", "james", "daniel",
+)
+_FEMALE_SAPI_MARKERS = ("zira", "hazel", "susan", "heera", "aria", "jenny", "eva", "catherine", "linda", "female")
+
+
+def _enforce_female_edge_voice(voice_name: Optional[str]) -> str:
+    """Ensures Edge-TTS always uses a female voice, rejecting male presets."""
+    clean = (voice_name or "").strip()
+    low = clean.casefold()
+    if not clean or any(m in low for m in _MALE_VOICE_MARKERS) or re.search(r"\bmale\b", low):
+        return DEFAULT_FEMALE_VOICE
+    return clean
+
+
+def _pick_female_sapi_voice(sp_voice: Any) -> Any:
+    """Selects a female Windows SAPI voice (e.g. Zira) and avoids male defaults like David."""
+    fallback = None
+    for v in sp_voice.GetVoices():
+        desc = (v.GetDescription() or "").casefold()
+        if any(marker in desc for marker in _FEMALE_SAPI_MARKERS):
+            return v
+        if fallback is None and "david" not in desc and not re.search(r"\bmale\b", desc):
+            fallback = v
+    return fallback
+
 
 class VoiceSpeaker:
     """
-    Handles text-to-speech synthesis using Microsoft Neural voices via edge-tts,
-    with zero-latency async acknowledgments and Windows native SAPI fast mode.
+    Handles text-to-speech synthesis using female Microsoft Neural voices via edge-tts,
+    with Windows female SAPI fallback and serialized non-overlapping playback.
     """
 
     ACKNOWLEDGMENTS = [
@@ -28,8 +58,9 @@ class VoiceSpeaker:
         "Processing.",
     ]
 
-    def __init__(self, voice_name: str = "en-US-JennyNeural", rate: str = "+0%", pitch: str = "+0Hz", fast_voice: bool = True):
-        self.voice_name = os.getenv("TARS_VOICE", voice_name)
+    def __init__(self, voice_name: str = DEFAULT_FEMALE_VOICE, rate: str = "+0%", pitch: str = "+0Hz", fast_voice: bool = True):
+        raw_voice = os.getenv("TARS_VOICE", voice_name)
+        self.voice_name = _enforce_female_edge_voice(raw_voice)
         self.rate = os.getenv("TARS_VOICE_RATE", rate)
         self.pitch = os.getenv("TARS_VOICE_PITCH", pitch)
         # Default to fast native Windows SAPI for zero-latency instant responses unless cloud neural voice requested
@@ -38,8 +69,11 @@ class VoiceSpeaker:
         self._is_speaking = False
         self._stop_requested = False
         self._sapi_speaker = None
+        self._sapi_local = threading.local()
         self._pygame_initialized = False
         self._lock = threading.Lock()
+        self._seq_lock = threading.Lock()
+        self._utterance_seq = 0
         
         # Pre-warm audio subsystem at startup
         self._init_pygame()
@@ -90,16 +124,26 @@ class VoiceSpeaker:
         except Exception:
             return False
 
-    def _play_audio_pygame(self, audio_file: str) -> bool:
+    def _play_audio_pygame(
+        self,
+        audio_file: str,
+        interrupt_check: Optional[Callable[[], bool]] = None,
+        utterance_id: Optional[int] = None,
+    ) -> bool:
         """Plays the generated audio file using pygame with instant interruption support."""
         if not self._init_pygame():
             return False
 
         try:
             import pygame
+            if self._stop_requested or (utterance_id is not None and utterance_id != self._utterance_seq):
+                return False
             pygame.mixer.music.load(audio_file)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy() and self._is_speaking and not self._stop_requested:
+                if utterance_id is not None and utterance_id != self._utterance_seq:
+                    pygame.mixer.music.stop()
+                    return False
                 try:
                     import msvcrt
                     if msvcrt.kbhit():
@@ -108,35 +152,58 @@ class VoiceSpeaker:
                         return False
                 except Exception:
                     pass
+                if interrupt_check:
+                    try:
+                        if interrupt_check():
+                            self.stop()
+                            return False
+                    except Exception:
+                        pass
                 pygame.time.Clock().tick(30)
             return True
         except Exception:
             return False
 
-    def _speak_sapi(self, text: str, async_mode: bool = True) -> bool:
-        """Zero-latency offline speech using Windows native SAPI with tactical military tone."""
-        try:
-            import win32com.client
-            import pythoncom
-            pythoncom.CoInitialize()
-            if self._sapi_speaker is None:
-                self._sapi_speaker = win32com.client.Dispatch("SAPI.SpVoice")
-                for v in self._sapi_speaker.GetVoices():
-                    if "zira" in v.GetDescription().lower() or "hazel" in v.GetDescription().lower() or "female" in v.GetDescription().lower():
-                        self._sapi_speaker.Voice = v
-                        break
-                self._sapi_speaker.Rate = 1
+    def _get_thread_sapi_speaker(self) -> Any:
+        """Returns a thread-local COM SAPI SpVoice locked to a female voice."""
+        import win32com.client
+        import pythoncom
 
+        pythoncom.CoInitialize()
+        sp = getattr(self._sapi_local, "speaker", None)
+        if sp is None:
+            sp = win32com.client.Dispatch("SAPI.SpVoice")
+            female_voice = _pick_female_sapi_voice(sp)
+            if female_voice is not None:
+                sp.Voice = female_voice
+            sp.Rate = 1
+            self._sapi_local.speaker = sp
+        self._sapi_speaker = sp
+        return sp
+
+    def _speak_sapi(self, text: str, async_mode: bool = True) -> bool:
+        """Zero-latency offline female speech using Windows native SAPI (Zira)."""
+        try:
+            sp = self._get_thread_sapi_speaker()
             # Flag 1: SVSFlagsAsync (non-blocking), Flag 2: SVSFPurgeBeforeSpeak
             flags = (1 | 2) if async_mode else 0
-            self._sapi_speaker.Speak(text, flags)
+            sp.Speak(text, flags)
             return True
         except Exception:
             try:
                 import subprocess
                 escaped = text.replace("'", "''").replace('"', '`"')
-                cmd = f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{escaped}')"
-                subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=3)
+                cmd = (
+                    "Add-Type -AssemblyName System.Speech; "
+                    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                    "$v = $s.GetInstalledVoices() | Where-Object { "
+                    "$_.VoiceInfo.Gender -eq 'Female' -or $_.VoiceInfo.Name -match 'Zira|Hazel|Jenny|Aria' "
+                    "} | Select-Object -First 1; "
+                    "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) } else { "
+                    "$s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female) }; "
+                    f"$s.Speak('{escaped}')"
+                )
+                subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=6)
                 return True
             except Exception:
                 return False
@@ -144,7 +211,8 @@ class VoiceSpeaker:
     def wait_while_speaking(
         self,
         interrupt_check: Optional[Callable[[], bool]] = None,
-        poll_interval: float = 0.015
+        poll_interval: float = 0.015,
+        backend: Optional[str] = None,
     ) -> bool:
         """
         Monitors speech playback in real time (<15ms poll rate).
@@ -155,15 +223,17 @@ class VoiceSpeaker:
         
         Returns True if interrupted, False if finished naturally.
         """
-        # Wait up to 0.25s for SAPI to initialize running state
+        use_sapi = (backend == "sapi") or (backend is None and self.fast_voice)
+        active_sp = getattr(self._sapi_local, "speaker", None) or self._sapi_speaker
+        # Wait briefly for SAPI async speech to enter RunningState == 2
         t0 = time.time()
-        while self.fast_voice and self._sapi_speaker:
+        while use_sapi and active_sp:
             try:
-                if self._sapi_speaker.Status.RunningState == 2:
+                if active_sp.Status.RunningState == 2:
                     break
             except Exception:
                 break
-            if time.time() - t0 >= 0.1:
+            if time.time() - t0 >= 0.12:
                 break
             try:
                 import msvcrt
@@ -185,15 +255,15 @@ class VoiceSpeaker:
         interrupted = False
         while self._is_speaking and not self._stop_requested:
             # 1. SAPI state check
-            if self.fast_voice and self._sapi_speaker:
+            if use_sapi and active_sp:
                 try:
-                    if self._sapi_speaker.Status.RunningState != 2:
+                    if active_sp.Status.RunningState != 2:
                         break
                 except Exception:
                     break
 
             # 2. Pygame state check
-            if not self.fast_voice and self._pygame_initialized:
+            if not use_sapi and self._pygame_initialized:
                 try:
                     import pygame
                     if not pygame.mixer.music.get_busy():
@@ -228,12 +298,12 @@ class VoiceSpeaker:
         return interrupted
 
     def speak_ack(self) -> None:
-        """Speaks an instantaneous acknowledgment phrase without blocking."""
+        """Speaks a short female acknowledgment that automatically yields to real replies."""
         ack = random.choice(self.ACKNOWLEDGMENTS)
         if self.fast_voice:
-            self._speak_sapi(ack, async_mode=True)
+            self.speak(ack, blocking=False)
         else:
-            threading.Thread(target=lambda: self.speak(ack, blocking=True), daemon=True).start()
+            self.speak(ack, blocking=False)
 
     @staticmethod
     def _drain_keyboard() -> None:
@@ -251,6 +321,14 @@ class VoiceSpeaker:
         except Exception:
             pass
 
+    def _begin_utterance(self) -> int:
+        """Stops any active/queued speech and issues a fresh monotonic utterance id."""
+        with self._seq_lock:
+            self._utterance_seq += 1
+            uid = self._utterance_seq
+        self.stop(reset_seq=False)
+        return uid
+
     def speak(
         self,
         text: str,
@@ -258,15 +336,8 @@ class VoiceSpeaker:
         listener: Optional[Any] = None
     ) -> bool:
         """
-        Synthesizes and speaks text aloud with instant interruption support.
-        
-        Args:
-            text: The text string to speak.
-            blocking: If True, waits until speech completes or is interrupted.
-            listener: Optional VoiceListener instance to enable acoustic voice barge-in.
-            
-        Returns:
-            True if interrupted early, False if finished normally.
+        Synthesizes and speaks text aloud in TARS's single female voice with
+        serialized non-overlapping playback and instant interruption support.
         """
         if not text or not text.strip():
             return False
@@ -275,33 +346,41 @@ class VoiceSpeaker:
         if not speech_text:
             return False
 
-        self._stop_requested = False
-        self._is_speaking = True
+        utterance_id = self._begin_utterance()
         self._drain_keyboard()
 
-        # Fast native Windows SAPI mode
+        # Fast native Windows SAPI mode (female Zira only)
         if self.fast_voice:
-            self._speak_sapi(speech_text, async_mode=True)
-            if blocking:
-                monitor = listener.create_barge_in_monitor() if listener and hasattr(listener, "create_barge_in_monitor") else None
-                if monitor:
-                    monitor.start()
-                try:
-                    check_fn = monitor.is_triggered if monitor else None
-                    interrupted = self.wait_while_speaking(interrupt_check=check_fn)
-                    return interrupted
-                finally:
+            with self._lock:
+                if utterance_id != self._utterance_seq:
+                    return False
+                self._stop_requested = False
+                self._is_speaking = True
+                self._speak_sapi(speech_text, async_mode=True)
+                if blocking:
+                    monitor = listener.create_barge_in_monitor() if listener and hasattr(listener, "create_barge_in_monitor") else None
                     if monitor:
-                        monitor.stop()
-            return False
+                        monitor.start()
+                    try:
+                        check_fn = monitor.is_triggered if monitor else None
+                        return self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
+                    finally:
+                        if monitor:
+                            monitor.stop()
+                return False
 
-        # Neural edge-tts path
+        # Neural edge-tts path (female JennyNeural, female Zira fallback)
         interrupted = False
+
         def _worker():
             nonlocal interrupted
             with self._lock:
+                if utterance_id != self._utterance_seq:
+                    return
+                self._stop_requested = False
                 self._is_speaking = True
                 temp_audio = None
+                monitor = None
                 try:
                     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
                         temp_audio = tf.name
@@ -311,20 +390,31 @@ class VoiceSpeaker:
                     edge_success = loop.run_until_complete(self._synthesize_edge_tts(speech_text, temp_audio))
                     loop.close()
 
+                    if self._stop_requested or utterance_id != self._utterance_seq:
+                        return
+
+                    if blocking and listener and hasattr(listener, "create_barge_in_monitor"):
+                        monitor = listener.create_barge_in_monitor()
+                        if monitor:
+                            monitor.start()
+                    check_fn = monitor.is_triggered if monitor else None
+
                     if edge_success and os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 0:
-                        played = self._play_audio_pygame(temp_audio)
-                        if not played and not self._stop_requested:
+                        played = self._play_audio_pygame(temp_audio, interrupt_check=check_fn, utterance_id=utterance_id)
+                        if not played and not self._stop_requested and utterance_id == self._utterance_seq:
                             self._speak_sapi(speech_text, async_mode=True)
-                            interrupted = self.wait_while_speaking()
-                    elif not self._stop_requested:
+                            interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
+                    elif not self._stop_requested and utterance_id == self._utterance_seq:
                         self._speak_sapi(speech_text, async_mode=True)
-                        interrupted = self.wait_while_speaking()
+                        interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
 
                 except Exception:
-                    if not self._stop_requested:
+                    if not self._stop_requested and utterance_id == self._utterance_seq:
                         self._speak_sapi(speech_text, async_mode=True)
-                        interrupted = self.wait_while_speaking()
+                        interrupted = self.wait_while_speaking(backend="sapi")
                 finally:
+                    if monitor:
+                        monitor.stop()
                     self._is_speaking = False
                     if temp_audio and os.path.exists(temp_audio):
                         try:
@@ -335,21 +425,24 @@ class VoiceSpeaker:
         if blocking:
             _worker()
             return interrupted
-        else:
-            t = threading.Thread(target=_worker, daemon=True)
-            t.start()
-            return False
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return False
 
-    def stop(self) -> None:
-        """Stops currently playing audio immediately (<1ms)."""
+    def stop(self, reset_seq: bool = True) -> None:
+        """Stops currently playing audio immediately (<1ms) and cancels queued speech."""
+        if reset_seq:
+            with self._seq_lock:
+                self._utterance_seq += 1
         self._is_speaking = False
         self._stop_requested = True
-        if self._sapi_speaker is not None:
-            try:
-                # SVSFPurgeBeforeSpeak = 2 purges all speech instantly
-                self._sapi_speaker.Speak("", 2)
-            except Exception:
-                pass
+        for sp in {getattr(self._sapi_local, "speaker", None), self._sapi_speaker}:
+            if sp is not None:
+                try:
+                    # SVSFPurgeBeforeSpeak = 2 purges all speech instantly
+                    sp.Speak("", 2)
+                except Exception:
+                    pass
         if self._pygame_initialized:
             try:
                 import pygame

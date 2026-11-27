@@ -275,8 +275,6 @@ def main() -> None:
                             continue
                         user_input = raw_speech
                         console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
-                        if speaker and not speaker.fast_voice:
-                            speaker.speak_ack()
                         # Porcupine already authenticated this interaction; do not run
                         # transcript substring matching on every microphone capture.
                         raw_speech = None
@@ -327,10 +325,6 @@ def main() -> None:
 
                         user_input = clean_command if (is_ww and clean_command) else raw_speech
                         console.print(f"[bold cyan]🎙️  You said:[/bold cyan] [bold white]\"{user_input}\"[/bold white]")
-
-                        # If using neural cloud voice, speak an immediate acknowledgment while synthesis begins
-                        if speaker and not speaker.fast_voice:
-                            speaker.speak_ack()
 
                 else:
                     user_input = Prompt.ask("[bold cyan]TARS >[/bold cyan]")
