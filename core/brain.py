@@ -1081,27 +1081,18 @@ class TARSAgent:
                 msg, ok = self._reply(res, f"Searching Google for '{s_query}'.")
                 return {"response": msg, "steps": [{"tool": "smart_search", "args": {"query": s_query, "engine": "google"}, "result": res}], "success": ok}
 
-        # 14. Media Playback Controls (Anchored)
-        if re.search(r"^(?:mute|unmute|silence)$", p_clean):
-            res = self.execute_tool("media_control", {"action": "mute"})
-            msg, ok = self._reply(res, "Mute toggled.")
-            return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "mute"}, "result": res}], "success": ok}
-        
-        if re.search(r"^(?:play|pause|resume|play\s+pause|stop\s+music)$", p_clean):
-            res = self.execute_tool("media_control", {"action": "play_pause"})
-            msg, ok = self._reply(res, "Playback toggled.")
-            return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "play_pause"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:next\s+track|next\s+song|skip\s+song)$", p_clean):
-            res = self.execute_tool("media_control", {"action": "next"})
-            msg, ok = self._reply(res, "Skipped to next track.")
-            return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "next"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:previous\s+track|prev\s+track|prev\s+song)$", p_clean):
-            res = self.execute_tool("media_control", {"action": "prev"})
-            msg, ok = self._reply(res, "Restarted track.")
-            return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "prev"}, "result": res}], "success": ok}
-
+        # 14. Media Playback Controls (Anchored) - data-driven
+        _media_table = [
+            (re.compile(r"^(?:mute|unmute|silence)$"), "mute", "Mute toggled."),
+            (re.compile(r"^(?:play|pause|resume|play\s+pause|stop\s+music)$"), "play_pause", "Playback toggled."),
+            (re.compile(r"^(?:next\s+track|next\s+song|skip\s+song)$"), "next", "Skipped to next track."),
+            (re.compile(r"^(?:previous\s+track|prev\s+track|prev\s+song)$"), "prev", "Restarted track."),
+        ]
+        for _mpat, _mact, _mmsg in _media_table:
+            if _mpat.search(p_clean):
+                res = self.execute_tool("media_control", {"action": _mact})
+                msg, ok = self._reply(res, _mmsg)
+                return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": _mact}, "result": res}], "success": ok}
         # 14. Direct Terminal / PowerShell Execution
         term_match = re.match(r"^(?:run|execute|exec|powershell|cmd|terminal)\s+(?:command\s+)?(.+)", p_clean)
         if term_match:
