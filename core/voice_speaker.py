@@ -64,7 +64,7 @@ class VoiceSpeaker:
         self.rate = os.getenv("TARS_VOICE_RATE", rate)
         self.pitch = os.getenv("TARS_VOICE_PITCH", pitch)
         # Default to fast native Windows SAPI for zero-latency instant responses unless cloud neural voice requested
-        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice)
+        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip())
         self.fast_voice = not force_neural
         self._is_speaking = False
         self._stop_requested = False
@@ -136,6 +136,33 @@ class VoiceSpeaker:
                     await asyncio.sleep(0.15)
         if last_err is not None:
             print(f"[VoiceSpeaker] Edge-TTS failed ({type(last_err).__name__}); falling back to Zira.")
+        return False
+
+    def _synthesize_elevenlabs(self, text: str, output_path: str) -> bool:
+        """Synthesizes text into an MP3 file using the ElevenLabs REST API (optional, cloud)."""
+        api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+        if not api_key:
+            return False
+        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "21m00Tcm4TlvDq8ikWAM").strip()
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        headers = {"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"}
+        payload = {
+            "text": text,
+            "model_id": os.getenv("ELEVENLABS_MODEL", "eleven_monolingual_v1"),
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        }
+        try:
+            import requests
+            resp = requests.post(url, json=payload, headers=headers, timeout=15.0)
+            if resp.status_code == 200 and resp.content:
+                with open(output_path, "wb") as f:
+                    f.write(resp.content)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return True
+            else:
+                print(f"[VoiceSpeaker] ElevenLabs failed: HTTP {resp.status_code} {resp.text[:120]}")
+        except Exception as exc:
+            print(f"[VoiceSpeaker] ElevenLabs failed ({type(exc).__name__}); falling back to Edge-TTS.")
         return False
 
     def _play_audio_pygame(
@@ -421,7 +448,12 @@ class VoiceSpeaker:
 
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    edge_success = loop.run_until_complete(self._synthesize_edge_tts(speech_text, temp_audio))
+                    edge_success = False
+                    # Prefer ElevenLabs when an API key is configured (higher quality female voice).
+                    if (os.getenv("ELEVENLABS_API_KEY") or "").strip():
+                        edge_success = self._synthesize_elevenlabs(speech_text, temp_audio)
+                    if not edge_success:
+                        edge_success = loop.run_until_complete(self._synthesize_edge_tts(speech_text, temp_audio))
                     loop.close()
 
                     if self._stop_requested or utterance_id != self._utterance_seq:
