@@ -582,64 +582,57 @@ class TARSAgent:
                     "success": all_success
                 }
 
-        # 1. Presence, Identity & Small Talk (<1ms response; anchored so message bodies never trigger them)
+        # 1. Presence, Identity & Small Talk — data-driven command table (P0 increment 1).
+        # Each entry is (compiled regex, handler).  Handler returns the response
+        # dict or None; the first match wins.  Everything else falls through to
+        # the orchestrator / LLM instead of being swallowed by inline regex.
         _lead = r"^(?:(?:hey|hi|hello|yo|ok|okay|please|can\s+you|could\s+you|tars)\s+)*"
         _tail = r"(?:\s+(?:now|right\s+now|please|tars))?[!?.]*$"
-        if re.search(rf"{_lead}(?:where\s+are\s+you(?:\s+located)?|where\s+do\s+you\s+live){_tail}", p_clean):
-            return {
-                "response": "I am right here in your system memory, monitoring your hardware and ready for your command.",
-                "steps": [],
-                "success": True
-            }
 
-        if re.search(rf"{_lead}(?:who\s+are\s+you|what\s+is\s+your\s+name|who\s+made\s+you){_tail}", p_clean):
-            return {
-                "response": "I am TARS, Tactical Autonomous Robotic System. Honesty 90%, humor 75%.",
-                "steps": [],
-                "success": True
-            }
+        def _resp(text):
+            return {"response": text, "steps": [], "success": True}
 
-        # Silence / Stop talking / Shh / Quiet
-        if re.search(rf"{_lead}(?:stop\s+talking|be\s+quiet|shut\s+up|silence|shh|pause\s+talking|quiet|stop)(?:\s+tars)?[!?.]*$", p_clean):
-            return {"response": "Standing by.", "steps": [], "success": True}
+        def _praise(_m):
+            return _resp(random.choice(self.PRAISE_REPLIES))
 
-        if re.search(rf"{_lead}(?:are\s+you\s+(?:there|listening|online)|(?:can\s+you\s+)?hear\s+me|ping)(?:\s+(?:now|tars))?[!?.]*$", p_clean):
-            return {
-                "response": "Loud and clear. Standing by.",
-                "steps": [],
-                "success": True
-            }
+        def _joke(_m):
+            return _resp(random.choice(self.JOKES))
 
-        if re.search(r"^(?:hello|hi|hey|what's up|how are you|good morning|good evening|good afternoon)$", p_clean):
-            return {"response": "TARS online. Ready for orders.", "steps": [], "success": True}
-
-        # Praise, thanks and sign-offs: answering these through the model costs a
-        # network round trip for a reply that never changes.
-        if re.search(r"^(?:good\s+job|well\s+done|nice\s+work|great\s+job|awesome|perfect|excellent|thank\s+you|thanks|thx|much\s+appreciated|i\s+love\s+you|you\s+are\s+(?:the\s+)?best)(?:\s+(?:tars|chief|boss))?[!.]*$", p_clean):
-            return {"response": random.choice(self.PRAISE_REPLIES), "steps": [], "success": True}
-
-        if re.search(r"^(?:good\s+night|bye|goodbye|see\s+you|that's\s+all|nothing\s+else|no\s+thanks)[!.]*$", p_clean):
-            return {"response": "Standing by. Say the word when you need me.", "steps": [], "success": True}
-
-        # Direct capabilities query (anchored)
-        if re.search(r"^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+(?:capabilities|features)|help|capabilities|features)$", p_clean):
-            return {
-                "response": "I control your entire PC: mouse clicks, keyboard typing, browser navigation, volume, window management, terminal commands, and system hardware.",
-                "steps": [],
-                "success": True
-            }
-
-        # 2. Jokes & Personality Matrices (short, direct requests only)
-        if re.search(r"^(?:tell\s+(?:me\s+)?(?:a\s+)?joke|tell\s+me\s+something\s+funny|joke)$", p_clean):
-            return {"response": random.choice(self.JOKES), "steps": [], "success": True}
-
-        if re.search(r"\b(?:what\s+is\s+your\s+)?humor\s+(?:setting|parameter|level)\b", p_clean):
+        def _humor(_m):
             humor = int(self.settings.get("personality", {}).get("humor", 0.75) * 100)
-            return {"response": f"Humor is set to {humor} percent. That's enough to keep me sarcastic without blowing the airlock.", "steps": [], "success": True}
+            return _resp(f"Humor is set to {humor} percent. That's enough to keep me sarcastic without blowing the airlock.")
 
-        if re.search(r"\b(?:what\s+is\s+your\s+)?honesty\s+(?:setting|parameter|level)\b", p_clean):
+        def _honesty(_m):
             honesty = int(self.settings.get("personality", {}).get("honesty", 0.90) * 100)
-            return {"response": f"Honesty parameter: {honesty} percent. Absolute honesty isn't always the most diplomatic thing for emotional humans.", "steps": [], "success": True}
+            return _resp(f"Honesty parameter: {honesty} percent. Absolute honesty isn't always the most diplomatic thing for emotional humans.")
+
+        _small_talk_table = [
+            (re.compile(rf"{_lead}(?:where\s+are\s+you(?:\s+located)?|where\s+do\s+you\s+live){_tail}"),
+             lambda _m: _resp("I am right here in your system memory, monitoring your hardware and ready for your command.")),
+            (re.compile(rf"{_lead}(?:who\s+are\s+you|what\s+is\s+your\s+name|who\s+made\s+you){_tail}"),
+             lambda _m: _resp("I am TARS, Tactical Autonomous Robotic System. Honesty 90%, humor 75%.")),
+            (re.compile(rf"{_lead}(?:stop\s+talking|be\s+quiet|shut\s+up|silence|shh|pause\s+talking|quiet|stop)(?:\s+tars)?[!?.]*$"),
+             lambda _m: _resp("Standing by.")),
+            (re.compile(rf"{_lead}(?:are\s+you\s+(?:there|listening|online)|(?:can\s+you\s+)?hear\s+me|ping)(?:\s+(?:now|tars))?[!?.]*$"),
+             lambda _m: _resp("Loud and clear. Standing by.")),
+            (re.compile(r"^(?:hello|hi|hey|what's up|how are you|good morning|good evening|good afternoon)$"),
+             lambda _m: _resp("TARS online. Ready for orders.")),
+            (re.compile(r"^(?:good\s+job|well\s+done|nice\s+work|great\s+job|awesome|perfect|excellent|thank\s+you|thanks|thx|much\s+appreciated|i\s+love\s+you|you\s+are\s+(?:the\s+)?best)(?:\s+(?:tars|chief|boss))?[!.]*$"),
+             _praise),
+            (re.compile(r"^(?:good\s+night|bye|goodbye|see\s+you|that's\s+all|nothing\s+else|no\s+thanks)[!.]*$"),
+             lambda _m: _resp("Standing by. Say the word when you need me.")),
+            (re.compile(r"^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+(?:capabilities|features)|help|capabilities|features)$"),
+             lambda _m: _resp("I control your entire PC: mouse clicks, keyboard typing, browser navigation, volume, window management, terminal commands, and system hardware.")),
+            (re.compile(r"^(?:tell\s+(?:me\s+)?(?:a\s+)?joke|tell\s+me\s+something\s+funny|joke)$"),
+             _joke),
+            (re.compile(r"\b(?:what\s+is\s+your\s+)?humor\s+(?:setting|parameter|level)\b"),
+             _humor),
+            (re.compile(r"\b(?:what\s+is\s+your\s+)?honesty\s+(?:setting|parameter|level)\b"),
+             _honesty),
+        ]
+        for _pat, _handler in _small_talk_table:
+            if _pat.search(p_clean):
+                return _handler(None)
 
         # 3. Browser Tabs (Short Imperative Commands Only)
         if re.search(r"^(?:close|shut|exit)\s+(?:this\s+|the\s+)?(?:tab|tap)$", p_clean):

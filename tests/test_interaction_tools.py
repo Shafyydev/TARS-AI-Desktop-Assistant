@@ -301,7 +301,8 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         self.agent.tool_registry["open_whatsapp_chat"] = mock_chat
 
         with patch("tools.get_running_windows", return_value=["WhatsApp"]):
-            result = self.agent.run_agent_loop("go to Shafi")
+            with patch("tools.resolve_system_target", return_value=None):
+                result = self.agent.run_agent_loop("go to Shafi")
 
         self.assertTrue(result["success"])
         mock_chat.assert_called_once_with(contact_name="shafi")
