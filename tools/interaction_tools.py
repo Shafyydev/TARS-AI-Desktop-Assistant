@@ -966,12 +966,14 @@ def send_whatsapp_message(contact_name: str, message: str) -> Dict[str, Any]:
             focused = False
         if not focused:
             # Coordinate click is only a fallback when UIA click_input is unavailable.
+            # Never use (0, 0) or a non-positive coordinate as a fallback.
             try:
                 rect = message_edit.rectangle()
                 cx = (rect.left + rect.right) // 2
                 cy = (rect.top + rect.bottom) // 2
-                pyautogui.click(cx, cy)
-                focused = True
+                if cx > 10 and cy > 10:
+                    pyautogui.click(cx, cy)
+                    focused = True
             except Exception:
                 focused = False
         time.sleep(0.3)

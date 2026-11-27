@@ -267,6 +267,7 @@ def launch_application(app_name: str) -> Dict[str, Any]:
             foc = focus_window("whatsapp")
             if foc.get("success"):
                 return {"success": True, "message": "Focused open WhatsApp window."}
+            return {"success": False, "error": "WhatsApp window found but could not be focused."}
         else:
             for proc in psutil.process_iter(["name"]):
                 try:
@@ -275,6 +276,24 @@ def launch_application(app_name: str) -> Dict[str, Any]:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             time.sleep(0.4)
+
+        # Launch WhatsApp Desktop through the Store app activation.  The
+        # `whatsapp:` URI scheme is NOT used: on this system it is captured by
+        # Brave and opens an `about:` page instead of WhatsApp Desktop.
+        try:
+            subprocess.Popen(
+                ["explorer.exe", "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"],
+                shell=False,
+            )
+        except Exception as e:
+            return {"success": False, "error": f"Failed to launch whatsapp: {str(e)}"}
+
+        if _wait_for_launch("whatsapp", timeout=3.0):
+            return {"success": True, "message": "Successfully launched whatsapp."}
+        return {
+            "success": False,
+            "error": "Launched 'whatsapp' but no matching window appeared within 3.0 seconds.",
+        }
 
     try:
         subprocess.Popen(cmd, shell=True)

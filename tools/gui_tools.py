@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pyautogui
 
-# Disable fail-safe corner abort so automated background/corner sessions do not crash
-pyautogui.FAILSAFE = False
+# Keep PyAutoGUI's fail-safe corner protection enabled so an automated run
+# cannot leave the cursor pinned in a screen corner without a safe abort.
+pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.05
 
 
