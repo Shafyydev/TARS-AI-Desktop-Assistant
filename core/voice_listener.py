@@ -550,14 +550,15 @@ class VoiceListener:
         if not self._recognizer or not self._microphone:
             return None
         self.close_stream()
-        # Safe threshold: well above the measured noise floor and above TARS's own
-        # playback level, so the assistant does not interrupt itself.
-        thresh = max(300, int(self._recognizer.energy_threshold * 1.5))
+        # Safe threshold: well above the measured noise floor and TARS's own
+        # speaker bleed (340-1800+ RMS on laptop speakers) to prevent self-cutoff.
+        thresh = max(1200, int(self._recognizer.energy_threshold * 3.5))
         return VoiceBargeInMonitor(
             self._recognizer,
             self._microphone,
             energy_threshold=thresh,
-            grace_period=0.3,
+            grace_period=0.7,
+            required_frames=5,
         )
 
 

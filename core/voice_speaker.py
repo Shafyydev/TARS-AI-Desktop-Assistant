@@ -129,6 +129,7 @@ class VoiceSpeaker:
         audio_file: str,
         interrupt_check: Optional[Callable[[], bool]] = None,
         utterance_id: Optional[int] = None,
+        check_keyboard: bool = False,
     ) -> bool:
         """Plays the generated audio file using pygame with instant interruption support."""
         if not self._init_pygame():
@@ -144,14 +145,15 @@ class VoiceSpeaker:
                 if utterance_id is not None and utterance_id != self._utterance_seq:
                     pygame.mixer.music.stop()
                     return False
-                try:
-                    import msvcrt
-                    if msvcrt.kbhit():
-                        msvcrt.getch()
-                        self.stop()
-                        return False
-                except Exception:
-                    pass
+                if check_keyboard:
+                    try:
+                        import msvcrt
+                        if msvcrt.kbhit():
+                            msvcrt.getch()
+                            self.stop()
+                            return False
+                    except Exception:
+                        pass
                 if interrupt_check:
                     try:
                         if interrupt_check():
@@ -393,17 +395,31 @@ class VoiceSpeaker:
                     if self._stop_requested or utterance_id != self._utterance_seq:
                         return
 
-                    if blocking and listener and hasattr(listener, "create_barge_in_monitor"):
+                    use_barge_in = (
+                        blocking
+                        and listener is not None
+                        and hasattr(listener, "create_barge_in_monitor")
+                        and os.getenv("TARS_ACOUSTIC_BARGE_IN") == "1"
+                    )
+                    if use_barge_in:
                         monitor = listener.create_barge_in_monitor()
                         if monitor:
                             monitor.start()
                     check_fn = monitor.is_triggered if monitor else None
 
                     if edge_success and os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 0:
-                        played = self._play_audio_pygame(temp_audio, interrupt_check=check_fn, utterance_id=utterance_id)
-                        if not played and not self._stop_requested and utterance_id == self._utterance_seq:
-                            self._speak_sapi(speech_text, async_mode=True)
-                            interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
+                        played = self._play_audio_pygame(
+                            temp_audio,
+                            interrupt_check=check_fn,
+                            utterance_id=utterance_id,
+                            check_keyboard=blocking,
+                        )
+                        if not played:
+                            if self._stop_requested and utterance_id == self._utterance_seq:
+                                interrupted = True
+                            elif not self._stop_requested and utterance_id == self._utterance_seq:
+                                self._speak_sapi(speech_text, async_mode=True)
+                                interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
                     elif not self._stop_requested and utterance_id == self._utterance_seq:
                         self._speak_sapi(speech_text, async_mode=True)
                         interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")

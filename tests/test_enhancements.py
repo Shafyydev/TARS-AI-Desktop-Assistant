@@ -922,6 +922,22 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         self.assertIn("Gender]::Female", cmd)
         self.assertIn("Zira", cmd)
 
+    def test_neural_speak_with_listener_does_not_self_barge_in_by_default(self):
+        from unittest.mock import AsyncMock
+        from core.voice_speaker import VoiceSpeaker
+
+        sp = VoiceSpeaker(fast_voice=False)
+        fake_listener = MagicMock()
+        with patch.object(sp, "_synthesize_edge_tts", new=AsyncMock(return_value=True)), \
+             patch("core.voice_speaker.os.path.getsize", return_value=1024), \
+             patch.object(sp, "_play_audio_pygame", return_value=True) as mock_play:
+            interrupted = sp.speak("Opening WhatsApp now.", blocking=True, listener=fake_listener)
+        self.assertFalse(interrupted)
+        fake_listener.create_barge_in_monitor.assert_not_called()
+        mock_play.assert_called_once()
+        self.assertIsNone(mock_play.call_args.kwargs.get("interrupt_check"))
+        self.assertTrue(mock_play.call_args.kwargs.get("check_keyboard"))
+
 
 if __name__ == "__main__":
     unittest.main()
