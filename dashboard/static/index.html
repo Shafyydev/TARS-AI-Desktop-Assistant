@@ -124,29 +124,15 @@
       background: linear-gradient(90deg, transparent, var(--holo), transparent);
     }
 
-    /* Top-Center Holographic Clock */
+    /* Top-Center Clean Unboxed Clock */
     .top-clock {
-      position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
-      display: inline-flex; align-items: center; gap: 12px;
+      position: fixed; left: 50%; top: 24px; transform: translateX(-50%);
       pointer-events: none; z-index: 5;
-    }
-    .clock-pill {
-      padding: 5px 15px; border-radius: 999px;
-      border: 1px solid rgba(var(--holo-rgb), 0.28);
-      background: rgba(3, 18, 23, 0.56); backdrop-filter: blur(12px);
       font-family: Consolas, ui-monospace, monospace;
       font-size: 13px; font-variant-numeric: tabular-nums;
-      letter-spacing: 0.24em; padding-left: calc(15px + 0.24em);
+      letter-spacing: 0.24em; padding-left: 0.24em;
       color: var(--holo-bright);
-      text-shadow: 0 0 14px rgba(var(--holo-rgb), 0.55);
-      box-shadow: 0 0 22px rgba(var(--holo-rgb), 0.14);
-    }
-    .clock-wing {
-      width: 36px; height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(var(--holo-rgb), 0.55));
-    }
-    .clock-wing.right {
-      background: linear-gradient(90deg, rgba(var(--holo-rgb), 0.55), transparent);
+      text-shadow: 0 0 12px rgba(var(--holo-rgb), 0.48);
     }
 
     .top-right {
@@ -240,19 +226,6 @@
     .btn-svg { width: 13px; height: 13px; flex-shrink: 0; filter: drop-shadow(0 0 5px rgba(var(--holo-rgb), 0.55)); }
     @keyframes dockPulse { 0%, 100% { box-shadow: 0 0 12px rgba(255, 93, 122, 0.45); } 50% { box-shadow: 0 0 26px rgba(255, 93, 122, 0.90); } }
 
-    /* Right Edge Compact Telemetry */
-    .right-rail {
-      position: fixed; right: 28px; top: 96px; width: 240px;
-      text-align: right; pointer-events: auto;
-      font-family: Consolas, ui-monospace, monospace;
-      display: flex; flex-direction: column; gap: 6px;
-    }
-    .right-item {
-      font-size: 10.5px; color: var(--muted);
-      letter-spacing: 0.08em; line-height: 1.45;
-      text-shadow: 0 0 8px rgba(var(--holo-rgb), 0.18);
-    }
-    .right-item b { color: var(--holo-bright); font-weight: 600; }
     .drawer-theme-bar {
       display: flex; align-items: center; justify-content: space-between; gap: 10px;
       padding: 7px 9px; border-radius: 5px;
@@ -470,11 +443,7 @@
         <div class="brand-bar"></div>
       </div>
 
-      <div class="top-clock">
-        <span class="clock-wing"></span>
-        <div class="clock-pill" id="clock">--:--:--</div>
-        <span class="clock-wing right"></span>
-      </div>
+      <div class="top-clock" id="clock">--:--:--</div>
 
       <div class="top-right">
         <div class="status-chip"><span class="pulse-dot" id="stateDot"></span><span id="stateLabel">CONNECTING</span></div>
@@ -499,12 +468,6 @@
       <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">DISK FREE</span><span class="diag-v" id="disk">--</span></div>
       <div class="diag-line"><span class="diag-dot"></span><span class="diag-k">POWER</span><span class="diag-v" id="battery">--</span></div>
       <div class="diag-line"><span class="diag-dot ok"></span><span class="diag-k">TOOLS READY</span><span class="diag-v" id="toolCount">--</span></div>
-    </aside>
-
-    <!-- Right Margin Neural Engine & Audio Reactivity -->
-    <aside class="right-rail">
-      <div class="right-item">ENGINE · <b id="llmName">--</b></div>
-      <div class="right-item">AUDIO REACTIVITY · <b id="audioMeter">IDLE</b></div>
     </aside>
 
     <!-- Center-Bottom Floating Subtitles & Reactive Command Composer -->
@@ -1238,7 +1201,7 @@ async function startMicSpectrum() {
       for (let i = 0; i < micData.length; i++) sum += micData[i];
       const norm = Math.min(1.0, (sum / micData.length) / 95.0);
       audioLevel += (norm - audioLevel) * 0.35;
-      $("audioMeter").textContent = audioLevel > 0.08 ? `ACTIVE ${(audioLevel * 100).toFixed(0)}%` : "LISTENING";
+      if ($("audioMeter")) $("audioMeter").textContent = audioLevel > 0.08 ? `ACTIVE ${(audioLevel * 100).toFixed(0)}%` : "LISTENING";
       micRaf = requestAnimationFrame(loop);
     };
     loop();
@@ -1249,7 +1212,7 @@ function stopMicSpectrum() {
   micRaf = null; micAnalyser = null; audioLevel = 0;
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   if (micCtx) { try { micCtx.close(); } catch (_) {} micCtx = null; }
-  $("audioMeter").textContent = "IDLE";
+  if ($("audioMeter")) $("audioMeter").textContent = "IDLE";
 }
 
 /* ==================== SUBTITLE CHAT & DRAWER INSPECTOR ==================== */
@@ -1296,7 +1259,7 @@ async function refreshStatus() {
     $("battery").textContent = t.battery || "--";
     if ($("cwd")) $("cwd").textContent = j.cwd || "--";
     const llm = j.llm || {};
-    $("llmName").textContent = llm.model || "n/a";
+    if ($("llmName")) $("llmName").textContent = llm.model || "n/a";
     if ($("llmState")) $("llmState").textContent = llm.available ? "AVAILABLE" : "OFFLINE/LOCAL";
     const p = j.personality || {};
     if ($("honesty")) $("honesty").textContent = p.honesty != null ? p.honesty + "%" : "--";
@@ -1530,20 +1493,20 @@ function speak(text) {
       ended = true;
       if (speakWatchTimer) { clearInterval(speakWatchTimer); speakWatchTimer = null; }
       ttsSpeakWave = 0.0;
-      $("audioMeter").textContent = voiceOn ? "LISTENING" : "IDLE";
+      if ($("audioMeter")) $("audioMeter").textContent = voiceOn ? "LISTENING" : "IDLE";
       setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "LISTENING" : "ONLINE");
     };
 
     // Prime speaking sync immediately so the orb responds the instant TARS starts replying
     setOrbState("speaking", "SPEAKING");
     ttsSpeakWave = 0.72;
-    $("audioMeter").textContent = "SPEAKING · SYNC";
+    if ($("audioMeter")) $("audioMeter").textContent = "SPEAKING · SYNC";
     HoloEngine.pulse(false);
 
     u.onstart = () => {
       setOrbState("speaking", "SPEAKING");
       ttsSpeakWave = 0.85;
-      $("audioMeter").textContent = "SPEAKING · SYNC";
+      if ($("audioMeter")) $("audioMeter").textContent = "SPEAKING · SYNC";
     };
 
     // Real-time word-boundary synchronization: spike wave + subtle orbital ripple per spoken word
@@ -1552,7 +1515,7 @@ function speak(text) {
       if (ev && ev.name && ev.name !== "word") return;
       const wLen = Math.max(2, Math.min(12, ev.charLength || 5));
       ttsSpeakWave = Math.min(1.0, 0.58 + wLen * 0.042);
-      $("audioMeter").textContent = `SPEAKING · ${Math.round(ttsSpeakWave * 100)}%`;
+      if ($("audioMeter")) $("audioMeter").textContent = `SPEAKING · ${Math.round(ttsSpeakWave * 100)}%`;
       wordCounter++;
       if (wordCounter % 4 === 1) HoloEngine.pulse(false);
     };
