@@ -71,7 +71,7 @@ def is_affirmative(text: str) -> bool:
         return True
     return bool(
         re.match(
-            r"^(?:yes|yeah|yep|yup|ya|sure|ok|okay|confirm|affirmative|roger)\b",
+            r"^(?:yes|yeah|yep|yup|ya|y|sure|ok|okay|confirm|affirmative|roger)\b",
             clean,
         )
     )
@@ -92,7 +92,7 @@ class TARSAgent:
 
     # Spoken and typed answers that mean "go ahead".  Anything else cancels.
     AFFIRMATIVE_WORDS = frozenset({
-        "yes", "yeah", "yep", "yup", "ya", "sure", "ok", "okay", "k",
+        "yes", "yeah", "yep", "yup", "ya", "sure", "ok", "okay", "k", "y",
         "confirm", "confirmed", "affirmative", "roger", "proceed",
         "go ahead", "do it", "send it", "go on", "please do",
     })
@@ -431,11 +431,15 @@ class TARSAgent:
         p_clean = re.sub(r"^(?:can you|could you|please|would you|tars|hey tars|yo tars|ok tars|okay tars)\s+", "", p).strip("?!.,; ")
         p_clean = re.sub(r"\s+(?:tars|please)$", "", p_clean).strip("?!.,; ")
 
-        # Strip only a small set of leading conversational prefixes.  Aggressive
-        # filler-stripping used to destroy commands like "ok now the task is open
-        # brave and search youtube for ttf"; unmatched input now falls through to
-        # the orchestrator / LLM instead of being mangled here.
-        for filler in ("please", "could you", "can you", "would you", "hey tars", "ok tars", "okay tars", "tars"):
+        # Strip leading conversational filler.  Keep the long multi-word phrases
+        # (which carry no command meaning) but NOT the short ones ("ok", "now",
+        # "so") that used to mangle commands like "ok now the task is open brave
+        # and search youtube for ttf" into garbage.
+        for filler in (
+            "ok now the task is", "okay now the task is", "now the task is", "the task is",
+            "ok now", "okay now", "so now", "hey tars", "yo tars", "ok tars", "okay tars",
+            "could you", "can you", "would you", "please",
+        ):
             while p_clean.startswith(filler + " "):
                 p_clean = p_clean[len(filler):].strip()
         p_clean = p_clean.strip("?!.,; ")
