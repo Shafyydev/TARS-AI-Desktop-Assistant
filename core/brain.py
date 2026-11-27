@@ -430,15 +430,11 @@ class TARSAgent:
         p_clean = re.sub(r"^(?:can you|could you|please|would you|tars|hey tars|yo tars|ok tars|okay tars)\s+", "", p).strip("?!.,; ")
         p_clean = re.sub(r"\s+(?:tars|please)$", "", p_clean).strip("?!.,; ")
 
-        # Spoken commands often arrive wrapped in conversational filler, e.g.
-        # "ok now the task is open brave and search youtube for ttf".  Strip it
-        # so the anchored command patterns below can still match locally instead
-        # of falling through to the LLM.
-        for filler in (
-            "ok now the task is", "okay now the task is", "now the task is", "the task is",
-            "ok now", "okay now", "so now", "hey tars", "yo tars", "ok tars", "okay tars",
-            "can you", "could you", "would you", "please", "tars", "now", "so", "ok", "okay",
-        ):
+        # Strip only a small set of leading conversational prefixes.  Aggressive
+        # filler-stripping used to destroy commands like "ok now the task is open
+        # brave and search youtube for ttf"; unmatched input now falls through to
+        # the orchestrator / LLM instead of being mangled here.
+        for filler in ("please", "could you", "can you", "would you", "hey tars", "ok tars", "okay tars", "tars"):
             while p_clean.startswith(filler + " "):
                 p_clean = p_clean[len(filler):].strip()
         p_clean = p_clean.strip("?!.,; ")
