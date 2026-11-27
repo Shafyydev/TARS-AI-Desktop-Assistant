@@ -882,15 +882,15 @@ class TARSAgent:
             msg, ok = self._reply(res, "Workstation locked.")
             return {"response": msg, "steps": [{"tool": "lock_workstation", "args": {}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:take\s+(?:a\s+)?screenshot|screenshot|capture\s+screen)$", p_clean):
-            res = self.execute_tool("take_screenshot", {})
-            msg, ok = self._reply(res, "Screenshot captured.")
-            return {"response": msg, "steps": [{"tool": "take_screenshot", "args": {}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:snip|screen\s+snip|take\s+(?:a\s+)?snip)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "shift", "s"]})
-            msg, ok = self._reply(res, "Opened screen snip tool.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "shift", "s"]}, "result": res}], "success": ok}
+        _snap_table = [
+            (re.compile(r"^(?:take\s+(?:a\s+)?screenshot|screenshot|capture\s+screen)$"), "take_screenshot", {}, "Screenshot captured."),
+            (re.compile(r"^(?:snip|screen\s+snip|take\s+(?:a\s+)?snip)$"), "press_keys", {"keys": ["win", "shift", "s"]}, "Opened screen snip tool."),
+        ]
+        for _spat, _stool, _sargs, _smsg in _snap_table:
+            if _spat.search(p_clean):
+                res = self.execute_tool(_stool, _sargs)
+                msg, ok = self._reply(res, _smsg)
+                return {"response": msg, "steps": [{"tool": _stool, "args": _sargs, "result": res}], "success": ok}
 
         bright_match = re.match(r"^(?:(?:set|adjust|change)\s+)?(?:(?:screen|display)\s+)?brightness\s+(?:to\s+)?(\d{1,3})(?:\s*%)?$", p_clean)
         if bright_match:
