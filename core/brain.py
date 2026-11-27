@@ -630,31 +630,19 @@ class TARSAgent:
             if _pat.search(p_clean):
                 return _handler(None)
 
-        # 3. Browser Tabs (Short Imperative Commands Only)
-        if re.search(r"^(?:close|shut|exit)\s+(?:this\s+|the\s+)?(?:tab|tap)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "w"]})
-            msg, ok = self._reply(res, "Closed tab.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "w"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:new|open|create)\s+(?:a\s+)?(?:tab|tap)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "t"]})
-            msg, ok = self._reply(res, "Opened new tab.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "t"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:next|switch|cycle)\s+(?:tab|tap)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "tab"]})
-            msg, ok = self._reply(res, "Switched to next tab.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "tab"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:prev|previous|last|back)\s+(?:tab|tap)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "tab"]})
-            msg, ok = self._reply(res, "Switched to previous tab.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "tab"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:reopen|restore|undo)\s+(?:tab|tap)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "t"]})
-            msg, ok = self._reply(res, "Restored tab.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "t"]}, "result": res}], "success": ok}
+        # 3. Browser Tabs (Short Imperative Commands Only) - data-driven table
+        _tab_table = [
+            (re.compile(r"^(?:close|shut|exit)\s+(?:this\s+|the\s+)?(?:tab|tap)$"), ["ctrl", "w"], "Closed tab."),
+            (re.compile(r"^(?:new|open|create)\s+(?:a\s+)?(?:tab|tap)$"), ["ctrl", "t"], "Opened new tab."),
+            (re.compile(r"^(?:next|switch|cycle)\s+(?:tab|tap)$"), ["ctrl", "tab"], "Switched to next tab."),
+            (re.compile(r"^(?:prev|previous|last|back)\s+(?:tab|tap)$"), ["ctrl", "shift", "tab"], "Switched to previous tab."),
+            (re.compile(r"^(?:reopen|restore|undo)\s+(?:tab|tap)$"), ["ctrl", "shift", "t"], "Restored tab."),
+        ]
+        for _tpat, _tkeys, _tmsg in _tab_table:
+            if _tpat.search(p_clean):
+                res = self.execute_tool("press_keys", {"keys": _tkeys})
+                msg, ok = self._reply(res, _tmsg)
+                return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": _tkeys}, "result": res}], "success": ok}
 
         # 4. Direct GUI Mouse Controls (Short Imperative Commands Only)
         if re.search(r"^(?:double|2x)\s*click$", p_clean):
