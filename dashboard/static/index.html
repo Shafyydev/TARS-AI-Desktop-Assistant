@@ -106,19 +106,47 @@
     .hud-top {
       display: flex; align-items: flex-start; justify-content: space-between;
     }
-    .brand-block { pointer-events: auto; }
+    .brand-block {
+      pointer-events: auto;
+      display: inline-flex; flex-direction: column; align-items: center; text-align: center;
+    }
     .brand-title {
-      font-size: 20px; font-weight: 600; letter-spacing: 0.46em;
+      font-size: 21px; font-weight: 600; letter-spacing: 0.44em; padding-left: 0.44em;
       color: var(--holo-bright);
       text-shadow: 0 0 18px rgba(var(--holo-rgb), 0.58);
     }
     .brand-sub {
-      margin-top: 5px; font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
-      color: var(--muted); font-family: Consolas, ui-monospace, monospace;
+      margin-top: 6px; font-size: 9.5px; letter-spacing: 0.20em; padding-left: 0.20em;
+      text-transform: uppercase; color: var(--muted); font-family: Consolas, ui-monospace, monospace;
     }
     .brand-bar {
-      margin-top: 8px; width: 185px; height: 1px;
-      background: linear-gradient(90deg, var(--holo), transparent);
+      margin-top: 8px; width: 100%; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--holo), transparent);
+    }
+
+    /* Top-Center Holographic Clock */
+    .top-clock {
+      position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
+      display: inline-flex; align-items: center; gap: 12px;
+      pointer-events: none; z-index: 5;
+    }
+    .clock-pill {
+      padding: 5px 15px; border-radius: 999px;
+      border: 1px solid rgba(var(--holo-rgb), 0.28);
+      background: rgba(3, 18, 23, 0.56); backdrop-filter: blur(12px);
+      font-family: Consolas, ui-monospace, monospace;
+      font-size: 13px; font-variant-numeric: tabular-nums;
+      letter-spacing: 0.24em; padding-left: calc(15px + 0.24em);
+      color: var(--holo-bright);
+      text-shadow: 0 0 14px rgba(var(--holo-rgb), 0.55);
+      box-shadow: 0 0 22px rgba(var(--holo-rgb), 0.14);
+    }
+    .clock-wing {
+      width: 36px; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(var(--holo-rgb), 0.55));
+    }
+    .clock-wing.right {
+      background: linear-gradient(90deg, rgba(var(--holo-rgb), 0.55), transparent);
     }
 
     .top-right {
@@ -422,6 +450,9 @@
       .left-stream, .right-rail { display: none; }
       .center-bottom { width: calc(100vw - 48px); }
     }
+    @media (max-width: 760px) {
+      .top-clock { display: none; }
+    }
     @media (max-width: 680px) {
       .center-bottom { width: calc(100vw - 32px); }
     }
@@ -434,9 +465,15 @@
   <div class="hud-layer">
     <div class="hud-top">
       <div class="brand-block">
-        <div class="brand-title">T . A . R . S .</div>
-        <div class="brand-sub">Tactical Autonomous Robotic System · <span id="clock">--:--:--</span></div>
+        <div class="brand-title">T . A . R . S</div>
+        <div class="brand-sub">Tactical Autonomous Robotic System</div>
         <div class="brand-bar"></div>
+      </div>
+
+      <div class="top-clock">
+        <span class="clock-wing"></span>
+        <div class="clock-pill" id="clock">--:--:--</div>
+        <span class="clock-wing right"></span>
       </div>
 
       <div class="top-right">
@@ -1663,7 +1700,13 @@ document.querySelectorAll(".swatch").forEach(s => {
 $("confirmApproveBtn").addEventListener("click", () => sendConfirm(true));
 $("confirmDenyBtn").addEventListener("click", () => sendConfirm(false));
 
-// Initialize holographic HUD feed
+// Initialize holographic HUD feed & live 1s clock
+function tickClock() {
+  const now = new Date();
+  $("clock").textContent = now.toLocaleTimeString("en-GB", { hour12: false });
+}
+tickClock();
+setInterval(tickClock, 1000);
 addMsg("assistant", "Holographic neural interface online. Drag orb to inspect, scroll to zoom, tap to pulse, or double-tap core to speak.", "TARS");
 refreshStatus(); refreshProviders(); refreshToolCount(); refreshReminders(); refreshPrefs(); refreshHistory(); refreshToolLogs();
 setInterval(refreshStatus, 4500);
