@@ -1,8 +1,10 @@
 """Low-latency streaming neural TTS speaker for TARS with offline SAPI fallback and instant async acknowledgments."""
 import asyncio
+import hashlib
 import os
 import re
 import random
+import sys
 import tempfile
 import threading
 import time
@@ -74,7 +76,8 @@ class VoiceSpeaker:
         self._lock = threading.Lock()
         self._seq_lock = threading.Lock()
         self._utterance_seq = 0
-        
+        self._warm_phrases: dict[str, str] = {}
+
         # Pre-warm audio subsystem at startup
         self._init_pygame()
 
@@ -82,6 +85,62 @@ class VoiceSpeaker:
     def is_speaking(self) -> bool:
         """Returns True if audio is currently playing."""
         return self._is_speaking
+
+    def _synthesize_to_file(self, speech_text: str, output_path: str) -> bool:
+        """Synthesizes speech_text to output_path using ElevenLabs or Edge-TTS."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ok = False
+        try:
+            if (os.getenv("ELEVENLABS_API_KEY") or "").strip():
+                ok = self._synthesize_elevenlabs(speech_text, output_path)
+            if not ok:
+                ok = loop.run_until_complete(self._synthesize_edge_tts(speech_text, output_path))
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+        return bool(ok and os.path.exists(output_path) and os.path.getsize(output_path) > 0)
+
+    def warmup(self, phrase: Optional[str] = None) -> None:
+        """Pre-warms SAPI COM or caches a static phrase MP3 ahead of synchronized playback."""
+        if self.fast_voice:
+            if sys.platform == "win32":
+                try:
+                    self._get_thread_sapi_speaker()
+                except Exception:
+                    pass
+            return
+
+        if not phrase:
+            return
+        speech_text = self._clean_text_for_speech(phrase)
+        if not speech_text:
+            return
+        try:
+            cache_dir = os.path.join(tempfile.gettempdir(), "tars_tts_cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            el_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+            el_voice = os.getenv("ELEVENLABS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL") if el_key else ""
+            mode = "elevenlabs" if el_key else "edge"
+            sig = f"{mode}|{self.voice_name}|{self.rate}|{self.pitch}|{el_voice}|{speech_text}"
+            digest = hashlib.sha256(sig.encode("utf-8")).hexdigest()[:20]
+            cache_path = os.path.join(cache_dir, f"{digest}.mp3")
+            if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+                self._warm_phrases[speech_text] = cache_path
+                return
+            tmp_path = cache_path + f".{os.getpid()}.tmp"
+            if self._synthesize_to_file(speech_text, tmp_path):
+                os.replace(tmp_path, cache_path)
+                self._warm_phrases[speech_text] = cache_path
+            elif os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _init_pygame(self) -> bool:
         """Initializes or recovers pygame mixer for reliable playback."""
@@ -443,18 +502,17 @@ class VoiceSpeaker:
                 temp_audio = None
                 monitor = None
                 try:
-                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
-                        temp_audio = tf.name
-
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
+                    warm_path = self._warm_phrases.get(speech_text)
                     edge_success = False
-                    # Prefer ElevenLabs when an API key is configured (higher quality female voice).
-                    if (os.getenv("ELEVENLABS_API_KEY") or "").strip():
-                        edge_success = self._synthesize_elevenlabs(speech_text, temp_audio)
-                    if not edge_success:
-                        edge_success = loop.run_until_complete(self._synthesize_edge_tts(speech_text, temp_audio))
-                    loop.close()
+                    audio_path = None
+                    if warm_path and os.path.exists(warm_path) and os.path.getsize(warm_path) > 0:
+                        audio_path = warm_path
+                        edge_success = True
+                    else:
+                        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
+                            temp_audio = tf.name
+                        edge_success = self._synthesize_to_file(speech_text, temp_audio)
+                        audio_path = temp_audio
 
                     if self._stop_requested or utterance_id != self._utterance_seq:
                         return
@@ -471,9 +529,9 @@ class VoiceSpeaker:
                             monitor.start()
                     check_fn = monitor.is_triggered if monitor else None
 
-                    if edge_success and os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 0:
+                    if edge_success and audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
                         played = self._play_audio_pygame(
-                            temp_audio,
+                            audio_path,
                             interrupt_check=check_fn,
                             utterance_id=utterance_id,
                             check_keyboard=blocking,

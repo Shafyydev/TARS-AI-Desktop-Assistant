@@ -163,41 +163,27 @@ def main() -> None:
         test_microphone(language=args.language, mic_index=args.mic_index)
         sys.exit(0)
 
-    # Initialize TARS Brain & Voice
+    # Initialize TARS Brain & Voice before opening browser so the UI & greeting stay synchronized.
+    STARTUP_GREETING = "TARS operational. All systems online."
+    import socket as _sock
+    import threading
+    import webbrowser
+
     agent = TARSAgent()
-
-    # Launch web dashboard in background if enabled
-    if args.dashboard and not args.no_dashboard:
-        import threading, webbrowser, time as _t
-        def _start_dashboard():
-            try:
-                import uvicorn
-                uvicorn.run("dashboard.server:app", host="127.0.0.1", port=8765, log_level="warning")
-            except Exception as e:
-                console.print(f"[red]Dashboard failed to start: {e}[/red]")
-        threading.Thread(target=_start_dashboard, daemon=True).start()
-        _t.sleep(1.5)
-        webbrowser.open("http://127.0.0.1:8765")
-        console.print("[green][+] Web dashboard: http://127.0.0.1:8765[/green]")
-
-    llm = agent.orchestrator.llm
-    fallbacks = agent.orchestrator._get_fallback_providers()
-    fb_names = ", ".join(p.provider for p in fallbacks)
-    if llm.available():
-        fb_note = f" (failover ready: {fb_names})" if fb_names else ""
-        console.print(f"[dim green]Language model ready:[/dim green] {llm.provider} / {llm.model}{fb_note}")
-    else:
-        if fb_names:
-            console.print(f"[yellow]Primary LLM ({llm.provider}) offline ({llm.unavailable_reason()}); failover ready: {fb_names}[/yellow]")
-        else:
-            console.print(f"[bold red]Language model offline:[/bold red] {llm.unavailable_reason()}")
     use_fast = not args.neural_voice
     speaker = VoiceSpeaker(fast_voice=use_fast) if not args.text_only else None
 
-    # Speak scheduled reminder alerts aloud when audio output is enabled
+    warm_thread = None
     if speaker:
         from core.scheduler import set_alert_callback
         set_alert_callback(lambda msg: speaker.speak(msg, blocking=False))
+        if speaker.fast_voice:
+            speaker.warmup()
+        else:
+            # Pre-cache/load static intro audio concurrently while microphone & dashboard spin up
+            warm_thread = threading.Thread(target=speaker.warmup, args=(STARTUP_GREETING,), daemon=True)
+            warm_thread.start()
+
     v_cfg = agent.settings.get("voice", {})
     stt_timeout = int(v_cfg.get("stt_timeout", 8))
     stt_phrase_limit = int(v_cfg.get("stt_phrase_time_limit", 10))
@@ -214,12 +200,21 @@ def main() -> None:
     )
 
     _dash_srv = None
+    _dash_host, _dash_port = "127.0.0.1", 8765
     if args.dashboard and not args.no_dashboard:
         try:
-            import dashboard.server as _dash_srv  # shares state with uvicorn daemon in same process
-            _dash_srv.register_voice_runtime(active=bool(voice_mode and listener), speaker=speaker)
-        except Exception:
+            import dashboard.server as _dash_srv  # shared in-process state with uvicorn
+            _dash_srv.register_voice_runtime(active=bool(voice_mode and listener), speaker=speaker, agent=agent)
+            def _start_dashboard():
+                try:
+                    import uvicorn
+                    uvicorn.run(_dash_srv.app, host=_dash_host, port=_dash_port, log_level="warning")
+                except Exception as e:
+                    console.print(f"[red]Dashboard failed to start: {e}[/red]")
+            threading.Thread(target=_start_dashboard, daemon=True).start()
+        except Exception as e:
             _dash_srv = None
+            console.print(f"[red]Dashboard failed to start: {e}[/red]")
 
     # Wire Central Confirmation Gate for destructive actions
     def confirm_action(tool_name: str, arguments: dict) -> bool:
@@ -250,9 +245,45 @@ def main() -> None:
         with console.status("[dim cyan]Calibrating microphone for room acoustics...[/dim cyan]"):
             listener.calibrate(duration=0.45)
 
+    if warm_thread is not None:
+        warm_thread.join(timeout=3.5)
+
+    # Probe LLM & fallback reachability asynchronously so network timeouts never stall launch/greeting.
+    def _announce_llm_status():
+        try:
+            llm = agent.orchestrator.llm
+            fallbacks = agent.orchestrator._get_fallback_providers()
+            fb_names = ", ".join(p.provider for p in fallbacks)
+            if llm.available():
+                fb_note = f" (failover ready: {fb_names})" if fb_names else ""
+                console.print(f"[dim green]Language model ready:[/dim green] {llm.provider} / {llm.model}{fb_note}")
+            elif fb_names:
+                console.print(f"[yellow]Primary LLM ({llm.provider}) offline ({llm.unavailable_reason()}); failover ready: {fb_names}[/yellow]")
+            else:
+                console.print(f"[bold red]Language model offline:[/bold red] {llm.unavailable_reason()}")
+        except Exception:
+            pass
+
+    if _dash_srv is not None:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                with _sock.create_connection((_dash_host, _dash_port), timeout=0.15):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        _dash_srv.reset_ui_open_signal()
+        webbrowser.open(f"http://{_dash_host}:{_dash_port}")
+        console.print(f"[green][+] Web dashboard: http://{_dash_host}:{_dash_port}[/green]")
+        # Synchronize intro voice playback to ~0.5s after dashboard mounts & renders in browser.
+        _dash_srv.wait_for_ui_open(timeout=2.5)
+        time.sleep(0.45)
+
+    threading.Thread(target=_announce_llm_status, daemon=True).start()
+
     if speaker:
         # Block on the brief startup greeting in voice mode so the mic does not capture TARS's own speaker output.
-        speaker.speak("TARS operational. All systems online.", blocking=voice_mode)
+        speaker.speak(STARTUP_GREETING, blocking=voice_mode)
 
     if voice_mode:
         console.print("[bold green]🎙️  HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")

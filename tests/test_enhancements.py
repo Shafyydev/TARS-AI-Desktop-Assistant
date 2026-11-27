@@ -560,6 +560,12 @@ class TestDashboardEndpoints(unittest.TestCase):
             r2 = client.post("/api/mic", json={"muted": False})
             self.assertEqual(r2.status_code, 200)
             self.assertFalse(srv.is_mic_muted())
+
+            # UI readiness signal clears cleanly and triggers when /api/status loads
+            srv.reset_ui_open_signal()
+            self.assertFalse(srv.wait_for_ui_open(timeout=0.01))
+            client.get("/api/status")
+            self.assertTrue(srv.wait_for_ui_open(timeout=0.2))
         finally:
             srv.register_voice_runtime(active=False, speaker=None)
             srv._mic_muted = False
@@ -1056,6 +1062,29 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
+
+    def test_warmup_caches_intro_phrase_and_skips_resynthesis(self):
+        from core.voice_speaker import VoiceSpeaker
+
+        phrase = "TARS operational. All systems online. Warmup unit check."
+        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": ""}):
+            sp = VoiceSpeaker(fast_voice=False)
+
+            def _fake_synth(text, out_path):
+                with open(out_path, "wb") as f:
+                    f.write(b"ID3" + b"\x01" * 128)
+                return True
+
+            with patch.object(sp, "_synthesize_to_file", side_effect=_fake_synth) as mock_synth:
+                sp.warmup(phrase)
+                self.assertEqual(mock_synth.call_count, 1)
+                with patch.object(sp, "_play_audio_pygame", return_value=True) as mock_play:
+                    sp.speak(phrase, blocking=True)
+                self.assertEqual(mock_synth.call_count, 1)
+                mock_play.assert_called_once()
+            cached = sp._warm_phrases.get(phrase)
+            if cached and os.path.exists(cached):
+                os.remove(cached)
 
 
 if __name__ == "__main__":

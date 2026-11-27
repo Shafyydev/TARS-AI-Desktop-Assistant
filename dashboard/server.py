@@ -43,6 +43,7 @@ _agent: Optional[TARSAgent] = None
 _voice_runtime_active = False
 _mic_muted = False
 _voice_speaker: Any = None
+_ui_opened_event = threading.Event()
 
 # Interactive confirmation state for destructive tools invoked from the dashboard.
 _confirm_event = threading.Event()
@@ -50,12 +51,25 @@ _confirm_result = False
 _confirm_pending: Optional[Dict[str, Any]] = None
 
 
-def register_voice_runtime(active: bool = True, speaker: Any = None) -> None:
-    """Registers the main.py voice loop runtime so dashboard mic mute/unmute controls it."""
-    global _voice_runtime_active, _voice_speaker
+def register_voice_runtime(active: bool = True, speaker: Any = None, agent: Any = None) -> None:
+    """Registers the main.py voice loop runtime and shared agent with the dashboard server."""
+    global _voice_runtime_active, _voice_speaker, _agent
     _voice_runtime_active = bool(active)
     if speaker is not None:
         _voice_speaker = speaker
+    if agent is not None:
+        with _agent_lock:
+            _agent = agent
+
+
+def reset_ui_open_signal() -> None:
+    """Clears the dashboard-rendered readiness signal before opening a browser tab."""
+    _ui_opened_event.clear()
+
+
+def wait_for_ui_open(timeout: float = 2.5) -> bool:
+    """Waits briefly until the dashboard frontend mounts and requests initial status."""
+    return _ui_opened_event.wait(timeout=timeout)
 
 
 def is_mic_muted() -> bool:
@@ -137,6 +151,7 @@ def health() -> Dict[str, Any]:
 
 @app.get("/api/status")
 def status() -> Dict[str, Any]:
+    _ui_opened_event.set()
     agent = get_agent()
     telemetry = {}
     try:
