@@ -309,13 +309,17 @@ class VoiceListener:
             self._http_session = requests.Session()
         return self._http_session
 
-    def _transcribe_groq_whisper(self, audio: Any) -> Optional[str]:
-        """Transcribes 16kHz WAV audio via Groq's low-latency Whisper endpoint (~250ms warm)."""
+    def _transcribe_groq_whisper(self, audio: Any) -> Tuple[Optional[str], bool]:
+        """Transcribes 16kHz WAV audio via Groq Whisper (~250ms warm).
+
+        Returns (text, reachable) where ``reachable`` is True on HTTP 200 so a
+        clean empty/noise response does not cascade into multi-second fallbacks.
+        """
         if time.time() < self._groq_cooldown_until:
-            return None
+            return None, False
         api_key = (os.getenv("GROQ_API_KEY") or "").strip()
         if not api_key or api_key.startswith("your_"):
-            return None
+            return None, False
         try:
             raw16 = audio.get_raw_data(convert_rate=16000, convert_width=2)
             buf = io.BytesIO()
@@ -342,13 +346,13 @@ class VoiceListener:
             if resp.status_code == 200:
                 payload = resp.json() if hasattr(resp, "json") else {}
                 text = (payload.get("text") or "").strip()
-                return text or None
+                return (text or None), True
             if resp.status_code in (401, 403, 429):
                 self._groq_cooldown_until = time.time() + 60.0
-            return None
+            return None, False
         except Exception:
             self._groq_cooldown_until = time.time() + 15.0
-            return None
+            return None, False
 
     def _transcribe_whisper(self, audio) -> Optional[str]:
         """
@@ -479,18 +483,14 @@ class VoiceListener:
                     )
             _t1 = time.time()
             self._stt_timings["wait_and_record"] = _t1 - _t0
-            try:
-                audio_dur = audio.duration if hasattr(audio, "duration") else 0
-            except Exception:
-                audio_dur = 0
-            if timeout and (_t1 - _t0) >= timeout - 0.1 and not audio_dur:
-                self._stt_timings["end_reason"] = "timeout"
-            elif phrase_time_limit and audio_dur >= phrase_time_limit - 0.5:
+            duration, peak_rms = _audio_speech_stats(audio)
+            if phrase_time_limit and duration >= phrase_time_limit - 0.5:
                 self._stt_timings["end_reason"] = "phrase_time_limit"
+            elif timeout and (_t1 - _t0) >= timeout - 0.1 and duration < 0.25:
+                self._stt_timings["end_reason"] = "timeout"
             else:
                 self._stt_timings["end_reason"] = "silence"
 
-            duration, peak_rms = _audio_speech_stats(audio)
             if duration < 0.22 or peak_rms < max(110.0, clamped_thresh * 0.72):
                 self._stt_timings["end_reason"] = "noise_gated"
                 return None, "timeout"
@@ -499,21 +499,22 @@ class VoiceListener:
             used_engine = self.stt_engine
             _t2 = time.time()
             if self.stt_engine in ("auto", "groq"):
-                text = self._transcribe_groq_whisper(audio)
-                if text:
+                text, groq_ok = self._transcribe_groq_whisper(audio)
+                if groq_ok:
                     used_engine = "groq"
-                if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
-                    text = None
-                if not text and self.stt_engine == "auto":
-                    text = self._transcribe_whisper(audio)
-                    if text:
-                        used_engine = "whisper"
                     if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
                         text = None
-                if not text:
-                    text = self._transcribe_google(audio, duration, peak_rms)
-                    if text:
-                        used_engine = "google"
+                else:
+                    if self.stt_engine == "auto":
+                        text = self._transcribe_whisper(audio)
+                        if text:
+                            used_engine = "whisper"
+                        if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                            text = None
+                    if not text:
+                        text = self._transcribe_google(audio, duration, peak_rms)
+                        if text:
+                            used_engine = "google"
             elif self.stt_engine == "whisper":
                 text = self._transcribe_whisper(audio)
                 if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):

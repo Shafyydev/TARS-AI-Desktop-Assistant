@@ -292,7 +292,7 @@ def main() -> None:
                             continue
                         listening_banner_shown = False
                         _timings = getattr(listener, "_stt_timings", {})
-                        console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s [{}] | end_reason: {} | energy_threshold: {}[/dim]".format(
+                        console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s ({}) | end_reason: {} | energy_threshold: {}[/dim]".format(
                             _t_stt_end - _t_stt_start,
                             _timings.get("wait_and_record", 0),
                             _timings.get("transcription", 0),

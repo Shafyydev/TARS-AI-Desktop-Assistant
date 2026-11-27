@@ -582,15 +582,17 @@ class TARSAgent:
                     "success": all_success
                 }
 
-        # 1. Presence, Identity & Small Talk (<1ms response)
-        if re.search(r"\bwhere\s+are\s+you\b|\bwhere\s+do\s+you\s+live\b|\bwhere\s+are\s+you\s+located\b", p_clean):
+        # 1. Presence, Identity & Small Talk (<1ms response; anchored so message bodies never trigger them)
+        _lead = r"^(?:(?:hey|hi|hello|yo|ok|okay|please|can\s+you|could\s+you|tars)\s+)*"
+        _tail = r"(?:\s+(?:now|right\s+now|please|tars))?[!?.]*$"
+        if re.search(rf"{_lead}(?:where\s+are\s+you(?:\s+located)?|where\s+do\s+you\s+live){_tail}", p_clean):
             return {
                 "response": "I am right here in your system memory, monitoring your hardware and ready for your command.",
                 "steps": [],
                 "success": True
             }
 
-        if re.search(r"\bwho\s+are\s+you\b|\bwhat\s+is\s+your\s+name\b|\bwho\s+made\s+you\b", p_clean):
+        if re.search(rf"{_lead}(?:who\s+are\s+you|what\s+is\s+your\s+name|who\s+made\s+you){_tail}", p_clean):
             return {
                 "response": "I am TARS, Tactical Autonomous Robotic System. Honesty 90%, humor 75%.",
                 "steps": [],
@@ -598,10 +600,10 @@ class TARSAgent:
             }
 
         # Silence / Stop talking / Shh / Quiet
-        if re.search(r"\b(stop\s+talking|be\s+quiet|shut\s+up|silence|shh|pause\s+talking)\b|^quiet$|^stop$", p_clean):
+        if re.search(rf"{_lead}(?:stop\s+talking|be\s+quiet|shut\s+up|silence|shh|pause\s+talking|quiet|stop)(?:\s+tars)?[!?.]*$", p_clean):
             return {"response": "Standing by.", "steps": [], "success": True}
 
-        if re.search(r"\bare\s+you\s+(there|listening|online)\b|\b(?:can\s+you\s+)?hear\s+me\b|\bping\b", p_clean):
+        if re.search(rf"{_lead}(?:are\s+you\s+(?:there|listening|online)|(?:can\s+you\s+)?hear\s+me|ping)(?:\s+(?:now|tars))?[!?.]*$", p_clean):
             return {
                 "response": "Loud and clear. Standing by.",
                 "steps": [],

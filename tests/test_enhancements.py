@@ -807,6 +807,15 @@ class TestRegressionFixes(unittest.TestCase):
             self.assertIsNotNone(agent._autonomous_local_execute("send a message to amma telling hello"))
             mock_exec.assert_called_with("send_whatsapp_message", {"contact_name": "amma", "message": "hello"})
 
+            res_wa = agent._autonomous_local_execute(
+                "Send a message to Amma saying hi hello how are you when will you meet me and where are you."
+            )
+            self.assertIsNotNone(res_wa)
+            mock_exec.assert_called_with(
+                "send_whatsapp_message",
+                {"contact_name": "amma", "message": "hi hello how are you when will you meet me and where are you"},
+            )
+
 
 class TestVoiceListenerSpeedAndFallback(unittest.TestCase):
     def _make_speech_audio(self, seconds: float = 1.0, amplitude: int = 1200):
@@ -867,6 +876,26 @@ class TestVoiceListenerSpeedAndFallback(unittest.TestCase):
         self.assertEqual(status2, "ok")
         self.assertEqual(text2, "close tab")
         self.assertEqual(vl._stt_timings["engine"], "google")
+
+    def test_groq_200_hallucination_does_not_cascade_into_slow_fallbacks(self):
+        from core.voice_listener import VoiceListener
+
+        vl = VoiceListener(energy_threshold=200, stt_engine="auto")
+        vl._recognizer = MagicMock()
+        vl._microphone = MagicMock()
+        vl._recognizer.listen.return_value = self._make_speech_audio(seconds=0.8, amplitude=240)
+        resp_200 = MagicMock(status_code=200)
+        resp_200.json.return_value = {"text": "Thank you."}
+        vl._http_session = MagicMock()
+        vl._http_session.post.return_value = resp_200
+
+        with patch.dict("os.environ", {"GROQ_API_KEY": "gsk_test_123"}), \
+             patch.object(vl, "_transcribe_whisper") as mock_fw:
+            text, status = vl.listen_once(timeout=3)
+        self.assertIsNone(text)
+        self.assertEqual(status, "unrecognized")
+        mock_fw.assert_not_called()
+        vl._recognizer.recognize_google.assert_not_called()
 
     def test_calibrate_updates_floor_above_legacy_800_cap(self):
         from core.voice_listener import VoiceListener
