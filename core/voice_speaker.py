@@ -143,12 +143,12 @@ class VoiceSpeaker:
         api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
         if not api_key:
             return False
-        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "21m00Tcm4TlvDq8ikWAM").strip()
+        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "EXAVITQu4vr4xnSDxMaL").strip()
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         headers = {"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"}
         payload = {
             "text": text,
-            "model_id": os.getenv("ELEVENLABS_MODEL", "eleven_monolingual_v1"),
+            "model_id": os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
         }
         try:
