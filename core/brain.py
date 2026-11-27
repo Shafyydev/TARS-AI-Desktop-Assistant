@@ -644,24 +644,20 @@ class TARSAgent:
                 msg, ok = self._reply(res, _tmsg)
                 return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": _tkeys}, "result": res}], "success": ok}
 
-        # 4. Direct GUI Mouse Controls (Short Imperative Commands Only)
-        if re.search(r"^(?:double|2x)\s*click$", p_clean):
-            res = self.execute_tool("double_click", {})
-            msg, ok = self._reply(res, "Double clicked.")
-            return {"response": msg, "steps": [{"tool": "double_click", "args": {}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:right\s*click|context\s+menu)$", p_clean):
-            res = self.execute_tool("right_click", {})
-            msg, ok = self._reply(res, "Right clicked.")
-            return {"response": msg, "steps": [{"tool": "right_click", "args": {}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:middle\s*click|scroll\s+click)$", p_clean):
-            res = self.execute_tool("middle_click", {})
-            msg, ok = self._reply(res, "Middle clicked.")
-            return {"response": msg, "steps": [{"tool": "middle_click", "args": {}, "result": res}], "success": ok}
+        # 4. Direct GUI Mouse Controls (Short Imperative Commands Only) - data-driven
+        _mouse_table = [
+            (re.compile(r"^(?:double|2x)\s*click$"), "double_click", {}, "Double clicked."),
+            (re.compile(r"^(?:right\s*click|context\s+menu)$"), "right_click", {}, "Right clicked."),
+            (re.compile(r"^(?:middle\s*click|scroll\s+click)$"), "middle_click", {}, "Middle clicked."),
+        ]
+        for _mpat, _mtool, _margs, _mmsg in _mouse_table:
+            if _mpat.search(p_clean):
+                res = self.execute_tool(_mtool, _margs)
+                msg, ok = self._reply(res, _mmsg)
+                return {"response": msg, "steps": [{"tool": _mtool, "args": _margs, "result": res}], "success": ok}
 
         # Coordinate click: e.g. "click 400 500"
-        click_coord_match = re.match(r"^(?:(?:please|can\s+you|could\s+you)\s+)?click\s+at\s+\s*(\d{1,4})\s*[,\s]\s*(\d{1,4})\b", p_clean)
+        click_coord_match = re.match(r"^(?:(?:please|can\s+you|could\s+you)\s+)?click\s+at\s+\s*(\d{1,4})\s*[\s,]\s*(\d{1,4})\b", p_clean)
         if click_coord_match:
             x, y = int(click_coord_match.group(1)), int(click_coord_match.group(2))
             res = self.execute_tool("click_coordinate", {"x": x, "y": y})
@@ -676,26 +672,13 @@ class TARSAgent:
             msg, ok = self._reply(res, f"Cursor moved to ({x}, {y}).")
             return {"response": msg, "steps": [{"tool": "move_mouse", "args": {"x": x, "y": y}, "result": res}], "success": ok}
 
-        if re.search(r"\b(?:move\s+mouse|cursor)\s+up\b", p_clean):
-            res = self.execute_tool("move_mouse_relative", {"dx": 0, "dy": -120})
-            msg, ok = self._reply(res, "Moved cursor up.")
-            return {"response": msg, "steps": [{"tool": "move_mouse_relative", "args": {"dx": 0, "dy": -120}, "result": res}], "success": ok}
-
-        if re.search(r"\b(?:move\s+mouse|cursor)\s+down\b", p_clean):
-            res = self.execute_tool("move_mouse_relative", {"dx": 0, "dy": 120})
-            msg, ok = self._reply(res, "Moved cursor down.")
-            return {"response": msg, "steps": [{"tool": "move_mouse_relative", "args": {"dx": 0, "dy": 120}, "result": res}], "success": ok}
-
-        if re.search(r"\b(?:move\s+mouse|cursor)\s+left\b", p_clean):
-            res = self.execute_tool("move_mouse_relative", {"dx": -120, "dy": 0})
-            msg, ok = self._reply(res, "Moved cursor left.")
-            return {"response": msg, "steps": [{"tool": "move_mouse_relative", "args": {"dx": -120, "dy": 0}, "result": res}], "success": ok}
-
-        if re.search(r"\b(?:move\s+mouse|cursor)\s+right\b", p_clean):
-            res = self.execute_tool("move_mouse_relative", {"dx": 120, "dy": 0})
-            msg, ok = self._reply(res, "Moved cursor right.")
-            return {"response": msg, "steps": [{"tool": "move_mouse_relative", "args": {"dx": 120, "dy": 0}, "result": res}], "success": ok}
-
+        _rel_moves = [("up", 0, -120, "Moved cursor up."), ("down", 0, 120, "Moved cursor down."),
+                      ("left", -120, 0, "Moved cursor left."), ("right", 120, 0, "Moved cursor right.")]
+        for _dir, _dx, _dy, _rmsg in _rel_moves:
+            if re.search(rf"\b(?:move\s+mouse|cursor)\s+{_dir}\b", p_clean):
+                res = self.execute_tool("move_mouse_relative", {"dx": _dx, "dy": _dy})
+                msg, ok = self._reply(res, _rmsg)
+                return {"response": msg, "steps": [{"tool": "move_mouse_relative", "args": {"dx": _dx, "dy": _dy}, "result": res}], "success": ok}
         # Exact blind click command: "click", "click this", "click here", "just click", "left click"
         if p_clean in ["click", "just click", "click here", "click this", "left click"]:
             res = self.execute_tool("click_coordinate", {"button": "left", "clicks": 1})
