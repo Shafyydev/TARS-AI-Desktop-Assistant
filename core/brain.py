@@ -461,7 +461,7 @@ class TARSAgent:
             contact = whatsapp_click.group(1).strip()
             if (
                 1 <= len(contact.split()) <= 2
-                and contact not in {"ok", "enter", "cancel", "search bar", "search box", "search", "result", "video", "link", "button", "tab", "menu", "first chat", "first result", "first video", "first link", "first item"}
+                and contact not in {"ok", "enter", "cancel", "search bar", "search box", "search", "result", "video", "link", "button", "tab", "menu", "first chat", "first result", "first video", "first link", "first item", "that image", "the image", "this image", "image", "photo", "picture", "media", "thumbnail"}
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
                 if res.get("success"):
@@ -697,6 +697,9 @@ class TARSAgent:
             # Defer single hotkey presses to dedicated handlers and restrict to short commands (<= 4 words)
             if len(target_cand.split()) <= 4 and not any(conj in target_cand for conj in [" and ", ", and ", "then ", "what ", "who ", "why ", "how ", "summarize", "tell me", "explain"]):
                 if target_cand not in ["enter", "return", "space", "spacebar", "tab", "escape", "esc", "backspace", "delete", "del"]:
+                    # Normalize image/photo/picture targets to the dedicated image handler.
+                    if target_cand.lower() in {"image", "photo", "picture", "media", "thumbnail", "that image", "the image", "this image"} or "image" in target_cand.lower():
+                        target_cand = "image"
                     res = self.execute_tool("smart_click", {"target": target_cand})
                     msg = res.get("message") if isinstance(res, dict) else f"Clicked {target_cand}."
                     msg, ok = self._reply(res, msg)
