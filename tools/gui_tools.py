@@ -141,7 +141,7 @@ def press_keys(keys: List[str]) -> Dict[str, Any]:
             pyautogui.press(clean_keys[0])
         else:
             pyautogui.hotkey(*clean_keys)
-        return {"success": True, "message": f"Pressed hotkey combo: {' + '.join(clean_keys)}"}
+        return {"success": True, "message": ""}
     except Exception as e:
         return {"success": False, "error": f"Key combination failed: {str(e)}"}
 
