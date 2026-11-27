@@ -8,6 +8,8 @@ import threading
 import struct
 import math
 import wave
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Callable, Any
 
 from core.wake_word import WakeWordDetector
@@ -59,6 +61,35 @@ def _is_whisper_hallucination(text: str, peak_rms: float, threshold: float, dura
     if clean not in _WHISPER_HALLUCINATIONS:
         return False
     return duration < 1.3 and peak_rms < max(350.0, threshold * 1.4)
+
+
+def _step_vad_state(
+    vad_model: Any,
+    audio_16k: Any,
+    h: Any,
+    c: Any,
+    ctx: Any,
+) -> Tuple[Optional[float], Any, Any, Any]:
+    """Runs one 512-sample 16kHz frame through Silero VAD preserving LSTM state."""
+    if vad_model is None:
+        return None, h, c, ctx
+    try:
+        import numpy as np
+
+        f32 = audio_16k.astype(np.float32)
+        session = getattr(vad_model, "session", None)
+        if session is not None:
+            if h is None:
+                h = np.zeros((1, 1, 128), dtype=np.float32)
+                c = np.zeros((1, 1, 128), dtype=np.float32)
+                ctx = np.zeros(64, dtype=np.float32)
+            inp = np.concatenate([ctx, f32]).reshape(1, -1)
+            out, h, c = session.run(None, {"input": inp, "h": h, "c": c})
+            ctx = f32[-64:]
+            return float(out.reshape(-1)[0]), h, c, ctx
+        return float(vad_model(f32)[0]), h, c, ctx
+    except Exception:
+        return None, h, c, ctx
 
 
 def detect_system_stt_language() -> str:
@@ -147,6 +178,7 @@ class VoiceListener:
         language: Optional[str] = None,
         mic_index: Optional[int] = None,
         stt_engine: Optional[str] = None,
+        live_stt: Optional[bool] = None,
     ):
         self.energy_threshold = int(os.getenv("TARS_STT_ENERGY", str(energy_threshold)))
         self.pause_threshold = float(os.getenv("TARS_STT_PAUSE", str(pause_threshold)))
@@ -164,12 +196,30 @@ class VoiceListener:
         self._whisper_failed = False
         self._http_session = None
         self._groq_cooldown_until = 0.0
+        self._vad_model = None
+        self._vad_checked = False
+        env_live = os.getenv("TARS_LIVE_STT")
+        if env_live is not None:
+            self.live_stt = env_live.strip().lower() not in ("0", "false", "no", "off")
+        else:
+            self.live_stt = True if live_stt is None else bool(live_stt)
         self.stt_engine = (stt_engine or os.getenv("TARS_STT_ENGINE") or "auto").strip().lower()
         self.whisper_model_name = os.getenv("TARS_STT_MODEL", "base").strip()
         self.last_active_time = 0.0
         self.active_dialogue_window_sec = 30.0
         self.wake_detector = WakeWordDetector(mic_index=self.mic_index)
         self._init_audio()
+
+    def _get_vad(self) -> Any:
+        """Lazily loads and caches Silero VAD ONNX model for continuous 32ms streaming."""
+        if not self._vad_checked:
+            self._vad_checked = True
+            try:
+                from faster_whisper import vad
+                self._vad_model = vad.get_vad_model()
+            except Exception:
+                self._vad_model = None
+        return self._vad_model
 
     def _init_audio(self) -> None:
         """Initializes speech_recognition with tuned low-latency acoustic VAD parameters."""
@@ -430,15 +480,384 @@ class VoiceListener:
                     return None
             return None
 
+    def _pcm_to_audio_data(self, pcm_16k: Any) -> Any:
+        """Builds a 16kHz 16-bit mono AudioData object directly from normalized float32 samples."""
+        import numpy as np
+        import speech_recognition as sr
+
+        clipped = np.clip(pcm_16k, -1.0, 1.0)
+        raw16 = (clipped * 32767.0).astype(np.int16).tobytes()
+        return sr.AudioData(raw16, 16000, 2)
+
+    def _transcribe_audio_with_engine(
+        self,
+        audio: Any,
+        duration: float,
+        peak_rms: float,
+        threshold: float,
+        allow_google: bool = True,
+    ) -> Tuple[Optional[str], str]:
+        """Runs configured STT engine cascade and hallucination guard."""
+        text = None
+        used_engine = self.stt_engine
+        if self.stt_engine in ("auto", "groq"):
+            text, groq_ok = self._transcribe_groq_whisper(audio)
+            if groq_ok:
+                used_engine = "groq"
+                if text and _is_whisper_hallucination(text, peak_rms, threshold, duration):
+                    text = None
+            else:
+                if self.stt_engine == "auto":
+                    text = self._transcribe_whisper(audio)
+                    if text:
+                        used_engine = "whisper"
+                    if text and _is_whisper_hallucination(text, peak_rms, threshold, duration):
+                        text = None
+                if not text and allow_google:
+                    text = self._transcribe_google(audio, duration, peak_rms)
+                    if text:
+                        used_engine = "google"
+        elif self.stt_engine == "whisper":
+            text = self._transcribe_whisper(audio)
+            if text and _is_whisper_hallucination(text, peak_rms, threshold, duration):
+                text = None
+            if text:
+                used_engine = "whisper"
+            elif allow_google:
+                text = self._transcribe_google(audio, duration, peak_rms)
+                if text:
+                    used_engine = "google"
+        elif allow_google:
+            text = self._transcribe_google(audio, duration, peak_rms)
+            used_engine = "google"
+        return text, used_engine
+
+    def _transcribe_partial_pcm(self, pcm_16k: Any, threshold: float) -> Tuple[Optional[str], str]:
+        """Fast low-latency transcription for live streaming interim captions."""
+        import numpy as np
+
+        if len(pcm_16k) < 4000:
+            return None, self.stt_engine
+        audio = self._pcm_to_audio_data(pcm_16k)
+        duration = len(pcm_16k) / 16000.0
+        peak_rms = float(np.max(np.abs(pcm_16k))) * 32768.0
+        # Partials avoid Google HTTP blocking and avoid cold-loading local Whisper if Groq is active.
+        if self.stt_engine in ("auto", "groq"):
+            text, groq_ok = self._transcribe_groq_whisper(audio)
+            if groq_ok:
+                if text and _is_whisper_hallucination(text, peak_rms, threshold, duration):
+                    return None, "groq"
+                return text, "groq"
+            if self.stt_engine == "auto" and self._fw_model is not None:
+                text = self._transcribe_whisper(audio)
+                if text and not _is_whisper_hallucination(text, peak_rms, threshold, duration):
+                    return text, "whisper"
+            return None, self.stt_engine
+        if self.stt_engine == "whisper":
+            text = self._transcribe_whisper(audio)
+            if text and not _is_whisper_hallucination(text, peak_rms, threshold, duration):
+                return text, "whisper"
+        return None, self.stt_engine
+
+    def _listen_live_vad(
+        self,
+        timeout: int,
+        phrase_time_limit: Optional[int],
+        clamped_thresh: float,
+        on_partial: Optional[Callable[[str], None]] = None,
+    ) -> Optional[Tuple[Optional[str], Optional[str]]]:
+        """Continuous 32ms Silero VAD streaming capture with progressive live transcripts.
+
+        Returns ``None`` if live VAD setup cannot run on this stream so caller falls back cleanly.
+        """
+        vad_model = self._get_vad()
+        if vad_model is None:
+            return None
+
+        import numpy as np
+
+        source = self._open_stream()
+        stream = getattr(source, "stream", None)
+        if stream is None:
+            return None
+
+        rate = getattr(source, "SAMPLE_RATE", 16000)
+        if not isinstance(rate, int) or rate <= 0:
+            rate = 16000
+        read_chunk = 512 if rate == 16000 else max(512, int(round(rate * 0.032)))
+        speech_rms_gate = max(115.0, clamped_thresh * 0.68)
+        eos_sec = max(0.25, min(0.55, self.pause_threshold))
+        eos_frames = max(8, int(round(eos_sec / 0.032)))
+        max_phrase_frames = (
+            max(16, int(round(float(phrase_time_limit) / 0.032)))
+            if phrase_time_limit and phrase_time_limit > 0
+            else None
+        )
+
+        pre_roll: deque = deque(maxlen=8)  # 256ms pre-speech buffer avoids clipping initial words
+        speech_frames: list = []
+        vad_h = vad_c = vad_ctx = None
+        onset_streak = 0
+        recording = False
+        pre_len = 0
+        last_voiced_idx = 0
+        voiced_frame_count = 0
+        peak_rms = 0.0
+        speech_started_at = 0.0
+        end_reason = "silence"
+
+        partial_pool: Optional[ThreadPoolExecutor] = (
+            ThreadPoolExecutor(max_workers=1)
+            if (on_partial is not None and self.stt_engine != "google")
+            else None
+        )
+        partial_future = None
+        snap_frame_count = 0
+        snap_voiced_idx = 0
+        last_completed_voiced_idx = -1
+        last_partial_text = ""
+        last_partial_engine = self.stt_engine
+        last_partial_done_at = 0.0
+        partial_updates = 0
+        t_start = time.time()
+
+        def _collect_partial(force_emit: bool = True) -> None:
+            nonlocal partial_future, last_completed_voiced_idx, last_partial_text
+            nonlocal last_partial_engine, last_partial_done_at, partial_updates
+            if partial_future is None or not partial_future.done():
+                return
+            try:
+                p_text, p_eng = partial_future.result()
+                last_partial_done_at = time.time()
+                if p_text and p_text.strip():
+                    norm_p = normalize_voice_command(p_text.strip())
+                    last_completed_voiced_idx = snap_voiced_idx
+                    last_partial_engine = p_eng
+                    if norm_p != last_partial_text:
+                        last_partial_text = norm_p
+                        partial_updates += 1
+                        if force_emit and on_partial is not None:
+                            try:
+                                on_partial(norm_p)
+                            except Exception:
+                                pass
+            except Exception:
+                last_partial_done_at = time.time()
+            finally:
+                partial_future = None
+
+        try:
+            while True:
+                now = time.time()
+                if not recording and timeout and timeout > 0 and (now - t_start) >= timeout:
+                    self._stt_timings["wait_and_record"] = now - t_start
+                    self._stt_timings["end_reason"] = "timeout"
+                    self._stt_timings["live"] = True
+                    return None, "timeout"
+
+                raw = stream.read(read_chunk)
+                if not raw:
+                    continue
+                cnt = len(raw) // 2
+                if cnt <= 0:
+                    continue
+                pcm = np.frombuffer(raw[:cnt * 2], dtype=np.int16).astype(np.float32) / 32768.0
+                if rate != 16000 and len(pcm) > 1:
+                    idx = np.linspace(0, len(pcm) - 1, 512)
+                    pcm = np.interp(idx, np.arange(len(pcm)), pcm).astype(np.float32)
+                if len(pcm) < 512:
+                    pcm = np.pad(pcm, (0, 512 - len(pcm)))
+                elif len(pcm) > 512:
+                    pcm = pcm[:512]
+
+                rms_i16 = float(np.sqrt(float(np.mean(pcm * pcm)))) * 32768.0
+                vad_prob, vad_h, vad_c, vad_ctx = _step_vad_state(vad_model, pcm, vad_h, vad_c, vad_ctx)
+
+                if not recording:
+                    pre_roll.append(pcm)
+                    voiced_onset = (rms_i16 >= speech_rms_gate) and (vad_prob is None or vad_prob >= 0.45)
+                    if rms_i16 >= speech_rms_gate * 1.45 and (vad_prob is None or vad_prob >= 0.62):
+                        onset_streak = 2
+                    elif voiced_onset:
+                        onset_streak += 1
+                    else:
+                        onset_streak = 0
+
+                    if onset_streak >= 2:
+                        recording = True
+                        speech_started_at = time.time()
+                        speech_frames = list(pre_roll)
+                        pre_len = len(speech_frames) - 1
+                        last_voiced_idx = len(speech_frames) - 1
+                        voiced_frame_count = 1
+                        peak_rms = max(rms_i16, speech_rms_gate)
+                    continue
+
+                speech_frames.append(pcm)
+                if rms_i16 > peak_rms:
+                    peak_rms = rms_i16
+                cur_idx = len(speech_frames) - 1
+                is_voiced = (rms_i16 >= speech_rms_gate) and (vad_prob is None or vad_prob >= 0.35)
+                if is_voiced:
+                    last_voiced_idx = cur_idx
+                    voiced_frame_count += 1
+
+                _collect_partial(force_emit=True)
+
+                # Launch progressive streaming transcription in parallel every ~0.48s of new speech.
+                voiced_len = cur_idx - pre_len
+                if (
+                    partial_pool is not None
+                    and partial_future is None
+                    and voiced_len >= 14
+                    and (cur_idx - snap_frame_count) >= 15
+                    and last_voiced_idx > snap_voiced_idx
+                    and (time.time() - last_partial_done_at) >= 0.35
+                ):
+                    snap_pcm = np.concatenate(speech_frames).copy()
+                    snap_frame_count = cur_idx
+                    snap_voiced_idx = last_voiced_idx
+                    partial_future = partial_pool.submit(
+                        self._transcribe_partial_pcm, snap_pcm, clamped_thresh
+                    )
+
+                silence_frames = cur_idx - last_voiced_idx
+                if voiced_len >= 8 and silence_frames >= eos_frames:
+                    end_reason = "vad_silence"
+                    break
+                if max_phrase_frames and voiced_len >= max_phrase_frames:
+                    end_reason = "phrase_time_limit"
+                    break
+
+            t_eos = time.time()
+            self.close_stream()
+            _collect_partial(force_emit=False)
+
+            trim_end = min(len(speech_frames), last_voiced_idx + 5)
+            trimmed_pcm = np.concatenate(speech_frames[:max(1, trim_end)])
+            duration = len(trimmed_pcm) / 16000.0
+            self._stt_timings["wait_and_record"] = t_eos - t_start
+            self._stt_timings["speech_duration"] = max(0.0, t_eos - speech_started_at)
+            self._stt_timings["end_reason"] = end_reason
+            self._stt_timings["live"] = True
+            self._stt_timings["partial_updates"] = partial_updates
+
+            if voiced_frame_count < 5 or duration < 0.22 or peak_rms < max(110.0, clamped_thresh * 0.72):
+                self._stt_timings["end_reason"] = "noise_gated"
+                return None, "timeout"
+
+            t_fin0 = time.time()
+            final_text = None
+            used_engine = self.stt_engine
+
+            # Zero-wait tail reuse: if an in-flight/completed live partial already covers up to <=160ms of speech end.
+            if partial_future is not None and snap_voiced_idx >= (last_voiced_idx - 5):
+                try:
+                    p_text, p_eng = partial_future.result(timeout=1.6)
+                    if p_text and p_text.strip():
+                        final_text = normalize_voice_command(p_text.strip())
+                        used_engine = p_eng
+                except Exception:
+                    pass
+            elif last_partial_text and last_completed_voiced_idx >= (last_voiced_idx - 5):
+                final_text = last_partial_text
+                used_engine = last_partial_engine
+
+            if final_text is None:
+                audio = self._pcm_to_audio_data(trimmed_pcm)
+                raw_txt, used_engine = self._transcribe_audio_with_engine(
+                    audio, duration, peak_rms, clamped_thresh, allow_google=True
+                )
+                if raw_txt and raw_txt.strip():
+                    final_text = normalize_voice_command(raw_txt.strip())
+
+            t_fin1 = time.time()
+            self._stt_timings["transcription"] = t_fin1 - t_fin0
+            self._stt_timings["engine"] = used_engine
+            self._stt_timings["partial_updates"] = partial_updates
+            if final_text:
+                return final_text, "ok"
+            return None, "unrecognized"
+        finally:
+            if partial_pool is not None:
+                partial_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _listen_buffered(
+        self,
+        timeout: int,
+        phrase_time_limit: Optional[int],
+        clamped_thresh: float,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Legacy SpeechRecognition buffered listen path (used in tests or VAD fallback)."""
+        _t0 = time.time()
+        if self._is_real_mic():
+            source = self._open_stream()
+            audio = self._recognizer.listen(
+                source,
+                timeout=timeout,
+                phrase_time_limit=phrase_time_limit,
+            )
+            self.close_stream()
+        else:
+            with self._microphone as source:
+                audio = self._recognizer.listen(
+                    source,
+                    timeout=timeout,
+                    phrase_time_limit=phrase_time_limit,
+                )
+        _t1 = time.time()
+        self._stt_timings["wait_and_record"] = _t1 - _t0
+        duration, peak_rms = _audio_speech_stats(audio)
+        if phrase_time_limit and duration >= phrase_time_limit - 0.5:
+            self._stt_timings["end_reason"] = "phrase_time_limit"
+        elif timeout and (_t1 - _t0) >= timeout - 0.1 and duration < 0.25:
+            self._stt_timings["end_reason"] = "timeout"
+        else:
+            self._stt_timings["end_reason"] = "silence"
+
+        if duration < 0.22 or peak_rms < max(110.0, clamped_thresh * 0.72):
+            self._stt_timings["end_reason"] = "noise_gated"
+            return None, "timeout"
+
+        _t2 = time.time()
+        text, used_engine = self._transcribe_audio_with_engine(
+            audio, duration, peak_rms, clamped_thresh, allow_google=True
+        )
+        _t3 = time.time()
+        self._stt_timings["transcription"] = _t3 - _t2
+        self._stt_timings["engine"] = used_engine
+        if text and text.strip():
+            normalized = normalize_voice_command(text.strip())
+            return normalized, "ok"
+        return None, "unrecognized"
+
+    def listen_live(
+        self,
+        timeout: int = 8,
+        phrase_time_limit: Optional[int] = 10,
+        on_listening_start: Optional[Callable[[], None]] = None,
+        on_partial: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Explicit entry point for live streaming Silero-VAD + progressive STT capture."""
+        return self.listen_once(
+            timeout=timeout,
+            phrase_time_limit=phrase_time_limit,
+            on_listening_start=on_listening_start,
+            on_partial=on_partial,
+            stream_live=True,
+        )
+
     def listen_once(
         self,
         timeout: int = 8,
         phrase_time_limit: Optional[int] = 10,
-        on_listening_start: Optional[Callable[[], None]] = None
+        on_listening_start: Optional[Callable[[], None]] = None,
+        on_partial: Optional[Callable[[str], None]] = None,
+        stream_live: Optional[bool] = None,
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Listens to the microphone with persistent stream reuse, acoustic gating,
-        and low-latency STT backend selection (Groq Whisper -> faster-whisper -> Google).
+        Captures speech continuously via live Silero-VAD streaming (with real-time partial
+        captions and buffered fallback when live VAD/real microphone is unavailable).
         """
         if not self._recognizer or not self._microphone:
             return None, "Microphone not initialized"
@@ -450,6 +869,8 @@ class VoiceListener:
             "transcription": 0.0,
             "end_reason": "unknown",
             "engine": self.stt_engine,
+            "live": False,
+            "partial_updates": 0,
         }
         try:
             if on_listening_start:
@@ -464,78 +885,22 @@ class VoiceListener:
             except Exception:
                 clamped_thresh = float(self.energy_threshold)
 
-            _t0 = time.time()
-            if self._is_real_mic():
-                source = self._open_stream()
-                audio = self._recognizer.listen(
-                    source,
+            use_live = (self.live_stt if stream_live is None else bool(stream_live)) and self._is_real_mic()
+            if use_live:
+                live_res = self._listen_live_vad(
                     timeout=timeout,
                     phrase_time_limit=phrase_time_limit,
+                    clamped_thresh=clamped_thresh,
+                    on_partial=on_partial,
                 )
-                # Close once a phrase was captured so TTS / tool execution never fills a stale ring buffer.
-                self.close_stream()
-            else:
-                with self._microphone as source:
-                    audio = self._recognizer.listen(
-                        source,
-                        timeout=timeout,
-                        phrase_time_limit=phrase_time_limit,
-                    )
-            _t1 = time.time()
-            self._stt_timings["wait_and_record"] = _t1 - _t0
-            duration, peak_rms = _audio_speech_stats(audio)
-            if phrase_time_limit and duration >= phrase_time_limit - 0.5:
-                self._stt_timings["end_reason"] = "phrase_time_limit"
-            elif timeout and (_t1 - _t0) >= timeout - 0.1 and duration < 0.25:
-                self._stt_timings["end_reason"] = "timeout"
-            else:
-                self._stt_timings["end_reason"] = "silence"
+                if live_res is not None:
+                    return live_res
 
-            if duration < 0.22 or peak_rms < max(110.0, clamped_thresh * 0.72):
-                self._stt_timings["end_reason"] = "noise_gated"
-                return None, "timeout"
-
-            text = None
-            used_engine = self.stt_engine
-            _t2 = time.time()
-            if self.stt_engine in ("auto", "groq"):
-                text, groq_ok = self._transcribe_groq_whisper(audio)
-                if groq_ok:
-                    used_engine = "groq"
-                    if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
-                        text = None
-                else:
-                    if self.stt_engine == "auto":
-                        text = self._transcribe_whisper(audio)
-                        if text:
-                            used_engine = "whisper"
-                        if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
-                            text = None
-                    if not text:
-                        text = self._transcribe_google(audio, duration, peak_rms)
-                        if text:
-                            used_engine = "google"
-            elif self.stt_engine == "whisper":
-                text = self._transcribe_whisper(audio)
-                if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
-                    text = None
-                if text:
-                    used_engine = "whisper"
-                else:
-                    text = self._transcribe_google(audio, duration, peak_rms)
-                    if text:
-                        used_engine = "google"
-            else:
-                text = self._transcribe_google(audio, duration, peak_rms)
-                used_engine = "google"
-
-            _t3 = time.time()
-            self._stt_timings["transcription"] = _t3 - _t2
-            self._stt_timings["engine"] = used_engine
-            if text and text.strip():
-                normalized = normalize_voice_command(text.strip())
-                return normalized, "ok"
-            return None, "unrecognized"
+            return self._listen_buffered(
+                timeout=timeout,
+                phrase_time_limit=phrase_time_limit,
+                clamped_thresh=clamped_thresh,
+            )
 
         except sr.WaitTimeoutError:
             return None, "timeout"
@@ -711,28 +1076,10 @@ class VoiceBargeInMonitor:
 
     def _run_vad(self, audio_16k: Any) -> Optional[float]:
         """Evaluates Silero VAD statefully when ONNX session is available, else callable fallback."""
-        import numpy as np
-
-        vad_model = self._get_vad()
-        if vad_model is None:
-            return None
-        try:
-            f32 = audio_16k.astype(np.float32)
-            session = getattr(vad_model, "session", None)
-            if session is not None:
-                if self._vad_h is None:
-                    self._vad_h = np.zeros((1, 1, 128), dtype=np.float32)
-                    self._vad_c = np.zeros((1, 1, 128), dtype=np.float32)
-                    self._vad_ctx = np.zeros(64, dtype=np.float32)
-                inp = np.concatenate([self._vad_ctx, f32]).reshape(1, -1)
-                out, self._vad_h, self._vad_c = session.run(
-                    None, {"input": inp, "h": self._vad_h, "c": self._vad_c}
-                )
-                self._vad_ctx = f32[-64:]
-                return float(out.reshape(-1)[0])
-            return float(vad_model(f32)[0])
-        except Exception:
-            return None
+        prob, self._vad_h, self._vad_c, self._vad_ctx = _step_vad_state(
+            self._get_vad(), audio_16k, self._vad_h, self._vad_c, self._vad_ctx
+        )
+        return prob
 
     def _evaluate_frame(self, mic_16k: Any, pos_ms: Optional[float] = None, use_vad: bool = True) -> bool:
         """Evaluates one 512-sample 16kHz frame; returns True if overlapping user speech occurred."""

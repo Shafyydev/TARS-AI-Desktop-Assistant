@@ -914,6 +914,123 @@ class TestVoiceListenerSpeedAndFallback(unittest.TestCase):
         self.assertGreaterEqual(thresh, 920.0)
         self.assertEqual(vl.energy_threshold, int(thresh))
 
+    def test_live_vad_streaming_partials_and_zero_wait_tail_reuse(self):
+        import time as _time
+        import numpy as np
+        from core.voice_listener import VoiceListener
+
+        vl = VoiceListener(energy_threshold=200, pause_threshold=0.35, stt_engine="auto", live_stt=True)
+        vl._recognizer = MagicMock()
+        vl._recognizer.energy_threshold = 200.0
+
+        # Build 12 quiet frames + 42 voiced frames + 14 quiet tail frames (512 samples @ 16kHz = 32ms/frame)
+        t = np.arange(512, dtype=np.float32) / 16000.0
+        quiet_pcm = (np.full(512, 15, dtype=np.int16)).tobytes()
+        voiced_pcm = (np.clip(0.06 * np.sin(2.0 * np.pi * 220.0 * t), -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+        frame_queue = ([quiet_pcm] * 12) + ([voiced_pcm] * 42) + ([quiet_pcm] * 14)
+        idx = {"k": 0}
+
+        class _FakeRealMic:
+            SAMPLE_RATE = 16000
+            CHUNK = 1024
+            def __enter__(self):
+                self.stream = self
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, _n):
+                k = idx["k"]
+                if k < len(frame_queue):
+                    idx["k"] += 1
+                    _time.sleep(0.022)
+                    return frame_queue[k]
+                _time.sleep(0.022)
+                return quiet_pcm
+
+        fake_mic = _FakeRealMic()
+        vl._microphone = fake_mic
+        vl._is_real_mic = lambda: True
+
+        # Stateful ONNX mock: outputs high prob on voiced signal, preserves (h, c) shape
+        fake_session = MagicMock()
+        def _vad_run(_out, feed):
+            self.assertEqual(feed["input"].shape, (1, 576))
+            frame_rms = float(np.sqrt(np.mean(feed["input"][0, 64:] ** 2))) * 32768.0
+            prob = 0.88 if frame_rms > 150.0 else 0.05
+            return np.array([[prob]], dtype=np.float32), feed["h"], feed["c"]
+        fake_session.run.side_effect = _vad_run
+        fake_vad = MagicMock()
+        fake_vad.session = fake_session
+        vl._vad_model = fake_vad
+        vl._vad_checked = True
+
+        groq_calls = {"n": 0}
+        def _fake_groq(_audio):
+            groq_calls["n"] += 1
+            if groq_calls["n"] == 1:
+                return "open chrome", True
+            return "open chrome and check github", True
+
+        partials = []
+        with patch.object(vl, "_transcribe_groq_whisper", side_effect=_fake_groq):
+            text, status = vl.listen_live(timeout=4, phrase_time_limit=6, on_partial=partials.append)
+
+        self.assertEqual(status, "ok")
+        self.assertEqual(text, "open chrome and check github")
+        self.assertTrue(vl._stt_timings["live"])
+        self.assertEqual(vl._stt_timings["end_reason"], "vad_silence")
+        self.assertGreaterEqual(len(partials), 1)
+
+    def test_live_vad_preroll_and_noise_gate_on_short_click(self):
+        import numpy as np
+        from core.voice_listener import VoiceListener
+
+        vl = VoiceListener(energy_threshold=200, pause_threshold=0.35, stt_engine="auto", live_stt=True)
+        vl._recognizer = MagicMock()
+        vl._recognizer.energy_threshold = 200.0
+
+        # Brief 3-frame transient click (< 0.22s speech) must be noise-gated before hitting STT
+        quiet_pcm = (np.full(512, 10, dtype=np.int16)).tobytes()
+        click_pcm = (np.full(512, 1200, dtype=np.int16)).tobytes()
+        frame_queue = ([quiet_pcm] * 10) + ([click_pcm] * 3) + ([quiet_pcm] * 15)
+        idx = {"k": 0}
+
+        class _ClickMic:
+            SAMPLE_RATE = 16000
+            CHUNK = 1024
+            def __enter__(self):
+                self.stream = self
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, _n):
+                k = idx["k"]
+                if k < len(frame_queue):
+                    idx["k"] += 1
+                    return frame_queue[k]
+                return quiet_pcm
+
+        vl._microphone = _ClickMic()
+        vl._is_real_mic = lambda: True
+
+        fake_session = MagicMock()
+        fake_session.run.side_effect = lambda _out, feed: (
+            np.array([[0.85 if float(np.sqrt(np.mean(feed["input"][0, 64:] ** 2))) * 32768.0 > 150.0 else 0.05]], dtype=np.float32),
+            feed["h"],
+            feed["c"],
+        )
+        fake_vad = MagicMock()
+        fake_vad.session = fake_session
+        vl._vad_model = fake_vad
+        vl._vad_checked = True
+
+        with patch.object(vl, "_transcribe_groq_whisper") as mock_groq:
+            text, status = vl.listen_live(timeout=3, phrase_time_limit=4)
+        self.assertIsNone(text)
+        self.assertEqual(status, "timeout")
+        self.assertEqual(vl._stt_timings["end_reason"], "noise_gated")
+        mock_groq.assert_not_called()
+
 
 class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
     def test_rejects_male_edge_voice_and_selects_female_sapi(self):

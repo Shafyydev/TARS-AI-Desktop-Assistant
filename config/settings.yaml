@@ -25,6 +25,7 @@ voice:
   rate: "+5%"
   volume: "+0%"
   stt_engine: "auto"             # Options: "auto" (Groq Whisper -> faster-whisper -> Google) | "groq" | "whisper" | "google"
+  live_stt: true                 # Stream speech continuously via Silero VAD with live partial captions
   stt_energy_threshold: 250
   stt_pause_threshold: 0.35      # Pause length (in seconds) to wait before considering speech finished
   stt_timeout: 8
