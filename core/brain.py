@@ -797,82 +797,29 @@ class TARSAgent:
             msg, ok = self._reply(res, "Navigated forward.")
             return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "right"]}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:go\s+up|up\s+one\s+level|parent\s+folder|parent\s+directory|up)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["alt", "up"]})
-            msg, ok = self._reply(res, "Navigated up one level.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "up"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:address\s+bar|url\s+bar|focus\s+url|focus\s+address)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["alt", "d"]})
-            msg, ok = self._reply(res, "Address bar focused.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "d"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:new\s+folder|create\s+new\s+folder|make\s+new\s+folder)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "n"]})
-            msg, ok = self._reply(res, "Created new folder in active window.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "n"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:rename\s+file|rename\s+folder|rename\s+item|rename)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["f2"]})
-            msg, ok = self._reply(res, "Rename activated.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["f2"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:zoom\s+in|enlarge)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "+"]})
-            msg, ok = self._reply(res, "Zoomed in.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "+"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:zoom\s+out|shrink)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "-"]})
-            msg, ok = self._reply(res, "Zoomed out.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "-"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:reset\s+zoom|zoom\s+reset|normal\s+zoom)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "0"]})
-            msg, ok = self._reply(res, "Zoom reset to 100 percent.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "0"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:find\s+(?:in|on)\s+page|search\s+page)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "f"]})
-            msg, ok = self._reply(res, "Find in page activated.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "f"]}, "result": res}], "success": ok}
-
-        # 8. Editing & Clipboard Hotkeys (Anchored)
-        if re.search(r"^(?:select\s+(?:all|everything)|highlight\s+all)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "a"]})
-            msg, ok = self._reply(res, "Selected all.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "a"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:copy|copy\s+that|copy\s+selection|copy\s+text)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "c"]})
-            msg, ok = self._reply(res, "Copied to clipboard.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "c"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:paste|paste\s+it|paste\s+here|paste\s+text)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "v"]})
-            msg, ok = self._reply(res, "Pasted.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "v"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:cut|cut\s+that|cut\s+selection)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "x"]})
-            msg, ok = self._reply(res, "Cut to clipboard.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "x"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:undo|undo\s+that|revert)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "z"]})
-            msg, ok = self._reply(res, "Undone.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "z"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:redo|redo\s+that)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "y"]})
-            msg, ok = self._reply(res, "Redone.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "y"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:save|save\s+file|save\s+this|save\s+it)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "s"]})
-            msg, ok = self._reply(res, "Saved.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "s"]}, "result": res}], "success": ok}
-
+        # Filesystem & editing hotkeys - data-driven
+        _fs_table = [
+            (re.compile(r"^(?:go\s+up|up\s+one\s+level|parent\s+folder|parent\s+directory|up)$"), ["alt", "up"], "Navigated up one level."),
+            (re.compile(r"^(?:address\s+bar|url\s+bar|focus\s+url|focus\s+address)$"), ["alt", "d"], "Address bar focused."),
+            (re.compile(r"^(?:new\s+folder|create\s+new\s+folder|make\s+new\s+folder)$"), ["ctrl", "shift", "n"], "Created new folder in active window."),
+            (re.compile(r"^(?:rename\s+file|rename\s+folder|rename\s+item|rename)$"), ["f2"], "Rename activated."),
+            (re.compile(r"^(?:zoom\s+in|enlarge)$"), ["ctrl", "+"], "Zoomed in."),
+            (re.compile(r"^(?:zoom\s+out|shrink)$"), ["ctrl", "-"], "Zoomed out."),
+            (re.compile(r"^(?:reset\s+zoom|zoom\s+reset|normal\s+zoom)$"), ["ctrl", "0"], "Zoom reset to 100 percent."),
+            (re.compile(r"^(?:find\s+(?:in|on)\s+page|search\s+page)$"), ["ctrl", "f"], "Find in page activated."),
+            (re.compile(r"^(?:select\s+(?:all|everything)|highlight\s+all)$"), ["ctrl", "a"], "Selected all."),
+            (re.compile(r"^(?:copy|copy\s+that|copy\s+selection|copy\s+text)$"), ["ctrl", "c"], "Copied to clipboard."),
+            (re.compile(r"^(?:paste|paste\s+it|paste\s+here|paste\s+text)$"), ["ctrl", "v"], "Pasted."),
+            (re.compile(r"^(?:cut|cut\s+that|cut\s+selection)$"), ["ctrl", "x"], "Cut to clipboard."),
+            (re.compile(r"^(?:undo|undo\s+that|revert)$"), ["ctrl", "z"], "Undone."),
+            (re.compile(r"^(?:redo|redo\s+that)$"), ["ctrl", "y"], "Redone."),
+            (re.compile(r"^(?:save|save\s+file|save\s+this|save\s+it)$"), ["ctrl", "s"], "Saved."),
+        ]
+        for _fpat, _fkeys, _fmsg in _fs_table:
+            if _fpat.search(p_clean):
+                res = self.execute_tool("press_keys", {"keys": _fkeys})
+                msg, ok = self._reply(res, _fmsg)
+                return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": _fkeys}, "result": res}], "success": ok}
         # 9. Window & Desktop Management (Anchored)
         max_match = re.match(
             r"^(?:maximize|maximise|max)(?:\s+(?:the\s+)?(?:screen|window))?"
