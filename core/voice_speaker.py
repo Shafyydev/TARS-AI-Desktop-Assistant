@@ -452,7 +452,9 @@ class VoiceSpeaker:
                 self._utterance_seq += 1
         self._is_speaking = False
         self._stop_requested = True
-        for sp in {getattr(self._sapi_local, "speaker", None), self._sapi_speaker}:
+        local_sp = getattr(self._sapi_local, "speaker", None)
+        speakers = (local_sp,) if self._sapi_speaker is local_sp else (local_sp, self._sapi_speaker)
+        for sp in speakers:
             if sp is not None:
                 try:
                     # SVSFPurgeBeforeSpeak = 2 purges all speech instantly

@@ -938,6 +938,25 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         self.assertIsNone(mock_play.call_args.kwargs.get("interrupt_check"))
         self.assertTrue(mock_play.call_args.kwargs.get("check_keyboard"))
 
+    def test_stop_handles_unhashable_com_sapi_dispatch(self):
+        from core.voice_speaker import VoiceSpeaker
+
+        class _UnhashableSapi:
+            __hash__ = None
+
+            def __init__(self):
+                self.calls = []
+
+            def Speak(self, text, flags):
+                self.calls.append((text, flags))
+
+        sp = VoiceSpeaker(fast_voice=False)
+        com_obj = _UnhashableSapi()
+        sp._sapi_speaker = com_obj
+        sp._sapi_local.speaker = com_obj
+        sp.stop()
+        self.assertEqual(com_obj.calls, [("", 2)])
+
 
 if __name__ == "__main__":
     unittest.main()
