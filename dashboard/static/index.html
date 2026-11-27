@@ -1698,18 +1698,13 @@ function speak(text) {
       }
     };
 
-    // Prime speaking sync immediately so the orb responds the instant TARS starts replying
-    browserSpeaking = true;
-    setOrbState("speaking", "SPEAKING");
-    ttsSpeakWave = 0.72;
-    if ($("audioMeter")) $("audioMeter").textContent = "SPEAKING · SYNC";
-    HoloEngine.pulse(false);
-
+    // Wait for u.onstart before driving speaking orb animation so waves match spoken onset
     u.onstart = () => {
       browserSpeaking = true;
-      setOrbState("speaking", "SPEAKING");
-      ttsSpeakWave = 0.85;
+      setOrbState("speaking", "Speaking");
+      ttsSpeakWave = 0.65;
       if ($("audioMeter")) $("audioMeter").textContent = "SPEAKING · SYNC";
+      HoloEngine.pulse(false);
     };
 
     // Real-time word-boundary synchronization: spike wave + subtle orbital ripple per spoken word
@@ -1907,8 +1902,9 @@ function tickClock() {
   const now = new Date();
   $("clock").textContent = now.toLocaleTimeString("en-GB", { hour12: false });
 }
-// Real-time 30Hz backend voice telemetry stream so 3D orb pulses live when TARS speaks
+// Real-time 50Hz backend voice telemetry stream so 3D orb syncs strictly to audio playback
 let voiceWs = null;
+let speakOnsetPulsed = false;
 function connectVoiceStream() {
   if (!("WebSocket" in window) || !location.host) return;
   try {
@@ -1929,13 +1925,19 @@ function connectVoiceStream() {
         }
         const wasSpeaking = backendSpeakActive;
         backendSpeakActive = !!d.speaking;
-        backendSpeakLevel = backendSpeakActive ? Math.max(0.12, Math.min(1.0, Number(d.level || 0.6))) : 0.0;
+        const rawLevel = d.level != null ? Math.max(0.0, Math.min(1.0, Number(d.level))) : 0.0;
+        backendSpeakLevel = backendSpeakActive ? rawLevel : 0.0;
         if (backendSpeakActive) {
           if (!wasSpeaking) {
+            speakOnsetPulsed = false;
             setOrbState("speaking", "Speaking");
+          }
+          if (!speakOnsetPulsed && backendSpeakLevel >= 0.25) {
+            speakOnsetPulsed = true;
             HoloEngine.pulse(false);
           }
         } else if (wasSpeaking && !browserSpeaking) {
+          speakOnsetPulsed = false;
           setOrbState(voiceOn ? "listening" : "idle", voiceOn ? "Listening" : (backendVoiceRuntime ? "Muted" : "Online"));
         }
       } catch (_) {}

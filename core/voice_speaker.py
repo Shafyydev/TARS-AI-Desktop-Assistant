@@ -83,6 +83,7 @@ class VoiceSpeaker:
         self._speech_fps: float = 30.0
         self._speech_start_perf: float = 0.0
         self._speech_backend: Optional[str] = None
+        self._audio_active: bool = False
 
         # Pre-warm audio subsystem at startup
         self._init_pygame()
@@ -136,26 +137,34 @@ class VoiceSpeaker:
             return []
 
     def current_voice_state(self) -> dict[str, Any]:
-        """Returns real-time playback status and normalized speech loudness [0.0..1.0]."""
-        if not self._is_speaking or self._stop_requested:
+        """Returns real-time hardware playback status and normalized loudness [0.0..1.0]."""
+        if not self._is_speaking or self._stop_requested or self._speech_backend is None:
+            return {"speaking": False, "level": 0.0}
+
+        if self._speech_backend == "sapi":
+            sp = getattr(self._sapi_local, "speaker", None) or self._sapi_speaker
+            if sp is not None:
+                try:
+                    running = (sp.Status.RunningState == 2)
+                except Exception:
+                    running = self._audio_active
+                if running:
+                    if not self._audio_active:
+                        self._speech_start_perf = time.perf_counter()
+                        self._audio_active = True
+                    elap = max(0.0, time.perf_counter() - self._speech_start_perf)
+                    cadence = 0.56 + 0.28 * abs(math.sin(elap * 11.5)) + 0.16 * abs(math.sin(elap * 23.0))
+                    return {"speaking": True, "level": round(min(1.0, max(0.18, cadence)), 3)}
+                elif self._audio_active:
+                    self._is_speaking = False
+                    self._audio_active = False
+                    self._speech_backend = None
+            return {"speaking": False, "level": 0.0}
+
+        if not self._audio_active:
             return {"speaking": False, "level": 0.0}
 
         elap = max(0.0, time.perf_counter() - self._speech_start_perf) if self._speech_start_perf else 0.0
-
-        # Auto-release non-blocking SAPI state once OS synthesizer finishes playback
-        if self._speech_backend == "sapi":
-            sp = getattr(self._sapi_local, "speaker", None) or self._sapi_speaker
-            if sp is not None and elap > 0.18:
-                try:
-                    if sp.Status.RunningState != 2:
-                        self._is_speaking = False
-                        self._speech_backend = None
-                        return {"speaking": False, "level": 0.0}
-                except Exception:
-                    pass
-            cadence = 0.56 + 0.28 * abs(math.sin(elap * 11.5)) + 0.16 * abs(math.sin(elap * 23.0))
-            return {"speaking": True, "level": round(min(1.0, max(0.18, cadence)), 3)}
-
         env = self._speech_envelope
         if self._speech_backend == "pygame" and env:
             pos_ms = -1
@@ -249,7 +258,10 @@ class VoiceSpeaker:
         try:
             import pygame
             if not self._pygame_initialized or not pygame.mixer.get_init():
-                pygame.mixer.init()
+                try:
+                    pygame.mixer.init(buffer=512)
+                except Exception:
+                    pygame.mixer.init()
                 self._pygame_initialized = True
             return True
         except Exception:
@@ -338,6 +350,7 @@ class VoiceSpeaker:
             return False
 
         import pygame
+        self._audio_active = False
         self._speech_envelope = self._extract_audio_envelope(audio_file, fps=self._speech_fps)
         self._speech_backend = "pygame"
         for attempt in range(2):
@@ -345,8 +358,18 @@ class VoiceSpeaker:
                 if self._stop_requested or (utterance_id is not None and utterance_id != self._utterance_seq):
                     return False
                 pygame.mixer.music.load(audio_file)
-                self._speech_start_perf = time.perf_counter()
                 pygame.mixer.music.play()
+                # Wait briefly until SDL output cursor advances (>0ms) so UI syncs to real audio output
+                wait_deadline = time.perf_counter() + 0.15
+                while pygame.mixer.music.get_busy() and self._is_speaking and not self._stop_requested:
+                    if pygame.mixer.music.get_pos() > 0:
+                        break
+                    if time.perf_counter() >= wait_deadline:
+                        break
+                    time.sleep(0.008)
+                if not self._stop_requested and self._is_speaking:
+                    self._speech_start_perf = time.perf_counter()
+                    self._audio_active = True
                 while pygame.mixer.music.get_busy() and self._is_speaking and not self._stop_requested:
                     if utterance_id is not None and utterance_id != self._utterance_seq:
                         pygame.mixer.music.stop()
@@ -383,6 +406,7 @@ class VoiceSpeaker:
                     print(f"[VoiceSpeaker] pygame playback failed ({type(exc).__name__}); falling back to Zira.")
                     return False
             finally:
+                self._audio_active = False
                 self._speech_backend = None
                 self._speech_envelope = []
                 try:
@@ -414,6 +438,7 @@ class VoiceSpeaker:
             sp = self._get_thread_sapi_speaker()
             # Flag 1: SVSFlagsAsync (non-blocking), Flag 2: SVSFPurgeBeforeSpeak
             flags = (1 | 2) if async_mode else 0
+            self._audio_active = False
             self._speech_backend = "sapi"
             self._speech_start_perf = time.perf_counter()
             sp.Speak(text, flags)
@@ -683,6 +708,7 @@ class VoiceSpeaker:
                 self._utterance_seq += 1
         self._is_speaking = False
         self._stop_requested = True
+        self._audio_active = False
         self._speech_backend = None
         self._speech_envelope = []
         local_sp = getattr(self._sapi_local, "speaker", None)

@@ -1102,10 +1102,18 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         sp = VoiceSpeaker(fast_voice=False)
         sp._is_speaking = True
         sp._stop_requested = False
+
+        # Must remain silent before audio backend/playback actually starts (e.g. during TTS HTTP synthesis)
+        self.assertEqual(sp.current_voice_state(), {"speaking": False, "level": 0.0})
+
         sp._speech_backend = "pygame"
         sp._speech_envelope = [0.1, 0.5, 0.92]
         sp._speech_fps = 30.0
         sp._speech_start_perf = 0.0
+        sp._audio_active = False
+        self.assertEqual(sp.current_voice_state(), {"speaking": False, "level": 0.0})
+
+        sp._audio_active = True
         with patch("pygame.mixer.music.get_pos", return_value=70):
             st = sp.current_voice_state()
         self.assertTrue(st["speaking"])

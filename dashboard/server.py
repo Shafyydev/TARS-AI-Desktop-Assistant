@@ -227,7 +227,7 @@ async def voice_telemetry_stream(websocket: WebSocket) -> None:
                 await websocket.send_json(snap)
                 last_sent = snap
                 last_ts = now
-            await asyncio.sleep(0.033 if snap["speaking"] else 0.08)
+            await asyncio.sleep(0.02)
     except (WebSocketDisconnect, Exception):
         pass
 
