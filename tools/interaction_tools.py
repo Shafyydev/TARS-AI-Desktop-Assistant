@@ -143,8 +143,17 @@ def smart_click(target: str) -> Dict[str, Any]:
     ctx = get_active_window_context()
     cat = ctx["category"]
 
-    # 2. Search Bar / Address Bar / URL Bar
-    if any(kw in clean_target for kw in ["search", "address", "url", "input", "find"]):
+    # Spotify-specific controls (desktop app)
+    if "spotify" in (ctx.get("title") or "").lower():
+        if any(kw in clean_target for kw in ["search", "find"]):
+            gui.press_keys(["ctrl", "k"])
+            return {"success": True, "message": "Focused Spotify search (Ctrl+K).", "method": "hotkey:ctrl+k"}
+        if any(kw in clean_target for kw in ["first result", "first song", "top result", "play", "select"]):
+            gui.press_keys(["enter"])
+            return {"success": True, "message": "Activated first Spotify result.", "method": "keyboard:enter"}
+        if clean_target in ["pause", "resume", "play pause"]:
+            gui.press_keys(["space"])
+            return {"success": True, "message": "Toggled Spotify playback.", "method": "hotkey:space"}
         if cat == "browser":
             # Focus browser address/search bar (Ctrl+L)
             gui.press_keys(["ctrl", "l"])
