@@ -271,6 +271,57 @@ def smart_click(target: str) -> Dict[str, Any]:
             "method": "explorer:select_and_open"
         }
 
+    # 7b. Image/media click (e.g. WhatsApp chat image)
+    if clean_target in ["image", "photo", "picture", "media", "thumbnail"]:
+        try:
+            ctx2 = get_active_window_context()
+            win = uia.get_active_window() if hasattr(uia, "get_active_window") else None
+        except Exception:
+            win = None
+        # Try UIA image controls first
+        try:
+            from pywinauto import Desktop
+            active = Desktop(backend="uia").active_window()
+            imgs = []
+            for child in active.descendants():
+                try:
+                    if (getattr(child.element_info, "control_type", "") or "").lower() in ("image", "picture"):
+                        imgs.append(child)
+                except Exception:
+                    continue
+            if imgs:
+                # Pick the largest image (likely the chat media thumbnail)
+                def _area(c):
+                    try:
+                        r = c.rectangle()
+                        return (r.right - r.left) * (r.bottom - r.top)
+                    except Exception:
+                        return 0
+                imgs.sort(key=_area, reverse=True)
+                target_img = imgs[0]
+                try:
+                    if target_img.iface_invoke is not None:
+                        target_img.iface_invoke.Invoke()
+                        return {"success": True, "message": "Opened image via Invoke.", "method": "uia:invoke"}
+                except Exception:
+                    pass
+                try:
+                    target_img.click_input()
+                    return {"success": True, "message": "Clicked image via UIA.", "method": "uia:click"}
+                except Exception:
+                    pass
+                try:
+                    rect = target_img.rectangle()
+                    cx = (rect.left + rect.right) // 2
+                    cy = (rect.top + rect.bottom) // 2
+                    if cx > 0 and cy > 0:
+                        gui.click_coordinate(cx, cy)
+                        return {"success": True, "message": f"Clicked image at ({cx},{cy}).", "method": "coord"}
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # 8. Semantic UI Automation Search
     uia_res = uia.click_ui_element(clean_target)
     if uia_res.get("success"):
