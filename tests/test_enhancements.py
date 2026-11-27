@@ -566,6 +566,16 @@ class TestDashboardEndpoints(unittest.TestCase):
             self.assertFalse(srv.wait_for_ui_open(timeout=0.01))
             client.get("/api/status")
             self.assertTrue(srv.wait_for_ui_open(timeout=0.2))
+
+            # /api/voice and /ws/voice reflect active backend speech & amplitude
+            fake_speaker.current_voice_state.return_value = {"speaking": True, "level": 0.84}
+            rv = client.get("/api/voice")
+            self.assertEqual(rv.status_code, 200)
+            self.assertEqual(rv.json(), {"speaking": True, "level": 0.84, "muted": False, "runtime_active": True})
+            with client.websocket_connect("/ws/voice") as ws:
+                msg = ws.receive_json()
+                self.assertTrue(msg["speaking"])
+                self.assertAlmostEqual(msg["level"], 0.84, places=2)
         finally:
             srv.register_voice_runtime(active=False, speaker=None)
             srv._mic_muted = False
@@ -1085,6 +1095,26 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
             cached = sp._warm_phrases.get(phrase)
             if cached and os.path.exists(cached):
                 os.remove(cached)
+
+    def test_current_voice_state_reports_pygame_envelope_and_resets_on_stop(self):
+        from core.voice_speaker import VoiceSpeaker
+
+        sp = VoiceSpeaker(fast_voice=False)
+        sp._is_speaking = True
+        sp._stop_requested = False
+        sp._speech_backend = "pygame"
+        sp._speech_envelope = [0.1, 0.5, 0.92]
+        sp._speech_fps = 30.0
+        sp._speech_start_perf = 0.0
+        with patch("pygame.mixer.music.get_pos", return_value=70):
+            st = sp.current_voice_state()
+        self.assertTrue(st["speaking"])
+        self.assertAlmostEqual(st["level"], 0.92, places=2)
+
+        sp.stop()
+        st_after = sp.current_voice_state()
+        self.assertFalse(st_after["speaking"])
+        self.assertEqual(st_after["level"], 0.0)
 
 
 if __name__ == "__main__":

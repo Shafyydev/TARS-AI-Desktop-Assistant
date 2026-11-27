@@ -1,6 +1,8 @@
 """Low-latency streaming neural TTS speaker for TARS with offline SAPI fallback and instant async acknowledgments."""
 import asyncio
 import hashlib
+import json
+import math
 import os
 import re
 import random
@@ -77,6 +79,10 @@ class VoiceSpeaker:
         self._seq_lock = threading.Lock()
         self._utterance_seq = 0
         self._warm_phrases: dict[str, str] = {}
+        self._speech_envelope: list[float] = []
+        self._speech_fps: float = 30.0
+        self._speech_start_perf: float = 0.0
+        self._speech_backend: Optional[str] = None
 
         # Pre-warm audio subsystem at startup
         self._init_pygame()
@@ -85,6 +91,86 @@ class VoiceSpeaker:
     def is_speaking(self) -> bool:
         """Returns True if audio is currently playing."""
         return self._is_speaking
+
+    @staticmethod
+    def _extract_audio_envelope(audio_path: str, fps: float = 30.0) -> list[float]:
+        """Decodes MP3 waveform RMS amplitude frames normalized to [0.0, 1.0]."""
+        env_path = audio_path + ".env.json"
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    return [float(x) for x in data]
+            except Exception:
+                pass
+        try:
+            import av
+            import numpy as np
+
+            container = av.open(audio_path)
+            chunks = []
+            sr = 24000
+            for frame in container.decode(audio=0):
+                sr = frame.sample_rate or sr
+                arr = frame.to_ndarray()
+                if arr.ndim > 1:
+                    arr = arr.mean(axis=0)
+                chunks.append(arr.astype(np.float32))
+            container.close()
+            if not chunks:
+                return []
+            samples = np.concatenate(chunks)
+            step = max(1, int(sr / fps))
+            usable = (len(samples) // step) * step
+            if usable <= 0:
+                return []
+            blocks = samples[:usable].reshape(-1, step)
+            rms = np.sqrt(np.mean(blocks * blocks, axis=1))
+            peak = float(np.max(rms)) if len(rms) else 0.0
+            if peak <= 1e-7:
+                return [0.05] * len(rms)
+            norm = np.clip(rms / peak, 0.0, 1.0) ** 0.65
+            return [round(float(v), 3) for v in norm]
+        except Exception:
+            return []
+
+    def current_voice_state(self) -> dict[str, Any]:
+        """Returns real-time playback status and normalized speech loudness [0.0..1.0]."""
+        if not self._is_speaking or self._stop_requested:
+            return {"speaking": False, "level": 0.0}
+
+        elap = max(0.0, time.perf_counter() - self._speech_start_perf) if self._speech_start_perf else 0.0
+
+        # Auto-release non-blocking SAPI state once OS synthesizer finishes playback
+        if self._speech_backend == "sapi":
+            sp = getattr(self._sapi_local, "speaker", None) or self._sapi_speaker
+            if sp is not None and elap > 0.18:
+                try:
+                    if sp.Status.RunningState != 2:
+                        self._is_speaking = False
+                        self._speech_backend = None
+                        return {"speaking": False, "level": 0.0}
+                except Exception:
+                    pass
+            cadence = 0.56 + 0.28 * abs(math.sin(elap * 11.5)) + 0.16 * abs(math.sin(elap * 23.0))
+            return {"speaking": True, "level": round(min(1.0, max(0.18, cadence)), 3)}
+
+        env = self._speech_envelope
+        if self._speech_backend == "pygame" and env:
+            pos_ms = -1
+            if self._pygame_initialized:
+                try:
+                    import pygame
+                    pos_ms = pygame.mixer.music.get_pos()
+                except Exception:
+                    pos_ms = -1
+            t_sec = (pos_ms / 1000.0) if pos_ms >= 0 else elap
+            idx = min(len(env) - 1, max(0, int(t_sec * self._speech_fps)))
+            return {"speaking": True, "level": round(float(env[idx]), 3)}
+
+        cadence = 0.52 + 0.30 * abs(math.sin(elap * 12.0)) + 0.18 * abs(math.sin(elap * 24.5))
+        return {"speaking": True, "level": round(min(1.0, max(0.18, cadence)), 3)}
 
     def _synthesize_to_file(self, speech_text: str, output_path: str) -> bool:
         """Synthesizes speech_text to output_path using ElevenLabs or Edge-TTS."""
@@ -129,11 +215,27 @@ class VoiceSpeaker:
             cache_path = os.path.join(cache_dir, f"{digest}.mp3")
             if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 self._warm_phrases[speech_text] = cache_path
+                env_path = cache_path + ".env.json"
+                if not os.path.exists(env_path):
+                    env = self._extract_audio_envelope(cache_path, fps=self._speech_fps)
+                    if env:
+                        try:
+                            with open(env_path, "w", encoding="utf-8") as f:
+                                json.dump(env, f)
+                        except Exception:
+                            pass
                 return
             tmp_path = cache_path + f".{os.getpid()}.tmp"
             if self._synthesize_to_file(speech_text, tmp_path):
                 os.replace(tmp_path, cache_path)
                 self._warm_phrases[speech_text] = cache_path
+                env = self._extract_audio_envelope(cache_path, fps=self._speech_fps)
+                if env:
+                    try:
+                        with open(cache_path + ".env.json", "w", encoding="utf-8") as f:
+                            json.dump(env, f)
+                    except Exception:
+                        pass
             elif os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
@@ -236,11 +338,14 @@ class VoiceSpeaker:
             return False
 
         import pygame
+        self._speech_envelope = self._extract_audio_envelope(audio_file, fps=self._speech_fps)
+        self._speech_backend = "pygame"
         for attempt in range(2):
             try:
                 if self._stop_requested or (utterance_id is not None and utterance_id != self._utterance_seq):
                     return False
                 pygame.mixer.music.load(audio_file)
+                self._speech_start_perf = time.perf_counter()
                 pygame.mixer.music.play()
                 while pygame.mixer.music.get_busy() and self._is_speaking and not self._stop_requested:
                     if utterance_id is not None and utterance_id != self._utterance_seq:
@@ -278,6 +383,8 @@ class VoiceSpeaker:
                     print(f"[VoiceSpeaker] pygame playback failed ({type(exc).__name__}); falling back to Zira.")
                     return False
             finally:
+                self._speech_backend = None
+                self._speech_envelope = []
                 try:
                     pygame.mixer.music.unload()
                 except Exception:
@@ -307,6 +414,8 @@ class VoiceSpeaker:
             sp = self._get_thread_sapi_speaker()
             # Flag 1: SVSFlagsAsync (non-blocking), Flag 2: SVSFPurgeBeforeSpeak
             flags = (1 | 2) if async_mode else 0
+            self._speech_backend = "sapi"
+            self._speech_start_perf = time.perf_counter()
             sp.Speak(text, flags)
             return True
         except Exception:
@@ -574,6 +683,8 @@ class VoiceSpeaker:
                 self._utterance_seq += 1
         self._is_speaking = False
         self._stop_requested = True
+        self._speech_backend = None
+        self._speech_envelope = []
         local_sp = getattr(self._sapi_local, "speaker", None)
         speakers = (local_sp,) if self._sapi_speaker is local_sp else (local_sp, self._sapi_speaker)
         for sp in speakers:

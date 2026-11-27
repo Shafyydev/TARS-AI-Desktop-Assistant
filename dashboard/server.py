@@ -1,6 +1,7 @@
 """FastAPI backend for the TARS dashboard (no changes to existing TARS modules)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -10,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,6 +76,26 @@ def wait_for_ui_open(timeout: float = 2.5) -> bool:
 def is_mic_muted() -> bool:
     """Returns True when the user muted microphone listening from the dashboard."""
     return _mic_muted
+
+
+def _current_voice_snapshot() -> Dict[str, Any]:
+    """Returns live speaker status & normalized energy envelope combined with mic mute state."""
+    speaking = False
+    level = 0.0
+    if _voice_speaker is not None:
+        try:
+            st = _voice_speaker.current_voice_state()
+            speaking = bool(st.get("speaking", False))
+            level = float(st.get("level", 0.0))
+        except Exception:
+            speaking = bool(getattr(_voice_speaker, "is_speaking", False))
+            level = 0.65 if speaking else 0.0
+    return {
+        "speaking": speaking,
+        "level": level,
+        "muted": _mic_muted,
+        "runtime_active": _voice_runtime_active,
+    }
 
 
 def _dashboard_confirm(tool_name: str, arguments: dict) -> bool:
@@ -174,9 +195,41 @@ def status() -> Dict[str, Any]:
         },
         "telemetry": telemetry,
         "mic": {"muted": _mic_muted, "runtime_active": _voice_runtime_active},
+        "voice": _current_voice_snapshot(),
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "cwd": str(Path.cwd()),
     }
+
+
+@app.get("/api/voice")
+def get_voice_telemetry() -> Dict[str, Any]:
+    """Returns instantaneous TARS voice output state and normalized audio level."""
+    return _current_voice_snapshot()
+
+
+@app.websocket("/ws/voice")
+async def voice_telemetry_stream(websocket: WebSocket) -> None:
+    """Streams ~30Hz live TARS speech amplitude and status updates to the 3D hologram orb."""
+    await websocket.accept()
+    last_sent: Optional[Dict[str, Any]] = None
+    last_ts = 0.0
+    try:
+        while True:
+            snap = _current_voice_snapshot()
+            now = time.monotonic()
+            changed = (
+                last_sent is None
+                or snap["speaking"] != last_sent["speaking"]
+                or snap["muted"] != last_sent["muted"]
+                or snap["runtime_active"] != last_sent["runtime_active"]
+            )
+            if snap["speaking"] or changed or (now - last_ts) >= 0.25:
+                await websocket.send_json(snap)
+                last_sent = snap
+                last_ts = now
+            await asyncio.sleep(0.033 if snap["speaking"] else 0.08)
+    except (WebSocketDisconnect, Exception):
+        pass
 
 
 @app.get("/api/mic")
