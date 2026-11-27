@@ -201,7 +201,6 @@ def main() -> None:
     v_cfg = agent.settings.get("voice", {})
     stt_timeout = int(v_cfg.get("stt_timeout", 8))
     stt_phrase_limit = int(v_cfg.get("stt_phrase_time_limit", 10))
-    barge_in_rest_sec = float(os.getenv("TARS_BARGE_IN_REST_SEC", v_cfg.get("barge_in_rest_sec", 0.6)))
     listener = (
         VoiceListener(
             energy_threshold=v_cfg.get("stt_energy_threshold", 250),
@@ -209,7 +208,6 @@ def main() -> None:
             language=args.language,
             mic_index=args.mic_index,
             stt_engine=v_cfg.get("stt_engine"),
-            live_stt=bool(v_cfg.get("live_stt", True)),
         )
         if (voice_mode or not args.text_only)
         else None
@@ -239,19 +237,9 @@ def main() -> None:
         with console.status("[dim cyan]Calibrating microphone for room acoustics...[/dim cyan]"):
             listener.calibrate(duration=0.45)
 
-    just_interrupted = False
     if speaker:
-        # Allow interrupting even the startup greeting safely with voice/key barge-in.
-        greet_interrupted = speaker.speak(
-            "TARS operational. All systems online.",
-            blocking=voice_mode,
-            listener=listener if voice_mode else None,
-        )
-        if greet_interrupted and voice_mode and listener:
-            console.print("[dim yellow]⚡ Interrupted — resting briefly before listening...[/dim yellow]")
-            time.sleep(barge_in_rest_sec)
-            listener.last_active_time = time.time()
-            just_interrupted = True
+        # Block on the brief startup greeting in voice mode so the mic does not capture TARS's own speaker output.
+        speaker.speak("TARS operational. All systems online.", blocking=voice_mode)
 
     if voice_mode:
         console.print("[bold green]🎙️  HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")
@@ -270,32 +258,6 @@ def main() -> None:
         console.print(" • Zero-latency native speech is active by default. (Add [bold green]--neural-voice[/bold green] for cloud Edge-TTS).")
         console.print(" • Type [bold cyan]'exit'[/bold cyan] or [bold cyan]'quit'[/bold cyan] to disarm TARS.\n")
 
-    def _make_live_printer():
-        state = {"prev_len": 0}
-
-        def _update(partial_text: str) -> None:
-            try:
-                cols = os.get_terminal_size().columns
-            except OSError:
-                cols = 80
-            prefix = "🎙️  Live: "
-            max_txt = max(16, cols - 14)
-            clipped = partial_text if len(partial_text) <= max_txt else ("..." + partial_text[-(max_txt - 3):])
-            line = prefix + clipped
-            pad = max(0, state["prev_len"] - len(line))
-            state["prev_len"] = len(line)
-            sys.stdout.write("\r" + line + (" " * pad))
-            sys.stdout.flush()
-
-        def _clear() -> None:
-            if state["prev_len"] > 0:
-                sys.stdout.write("\r" + (" " * state["prev_len"]) + "\r")
-                sys.stdout.flush()
-                state["prev_len"] = 0
-
-        _update.clear = _clear
-        return _update
-
     listening_banner_shown = False
     try:
         while True:
@@ -304,22 +266,11 @@ def main() -> None:
 
                 if voice_mode:
                     if listener and listener.wake_detector.is_porcupine_active():
-                        if just_interrupted:
-                            just_interrupted = False
-                        else:
-                            console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
-                            if not listener.listen_for_wake_word():
-                                continue
-                            console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
-                        _live_cb = _make_live_printer()
-                        try:
-                            raw_speech, status = listener.listen_once(
-                                timeout=stt_timeout,
-                                phrase_time_limit=stt_phrase_limit,
-                                on_partial=_live_cb,
-                            )
-                        finally:
-                            _live_cb.clear()
+                        console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
+                        if not listener.listen_for_wake_word():
+                            continue
+                        console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
+                        raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
                         if status == "timeout" or not raw_speech:
                             continue
                         user_input = raw_speech
@@ -335,45 +286,20 @@ def main() -> None:
                             console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
                             listening_banner_shown = True
                         _t_stt_start = time.time()
-                        _live_cb = _make_live_printer()
-                        try:
-                            raw_speech, status = (
-                                listener.listen_once(
-                                    timeout=stt_timeout,
-                                    phrase_time_limit=stt_phrase_limit,
-                                    on_partial=_live_cb,
-                                )
-                                if listener
-                                else (None, "no listener")
-                            )
-                        finally:
-                            _live_cb.clear()
+                        raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit) if listener else (None, "no listener")
                         _t_stt_end = time.time()
                         if status == "timeout":
                             continue
                         listening_banner_shown = False
                         _timings = getattr(listener, "_stt_timings", {})
-                        if _timings.get("live"):
-                            console.print(
-                                "[dim]TIMING: Live STT {:.2f}s | speech {:.2f}s | finalize {:.2f}s ({}, {} live updates) | end_reason: {} | energy_threshold: {}[/dim]".format(
-                                    _t_stt_end - _t_stt_start,
-                                    _timings.get("speech_duration", 0),
-                                    _timings.get("transcription", 0),
-                                    _timings.get("engine", "?"),
-                                    _timings.get("partial_updates", 0),
-                                    _timings.get("end_reason", "unknown"),
-                                    getattr(listener, "energy_threshold", "?"),
-                                )
-                            )
-                        else:
-                            console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s ({}) | end_reason: {} | energy_threshold: {}[/dim]".format(
-                                _t_stt_end - _t_stt_start,
-                                _timings.get("wait_and_record", 0),
-                                _timings.get("transcription", 0),
-                                _timings.get("engine", "?"),
-                                _timings.get("end_reason", "unknown"),
-                                getattr(listener, "energy_threshold", "?")
-                            ))
+                        console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s ({}) | end_reason: {} | energy_threshold: {}[/dim]".format(
+                            _t_stt_end - _t_stt_start,
+                            _timings.get("wait_and_record", 0),
+                            _timings.get("transcription", 0),
+                            _timings.get("engine", "?"),
+                            _timings.get("end_reason", "unknown"),
+                            getattr(listener, "energy_threshold", "?")
+                        ))
 
                         if status == "unrecognized":
                             console.print("[dim yellow]⚡ Audio detected, but speech was unclear. Try speaking slightly closer.[/dim yellow]")
@@ -392,15 +318,7 @@ def main() -> None:
                             if speaker:
                                 speaker.speak("Standing by. What is your command?", blocking=True, listener=listener)
                             console.print("[bold yellow]🎙️  Listening for command...[/bold yellow]")
-                            _follow_cb = _make_live_printer()
-                            try:
-                                follow_speech, _ = listener.listen_once(
-                                    timeout=stt_timeout,
-                                    phrase_time_limit=stt_phrase_limit,
-                                    on_partial=_follow_cb,
-                                )
-                            finally:
-                                _follow_cb.clear()
+                            follow_speech, _ = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
                             if not follow_speech:
                                 continue
                             clean_command = follow_speech
@@ -477,13 +395,8 @@ def main() -> None:
                     _t_tts_end = time.time()
                     console.print("[dim]TIMING: TTS took {:.2f}s[/dim]".format(_t_tts_end - _t_tts_start))
                     if interrupted:
-                        console.print("[dim yellow]⚡ Interrupted — resting briefly before listening...[/dim yellow]")
-                        if voice_mode and listener:
-                            time.sleep(barge_in_rest_sec)
-                            listener.last_active_time = time.time()
-                            just_interrupted = True
+                        console.print("[dim yellow]⚡ Speech interrupted by user. Standing by...[/dim yellow]")
                     elif voice_mode:
-                        just_interrupted = False
                         # Prevent acoustic feedback: clear audio device buffers before listening again
                         time.sleep(0.15)
 

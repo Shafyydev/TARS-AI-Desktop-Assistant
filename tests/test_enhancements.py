@@ -914,123 +914,6 @@ class TestVoiceListenerSpeedAndFallback(unittest.TestCase):
         self.assertGreaterEqual(thresh, 920.0)
         self.assertEqual(vl.energy_threshold, int(thresh))
 
-    def test_live_vad_streaming_partials_and_zero_wait_tail_reuse(self):
-        import time as _time
-        import numpy as np
-        from core.voice_listener import VoiceListener
-
-        vl = VoiceListener(energy_threshold=200, pause_threshold=0.35, stt_engine="auto", live_stt=True)
-        vl._recognizer = MagicMock()
-        vl._recognizer.energy_threshold = 200.0
-
-        # Build 12 quiet frames + 42 voiced frames + 14 quiet tail frames (512 samples @ 16kHz = 32ms/frame)
-        t = np.arange(512, dtype=np.float32) / 16000.0
-        quiet_pcm = (np.full(512, 15, dtype=np.int16)).tobytes()
-        voiced_pcm = (np.clip(0.06 * np.sin(2.0 * np.pi * 220.0 * t), -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
-        frame_queue = ([quiet_pcm] * 12) + ([voiced_pcm] * 42) + ([quiet_pcm] * 14)
-        idx = {"k": 0}
-
-        class _FakeRealMic:
-            SAMPLE_RATE = 16000
-            CHUNK = 1024
-            def __enter__(self):
-                self.stream = self
-                return self
-            def __exit__(self, *args):
-                return False
-            def read(self, _n):
-                k = idx["k"]
-                if k < len(frame_queue):
-                    idx["k"] += 1
-                    _time.sleep(0.022)
-                    return frame_queue[k]
-                _time.sleep(0.022)
-                return quiet_pcm
-
-        fake_mic = _FakeRealMic()
-        vl._microphone = fake_mic
-        vl._is_real_mic = lambda: True
-
-        # Stateful ONNX mock: outputs high prob on voiced signal, preserves (h, c) shape
-        fake_session = MagicMock()
-        def _vad_run(_out, feed):
-            self.assertEqual(feed["input"].shape, (1, 576))
-            frame_rms = float(np.sqrt(np.mean(feed["input"][0, 64:] ** 2))) * 32768.0
-            prob = 0.88 if frame_rms > 150.0 else 0.05
-            return np.array([[prob]], dtype=np.float32), feed["h"], feed["c"]
-        fake_session.run.side_effect = _vad_run
-        fake_vad = MagicMock()
-        fake_vad.session = fake_session
-        vl._vad_model = fake_vad
-        vl._vad_checked = True
-
-        groq_calls = {"n": 0}
-        def _fake_groq(_audio):
-            groq_calls["n"] += 1
-            if groq_calls["n"] == 1:
-                return "open chrome", True
-            return "open chrome and check github", True
-
-        partials = []
-        with patch.object(vl, "_transcribe_groq_whisper", side_effect=_fake_groq):
-            text, status = vl.listen_live(timeout=4, phrase_time_limit=6, on_partial=partials.append)
-
-        self.assertEqual(status, "ok")
-        self.assertEqual(text, "open chrome and check github")
-        self.assertTrue(vl._stt_timings["live"])
-        self.assertEqual(vl._stt_timings["end_reason"], "vad_silence")
-        self.assertGreaterEqual(len(partials), 1)
-
-    def test_live_vad_preroll_and_noise_gate_on_short_click(self):
-        import numpy as np
-        from core.voice_listener import VoiceListener
-
-        vl = VoiceListener(energy_threshold=200, pause_threshold=0.35, stt_engine="auto", live_stt=True)
-        vl._recognizer = MagicMock()
-        vl._recognizer.energy_threshold = 200.0
-
-        # Brief 3-frame transient click (< 0.22s speech) must be noise-gated before hitting STT
-        quiet_pcm = (np.full(512, 10, dtype=np.int16)).tobytes()
-        click_pcm = (np.full(512, 1200, dtype=np.int16)).tobytes()
-        frame_queue = ([quiet_pcm] * 10) + ([click_pcm] * 3) + ([quiet_pcm] * 15)
-        idx = {"k": 0}
-
-        class _ClickMic:
-            SAMPLE_RATE = 16000
-            CHUNK = 1024
-            def __enter__(self):
-                self.stream = self
-                return self
-            def __exit__(self, *args):
-                return False
-            def read(self, _n):
-                k = idx["k"]
-                if k < len(frame_queue):
-                    idx["k"] += 1
-                    return frame_queue[k]
-                return quiet_pcm
-
-        vl._microphone = _ClickMic()
-        vl._is_real_mic = lambda: True
-
-        fake_session = MagicMock()
-        fake_session.run.side_effect = lambda _out, feed: (
-            np.array([[0.85 if float(np.sqrt(np.mean(feed["input"][0, 64:] ** 2))) * 32768.0 > 150.0 else 0.05]], dtype=np.float32),
-            feed["h"],
-            feed["c"],
-        )
-        fake_vad = MagicMock()
-        fake_vad.session = fake_session
-        vl._vad_model = fake_vad
-        vl._vad_checked = True
-
-        with patch.object(vl, "_transcribe_groq_whisper") as mock_groq:
-            text, status = vl.listen_live(timeout=3, phrase_time_limit=4)
-        self.assertIsNone(text)
-        self.assertEqual(status, "timeout")
-        self.assertEqual(vl._stt_timings["end_reason"], "noise_gated")
-        mock_groq.assert_not_called()
-
 
 class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
     def test_rejects_male_edge_voice_and_selects_female_sapi(self):
@@ -1068,33 +951,20 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         self.assertIn("Gender]::Female", cmd)
         self.assertIn("Zira", cmd)
 
-    def test_neural_speak_wires_echo_aware_barge_in_and_chunked_playback(self):
+    def test_neural_speak_with_listener_does_not_self_barge_in_by_default(self):
         from unittest.mock import AsyncMock
-        from core.voice_speaker import VoiceSpeaker, _split_speech_chunks
-
-        chunks = _split_speech_chunks(
-            "Opening WhatsApp now. Searching for Reshmaa across your recent chats and checking your messages. Ready to type.",
-            max_chars=70,
-        )
-        self.assertGreaterEqual(len(chunks), 2)
+        from core.voice_speaker import VoiceSpeaker
 
         sp = VoiceSpeaker(fast_voice=False)
-        fake_monitor = MagicMock()
-        fake_monitor.is_triggered.return_value = False
         fake_listener = MagicMock()
-        fake_listener.create_barge_in_monitor.return_value = fake_monitor
-
         with patch.object(sp, "_synthesize_edge_tts", new=AsyncMock(return_value=True)), \
              patch("core.voice_speaker.os.path.getsize", return_value=1024), \
              patch.object(sp, "_play_audio_pygame", return_value=True) as mock_play:
             interrupted = sp.speak("Opening WhatsApp now.", blocking=True, listener=fake_listener)
-
         self.assertFalse(interrupted)
-        fake_listener.create_barge_in_monitor.assert_called_once()
-        fake_monitor.start.assert_called_once()
-        fake_monitor.stop.assert_called_once()
+        fake_listener.create_barge_in_monitor.assert_not_called()
         mock_play.assert_called_once()
-        self.assertEqual(mock_play.call_args.kwargs.get("interrupt_check"), fake_monitor.is_triggered)
+        self.assertIsNone(mock_play.call_args.kwargs.get("interrupt_check"))
         self.assertTrue(mock_play.call_args.kwargs.get("check_keyboard"))
 
     def test_stop_handles_unhashable_com_sapi_dispatch(self):
@@ -1149,127 +1019,6 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-
-    def test_ansi_escape_sequences_ignored_and_echo_barge_in_discriminates_speech(self):
-        import numpy as np
-        from core.voice_speaker import VoiceSpeaker
-        from core.voice_listener import VoiceBargeInMonitor
-
-        # Terminal focus escape sequence (\x1b[I) must NOT cut off TTS playback
-        seq = [b"\x1b", b"[", b"I"]
-        with patch("msvcrt.kbhit", side_effect=lambda: bool(seq)), \
-             patch("msvcrt.getch", side_effect=lambda: seq.pop(0)):
-            self.assertFalse(VoiceSpeaker._poll_key_interrupt())
-
-        # Intentional Spacebar press DOES interrupt
-        space_seq = [b" "]
-        with patch("msvcrt.kbhit", side_effect=lambda: bool(space_seq)), \
-             patch("msvcrt.getch", side_effect=lambda: space_seq.pop(0)):
-            self.assertTrue(VoiceSpeaker._poll_key_interrupt())
-
-        # Echo-aware VoiceBargeInMonitor: rejects speaker bleed proportional to ref_pcm,
-        # but triggers when overlapping human voice exceeds echo floor + VAD
-        ref = np.full(16000, 0.15, dtype=np.float32)  # TARS loud speaker playback
-        mon = VoiceBargeInMonitor(MagicMock(), MagicMock(), energy_threshold=260, required_frames=2)
-        mon.set_reference_audio(ref, lambda: 500.0)
-        fake_vad = MagicMock(return_value=np.array([0.85], dtype=np.float32))
-        mon._vad_model = fake_vad
-        mon._vad_checked = True
-
-        # Pure speaker echo (~25% of 0.15 = 0.0375): must NOT trigger
-        echo_frame = np.full(512, 0.035, dtype=np.float32)
-        self.assertFalse(mon._evaluate_frame(echo_frame, pos_ms=500.0, use_vad=True))
-
-        # Loud human speech over speaker playback (0.12 > 0.15 * 0.40): MUST trigger
-        user_frame = np.full(512, 0.12, dtype=np.float32)
-        self.assertTrue(mon._evaluate_frame(user_frame, pos_ms=500.0, use_vad=True))
-
-    def test_barge_in_lag_echo_subtraction_stateful_vad_and_null_ref_safety(self):
-        import time as _time
-        import numpy as np
-        from core.voice_listener import VoiceBargeInMonitor
-
-        # 1. Delayed AC speaker bleed (18% at 20ms lag) is subtracted cleanly while stateful VAD runs
-        t = np.arange(16000, dtype=np.float32) / 16000.0
-        ref = 0.22 * np.sin(2.0 * np.pi * 440.0 * t) + 0.10 * np.sin(2.0 * np.pi * 780.0 * t)
-
-        fake_session = MagicMock()
-
-        def _fake_session_run(_out, feed):
-            self.assertEqual(feed["input"].shape, (1, 576))
-            self.assertEqual(feed["h"].shape, (1, 1, 128))
-            self.assertEqual(feed["c"].shape, (1, 1, 128))
-            return np.array([[0.82]], dtype=np.float32), feed["h"] + 0.1, feed["c"] + 0.1
-
-        fake_session.run.side_effect = _fake_session_run
-        fake_vad = MagicMock()
-        fake_vad.session = fake_session
-
-        mon = VoiceBargeInMonitor(MagicMock(), MagicMock(), energy_threshold=260, required_frames=3)
-        mon.set_reference_audio(ref, lambda: 500.0)
-        mon._vad_model = fake_vad
-        mon._vad_checked = True
-
-        # Pure speaker echo delayed by 320 samples (20ms) relative to pos_ms=500ms:
-        # evaluate across warmup frames (like grace_period) so _echo_gain adapts cleanly to 0.20 floor
-        echo_delayed = 0.18 * ref[8000 - 320 : 8000 - 320 + 512]
-        for _ in range(6):
-            self.assertFalse(mon._evaluate_frame(echo_delayed, pos_ms=500.0, use_vad=True))
-        self.assertEqual(fake_session.run.call_count, 6)
-        self.assertLess(mon._echo_gain, 0.11)
-
-        # Overlapping user speech (~1275 int16 RMS at non-aligned frequency) triggers reliably
-        ut = np.arange(512, dtype=np.float32) / 16000.0
-        user_voice = 0.055 * np.sin(2.0 * np.pi * 230.0 * ut)
-        mixed = echo_delayed + user_voice
-        self.assertTrue(mon._evaluate_frame(mixed, pos_ms=500.0, use_vad=True))
-        # Stateful LSTM hidden state advanced continuously across evaluated frames
-        last_call_feed = fake_session.run.call_args_list[-1][0][1]
-        self.assertAlmostEqual(float(last_call_feed["h"][0, 0, 0]), 0.6, places=4)
-
-        # Trailing chunk-end pos_ms == -1 after valid playback position must NOT trigger false reverb
-        self.assertFalse(mon._evaluate_frame(user_voice, pos_ms=-1.0, use_vad=True))
-
-        # 2. Background _run() with ref_audio=None (synthesizing chunk 0 / SAPI) must not crash
-        #    on missing _microphone attribute and must detect sustained speech after grace_period
-        class _FakeSource:
-            def __init__(self, frames):
-                self._frames = list(frames)
-                self.stream = self
-
-            def read(self, _chunk):
-                if self._frames:
-                    return self._frames.pop(0)
-                _time.sleep(0.01)
-                return b""
-
-        class _FakeMic:
-            def __init__(self, frames):
-                self._src = _FakeSource(frames)
-
-            def __enter__(self):
-                return self._src
-
-            def __exit__(self, *args):
-                return False
-
-        loud_pcm = (np.full(1024, 1800, dtype=np.int16)).tobytes()
-        mic = _FakeMic([loud_pcm] * 8)
-        bg_mon = VoiceBargeInMonitor(
-            MagicMock(),
-            mic,
-            energy_threshold=300,
-            grace_period=0.0,
-            required_frames=2,
-            ref_audio=None,
-        )
-        bg_mon.start()
-        deadline = _time.time() + 1.5
-        while not bg_mon.is_triggered() and _time.time() < deadline:
-            _time.sleep(0.02)
-        triggered = bg_mon.is_triggered()
-        bg_mon.stop()
-        self.assertTrue(triggered)
 
 
 if __name__ == "__main__":

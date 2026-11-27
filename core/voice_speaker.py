@@ -1,19 +1,17 @@
 """Low-latency streaming neural TTS speaker for TARS with offline SAPI fallback and instant async acknowledgments."""
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 import random
 import tempfile
 import threading
 import time
-from typing import Optional, Callable, Any, List
+from typing import Optional, Callable, Any
 
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 DEFAULT_FEMALE_VOICE = "en-US-JennyNeural"
-SECONDARY_FEMALE_NEURAL_VOICE = "en-US-AriaNeural"
 _MALE_VOICE_MARKERS = (
     "guyneural", "christopherneural", "ericneural", "ryanneural",
     "andrewneural", "brianneural", "davisneural", "tonyneural",
@@ -30,57 +28,6 @@ def _enforce_female_edge_voice(voice_name: Optional[str]) -> str:
     if not clean or any(m in low for m in _MALE_VOICE_MARKERS) or re.search(r"\bmale\b", low):
         return DEFAULT_FEMALE_VOICE
     return clean
-
-
-def _split_speech_chunks(text: str, max_chars: int = 180) -> List[str]:
-    """Splits long speech into sentence chunks for fast startup and reliable Edge-TTS delivery."""
-    clean = (text or "").strip()
-    if not clean:
-        return []
-    if len(clean) <= max_chars:
-        return [clean]
-    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if s.strip()]
-    pieces: List[str] = []
-    for sent in raw_sentences:
-        if len(sent) <= max_chars:
-            pieces.append(sent)
-            continue
-        sub = [c.strip() for c in re.split(r"(?<=[,;:])\s+", sent) if c.strip()]
-        pieces.extend(sub or [sent])
-    chunks: List[str] = []
-    cur = ""
-    for p in pieces:
-        cand = f"{cur} {p}".strip() if cur else p
-        if cur and len(cand) > max_chars:
-            chunks.append(cur)
-            cur = p
-        elif cur and len(cur) < 45 and len(cand) <= max_chars + 40:
-            cur = cand
-        elif len(cand) <= max_chars:
-            cur = cand
-        else:
-            chunks.append(cur)
-            cur = p
-    if cur:
-        chunks.append(cur)
-    return chunks or [clean]
-
-
-def _decode_reference_pcm(audio_file: str) -> Any:
-    """Decodes synthesized audio into normalized 16kHz mono float32 PCM for echo-aware barge-in."""
-    try:
-        import av
-        import numpy as np
-
-        with av.open(audio_file) as container:
-            resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
-            frames = [rf.to_ndarray().reshape(-1) for fr in container.decode(audio=0) for rf in resampler.resample(fr)]
-            frames.extend([rf.to_ndarray().reshape(-1) for rf in resampler.resample(None)])
-        if not frames:
-            return None
-        return np.concatenate(frames).astype(np.float32) / 32768.0
-    except Exception:
-        return None
 
 
 def _pick_female_sapi_voice(sp_voice: Any) -> Any:
@@ -167,22 +114,16 @@ class VoiceSpeaker:
             return ""
         return clean
 
-    async def _synthesize_edge_tts(
-        self,
-        text: str,
-        output_path: str,
-        voice_override: Optional[str] = None,
-    ) -> bool:
+    async def _synthesize_edge_tts(self, text: str, output_path: str) -> bool:
         """Synthesizes text into an MP3 file using edge-tts with 1 automatic transient retry."""
         import edge_tts
 
-        voice_to_use = _enforce_female_edge_voice(voice_override or self.voice_name)
         last_err = None
         for attempt in range(2):
             try:
                 communicate = edge_tts.Communicate(
                     text=text,
-                    voice=voice_to_use,
+                    voice=self.voice_name,
                     rate=self.rate,
                     pitch=self.pitch
                 )
@@ -194,25 +135,8 @@ class VoiceSpeaker:
                 if attempt == 0:
                     await asyncio.sleep(0.15)
         if last_err is not None:
-            print(f"[VoiceSpeaker] Edge-TTS ({voice_to_use}) failed ({type(last_err).__name__}); checking fallback.")
+            print(f"[VoiceSpeaker] Edge-TTS failed ({type(last_err).__name__}); falling back to Zira.")
         return False
-
-    def _synthesize_chunk_sync(self, text: str, output_path: str) -> bool:
-        """Runs async Edge-TTS for one chunk with secondary neural female fallback before SAPI."""
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            ok = loop.run_until_complete(self._synthesize_edge_tts(text, output_path))
-            if not ok and self.voice_name == DEFAULT_FEMALE_VOICE:
-                try:
-                    ok = loop.run_until_complete(
-                        self._synthesize_edge_tts(text, output_path, voice_override=SECONDARY_FEMALE_NEURAL_VOICE)
-                    )
-                except TypeError:
-                    pass
-            return bool(ok)
-        finally:
-            loop.close()
 
     def _play_audio_pygame(
         self,
@@ -236,9 +160,15 @@ class VoiceSpeaker:
                     if utterance_id is not None and utterance_id != self._utterance_seq:
                         pygame.mixer.music.stop()
                         return False
-                    if check_keyboard and self._poll_key_interrupt():
-                        self.stop()
-                        return False
+                    if check_keyboard:
+                        try:
+                            import msvcrt
+                            if msvcrt.kbhit():
+                                msvcrt.getch()
+                                self.stop()
+                                return False
+                        except Exception:
+                            pass
                     if interrupt_check:
                         try:
                             if interrupt_check():
@@ -339,9 +269,14 @@ class VoiceSpeaker:
                 break
             if time.time() - t0 >= 0.12:
                 break
-            if self._poll_key_interrupt():
-                self.stop()
-                return True
+            try:
+                import msvcrt
+                if msvcrt.kbhit():
+                    msvcrt.getch()
+                    self.stop()
+                    return True
+            except Exception:
+                pass
             if interrupt_check:
                 try:
                     if interrupt_check():
@@ -370,11 +305,16 @@ class VoiceSpeaker:
                 except Exception:
                     break
 
-            # 3. Instant Keyboard Interruption Check (ignores terminal escape/focus sequences)
-            if self._poll_key_interrupt():
-                self.stop()
-                interrupted = True
-                break
+            # 3. Instant Keyboard Interruption Check (any key in console)
+            try:
+                import msvcrt
+                if msvcrt.kbhit():
+                    msvcrt.getch()
+                    self.stop()
+                    interrupted = True
+                    break
+            except Exception:
+                pass
 
             # 4. Voice Barge-In Check
             if interrupt_check:
@@ -398,32 +338,6 @@ class VoiceSpeaker:
             self.speak(ack, blocking=False)
         else:
             self.speak(ack, blocking=False)
-
-    @staticmethod
-    def _poll_key_interrupt() -> bool:
-        """True on intentional stop keys (Space/Enter/Esc/q/s/x); drains ANSI focus escapes."""
-        try:
-            import msvcrt
-            if not msvcrt.kbhit():
-                return False
-            ch = msvcrt.getch()
-            if ch == b"\x1b":
-                time.sleep(0.005)
-                if msvcrt.kbhit():
-                    # Terminal focus/mouse/arrow CSI sequence (e.g. \x1b[I, \x1b[O) -> ignore
-                    while msvcrt.kbhit():
-                        nxt = msvcrt.getch()
-                        if nxt.isalpha() or nxt == b"~":
-                            break
-                    return False
-                return True
-            if ch in (b"\x00", b"\xe0"):
-                if msvcrt.kbhit():
-                    msvcrt.getch()
-                return False
-            return ch in (b" ", b"\r", b"\n", b"\x03", b"q", b"Q", b"s", b"S", b"x", b"X")
-        except Exception:
-            return False
 
     @staticmethod
     def _drain_keyboard() -> None:
@@ -489,7 +403,7 @@ class VoiceSpeaker:
                             monitor.stop()
                 return False
 
-        # Neural edge-tts path (pipelined female JennyNeural, Arianeural -> female Zira fallback)
+        # Neural edge-tts path (female JennyNeural, female Zira fallback)
         interrupted = False
 
         def _worker():
@@ -499,71 +413,50 @@ class VoiceSpeaker:
                     return
                 self._stop_requested = False
                 self._is_speaking = True
-                temp_files: List[str] = []
+                temp_audio = None
                 monitor = None
                 try:
-                    chunks = _split_speech_chunks(speech_text)
-                    for _ in chunks:
-                        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
-                            temp_files.append(tf.name)
+                    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
+                        temp_audio = tf.name
 
-                    if blocking and listener is not None and hasattr(listener, "create_barge_in_monitor"):
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    edge_success = loop.run_until_complete(self._synthesize_edge_tts(speech_text, temp_audio))
+                    loop.close()
+
+                    if self._stop_requested or utterance_id != self._utterance_seq:
+                        return
+
+                    use_barge_in = (
+                        blocking
+                        and listener is not None
+                        and hasattr(listener, "create_barge_in_monitor")
+                        and os.getenv("TARS_ACOUSTIC_BARGE_IN") == "1"
+                    )
+                    if use_barge_in:
                         monitor = listener.create_barge_in_monitor()
                         if monitor:
                             monitor.start()
                     check_fn = monitor.is_triggered if monitor else None
 
-                    with ThreadPoolExecutor(max_workers=1) as pool:
-                        cur_future = pool.submit(self._synthesize_chunk_sync, chunks[0], temp_files[0])
-                        for idx, chunk_text in enumerate(chunks):
-                            if self._stop_requested or utterance_id != self._utterance_seq:
-                                interrupted = self._stop_requested and (utterance_id == self._utterance_seq)
-                                break
-                            edge_ok = cur_future.result()
-                            if idx + 1 < len(chunks) and not self._stop_requested and utterance_id == self._utterance_seq:
-                                cur_future = pool.submit(
-                                    self._synthesize_chunk_sync, chunks[idx + 1], temp_files[idx + 1]
-                                )
-                            if self._stop_requested or utterance_id != self._utterance_seq:
-                                interrupted = self._stop_requested and (utterance_id == self._utterance_seq)
-                                break
-
-                            audio_path = temp_files[idx]
-                            if edge_ok and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
-                                if monitor and hasattr(monitor, "set_reference_audio"):
-                                    ref_pcm = _decode_reference_pcm(audio_path)
-                                    pos_cb = None
-                                    if ref_pcm is not None:
-                                        try:
-                                            import pygame
-                                            pos_cb = lambda _pg=pygame: float(_pg.mixer.music.get_pos())
-                                        except Exception:
-                                            pos_cb = None
-                                    monitor.set_reference_audio(ref_pcm, pos_cb)
-                                played = self._play_audio_pygame(
-                                    audio_path,
-                                    interrupt_check=check_fn,
-                                    utterance_id=utterance_id,
-                                    check_keyboard=blocking,
-                                )
-                                if monitor and hasattr(monitor, "set_reference_audio"):
-                                    monitor.set_reference_audio(None, None)
-                                if not played:
-                                    if self._stop_requested and utterance_id == self._utterance_seq:
-                                        interrupted = True
-                                        break
-                                    remaining = " ".join(chunks[idx:])
-                                    self._speak_sapi(remaining, async_mode=True)
-                                    interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
-                                    break
+                    if edge_success and os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 0:
+                        played = self._play_audio_pygame(
+                            temp_audio,
+                            interrupt_check=check_fn,
+                            utterance_id=utterance_id,
+                            check_keyboard=blocking,
+                        )
+                        if not played:
+                            if self._stop_requested and utterance_id == self._utterance_seq:
+                                interrupted = True
                             elif not self._stop_requested and utterance_id == self._utterance_seq:
-                                remaining = " ".join(chunks[idx:])
-                                self._speak_sapi(remaining, async_mode=True)
+                                self._speak_sapi(speech_text, async_mode=True)
                                 interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
-                                break
+                    elif not self._stop_requested and utterance_id == self._utterance_seq:
+                        self._speak_sapi(speech_text, async_mode=True)
+                        interrupted = self.wait_while_speaking(interrupt_check=check_fn, backend="sapi")
 
-                except Exception as exc:
-                    print(f"[VoiceSpeaker] Worker fallback to Zira ({type(exc).__name__}).")
+                except Exception:
                     if not self._stop_requested and utterance_id == self._utterance_seq:
                         self._speak_sapi(speech_text, async_mode=True)
                         interrupted = self.wait_while_speaking(backend="sapi")
@@ -571,12 +464,11 @@ class VoiceSpeaker:
                     if monitor:
                         monitor.stop()
                     self._is_speaking = False
-                    for path in temp_files:
-                        if path and os.path.exists(path):
-                            try:
-                                os.remove(path)
-                            except Exception:
-                                pass
+                    if temp_audio and os.path.exists(temp_audio):
+                        try:
+                            os.remove(temp_audio)
+                        except Exception:
+                            pass
 
         if blocking:
             _worker()
