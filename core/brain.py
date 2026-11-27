@@ -699,25 +699,17 @@ class TARSAgent:
                     return {"response": msg, "steps": [{"tool": "smart_click", "args": {"target": target_cand}, "result": res}], "success": ok}
 
         # 5. GUI Scrolling (Short Imperative Commands Only)
-        if re.search(r"^(?:scroll\s+(?:to\s+)?(?:bottom|end)|bottom\s+of\s+page)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["end"]})
-            msg, ok = self._reply(res, "Jumped to page bottom.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["end"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:scroll\s+(?:to\s+)?(?:top|home)|top\s+of\s+page)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["home"]})
-            msg, ok = self._reply(res, "Jumped to page top.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["home"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:scroll\s+down|page\s+down|down\s+a\s+bit|scroll\s+lower)$", p_clean):
-            res = self.execute_tool("scroll_screen", {"amount": -650})
-            msg, ok = self._reply(res, "Scrolled down.")
-            return {"response": msg, "steps": [{"tool": "scroll_screen", "args": {"amount": -650}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:scroll\s+up|page\s+up|up\s+a\s+bit|scroll\s+higher)$", p_clean):
-            res = self.execute_tool("scroll_screen", {"amount": 650})
-            msg, ok = self._reply(res, "Scrolled up.")
-            return {"response": msg, "steps": [{"tool": "scroll_screen", "args": {"amount": 650}, "result": res}], "success": ok}
+        _scroll_table = [
+            (re.compile(r"^(?:scroll\s+(?:to\s+)?(?:bottom|end)|bottom\s+of\s+page)$"), "press_keys", {"keys": ["end"]}, "Jumped to page bottom."),
+            (re.compile(r"^(?:scroll\s+(?:to\s+)?(?:top|home)|top\s+of\s+page)$"), "press_keys", {"keys": ["home"]}, "Jumped to page top."),
+            (re.compile(r"^(?:scroll\s+down|page\s+down|down\s+a\s+bit|scroll\s+lower)$"), "scroll_screen", {"amount": -650}, "Scrolled down."),
+            (re.compile(r"^(?:scroll\s+up|page\s+up|up\s+a\s+bit|scroll\s+higher)$"), "scroll_screen", {"amount": 650}, "Scrolled up."),
+        ]
+        for _spat, _stool, _sargs, _smsg in _scroll_table:
+            if _spat.search(p_clean):
+                res = self.execute_tool(_stool, _sargs)
+                msg, ok = self._reply(res, _smsg)
+                return {"response": msg, "steps": [{"tool": _stool, "args": _sargs, "result": res}], "success": ok}
 
         # 6. GUI Keyboard Typing & Key Presses
         # Match "type <text> into/in <target>" e.g. "type interstellar into search bar"
@@ -752,52 +744,31 @@ class TARSAgent:
             msg, ok = self._reply(res, f"Typed '{text_to_type}'" + (" and pressed enter." if press_enter else "."))
             return {"response": msg, "steps": [{"tool": "smart_type", "args": {"text": text_to_type, "press_enter": press_enter}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:(?:press|hit|click)\s+)?(?:enter|return)(?:\s+key)?$|^(?:click\s+ok|press\s+ok|hit\s+ok|ok)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["enter"]})
-            msg, ok = self._reply(res, "Pressed enter.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["enter"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:press|hit)\s+)?(?:space|spacebar)(?:\s+key)?$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["space"]})
-            msg, ok = self._reply(res, "Pressed space.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["space"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:press|hit)\s+)?(?:tab|tabkey)(?:\s+key)?$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["tab"]})
-            msg, ok = self._reply(res, "Pressed tab.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["tab"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:press|hit)\s+)?(?:escape|esc)(?:\s+key)?$|^(?:close|dismiss|cancel)\s+(?:popup|dialog|modal|alert|error|message)$|^cancel$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["escape"]})
-            msg, ok = self._reply(res, "Dismissed popup dialog.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["escape"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:press|hit)\s+)?(?:backspace)(?:\s+key)?$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["backspace"]})
-            msg, ok = self._reply(res, "Deleted character.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["backspace"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:press|hit)\s+)?(?:delete|del)(?:\s+key)?$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["delete"]})
-            msg, ok = self._reply(res, "Pressed delete.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["delete"]}, "result": res}], "success": ok}
+        _key_table = [
+            (re.compile(r"^(?:(?:press|hit|click)\s+)?(?:enter|return)(?:\s+key)?$|^(?:click\s+ok|press\s+ok|hit\s+ok|ok)$"), ["enter"], "Pressed enter."),
+            (re.compile(r"^(?:(?:press|hit)\s+)?(?:space|spacebar)(?:\s+key)?$"), ["space"], "Pressed space."),
+            (re.compile(r"^(?:(?:press|hit)\s+)?(?:tab|tabkey)(?:\s+key)?$"), ["tab"], "Pressed tab."),
+            (re.compile(r"^(?:(?:press|hit)\s+)?(?:escape|esc)(?:\s+key)?$|^(?:close|dismiss|cancel)\s+(?:popup|dialog|modal|alert|error|message)$|^cancel$"), ["escape"], "Dismissed popup dialog."),
+            (re.compile(r"^(?:(?:press|hit)\s+)?(?:backspace)(?:\s+key)?$"), ["backspace"], "Deleted character."),
+            (re.compile(r"^(?:(?:press|hit)\s+)?(?:delete|del)(?:\s+key)?$"), ["delete"], "Pressed delete."),
+        ]
+        for _kpat, _kkeys, _kmsg in _key_table:
+            if _kpat.search(p_clean):
+                res = self.execute_tool("press_keys", {"keys": _kkeys})
+                msg, ok = self._reply(res, _kmsg)
+                return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": _kkeys}, "result": res}], "success": ok}
 
         # 7. Navigation & Explorer GUI Controls (Anchored)
-        if re.search(r"^(?:refresh|reload|refresh\s+page|reload\s+page)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["f5"]})
-            msg, ok = self._reply(res, "Refreshed.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["f5"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:go\s+back|previous\s+page|back)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["alt", "left"]})
-            msg, ok = self._reply(res, "Navigated back.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "left"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:go\s+forward|next\s+page|forward)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["alt", "right"]})
-            msg, ok = self._reply(res, "Navigated forward.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["alt", "right"]}, "result": res}], "success": ok}
-
+        _nav_table = [
+            (re.compile(r"^(?:refresh|reload|refresh\s+page|reload\s+page)$"), ["f5"], "Refreshed."),
+            (re.compile(r"^(?:go\s+back|previous\s+page|back)$"), ["alt", "left"], "Navigated back."),
+            (re.compile(r"^(?:go\s+forward|next\s+page|forward)$"), ["alt", "right"], "Navigated forward."),
+        ]
+        for _npat, _nkeys, _nmsg in _nav_table:
+            if _npat.search(p_clean):
+                res = self.execute_tool("press_keys", {"keys": _nkeys})
+                msg, ok = self._reply(res, _nmsg)
+                return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": _nkeys}, "result": res}], "success": ok}
         # Filesystem & editing hotkeys - data-driven
         _fs_table = [
             (re.compile(r"^(?:go\s+up|up\s+one\s+level|parent\s+folder|parent\s+directory|up)$"), ["alt", "up"], "Navigated up one level."),
