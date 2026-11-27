@@ -1197,37 +1197,20 @@ class TARSAgent:
                 "success": True
             }
 
-        # 18. Windows System Keys & Desktop Features (Anchored)
-        if re.search(r"^(?:start\s+menu|windows\s+key|press\s+windows|press\s+win|press\s+start|open\s+start\s+menu)$", p_clean) or p_clean in ["start", "win", "windows"]:
-            res = self.execute_tool("press_keys", {"keys": ["win"]})
-            msg, ok = self._reply(res, "Opened Start menu.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:open\s+)?(?:task\s*mgr|task\s*manager))$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["ctrl", "shift", "escape"]})
-            msg, ok = self._reply(res, "Opened Task Manager.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["ctrl", "shift", "escape"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:open\s+)?(?:file\s+explorer|my\s+computer|this\s+pc|explorer))$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "e"]})
-            msg, ok = self._reply(res, "Opened File Explorer.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "e"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:run\s+dialog|open\s+run)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "r"]})
-            msg, ok = self._reply(res, "Opened Run dialog.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "r"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:open\s+)?(?:action\s+center|notification\s+center|notifications|show\s+notifications))$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "a"]})
-            msg, ok = self._reply(res, "Opened Action Center.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "a"]}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:(?:open\s+)?clipboard\s+history)$", p_clean):
-            res = self.execute_tool("press_keys", {"keys": ["win", "v"]})
-            msg, ok = self._reply(res, "Opened Clipboard History.")
-            return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["win", "v"]}, "result": res}], "success": ok}
-
+        # Windows system keys - data-driven
+        _sys_table = [
+            (re.compile(r"^(?:start\s+menu|windows\s+key|press\s+windows|press\s+win|press\s+start|open\s+start\s+menu)$"), ["win"], "Opened Start menu."),
+            (re.compile(r"^(?:(?:open\s+)?(?:task\s*mgr|task\s*manager))$"), ["ctrl", "shift", "escape"], "Opened Task Manager."),
+            (re.compile(r"^(?:(?:open\s+)?(?:file\s+explorer|my\s+computer|this\s+pc|explorer))$"), ["win", "e"], "Opened File Explorer."),
+            (re.compile(r"^(?:run\s+dialog|open\s+run)$"), ["win", "r"], "Opened Run dialog."),
+            (re.compile(r"^(?:(?:open\s+)?(?:action\s+center|notification\s+center|notifications|show\s+notifications))$"), ["win", "a"], "Opened Action Center."),
+            (re.compile(r"^(?:(?:open\s+)?clipboard\s+history)$"), ["win", "v"], "Opened Clipboard History."),
+        ]
+        for _spat, _skeys, _smsg in _sys_table:
+            if _spat.search(p_clean) or (_skeys == ["win"] and p_clean in ["start", "win", "windows"]):
+                res = self.execute_tool("press_keys", {"keys": _skeys})
+                msg, ok = self._reply(res, _smsg)
+                return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": _skeys}, "result": res}], "success": ok}
         # 19. File & Folder Operations
         if re.search(r"^(?:empty|clean|clear)\s+(?:the\s+)?(?:recycle\s+bin|trash|bin)$", p_clean):
             res = self.execute_tool("empty_recycle_bin", {})
