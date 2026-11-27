@@ -1053,15 +1053,15 @@ class TARSAgent:
             msg, ok = self._reply(res, f"Volume calibrated to {val} percent.")
             return {"response": msg, "steps": [{"tool": "set_system_volume", "args": {"level_percent": val}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:volume\s+up|turn\s+up\s+volume|louder|increase\s+volume)$", p_clean):
-            res = self.execute_tool("media_control", {"action": "volume_up"})
-            msg, ok = self._reply(res, "Volume increased.")
-            return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "volume_up"}, "result": res}], "success": ok}
-
-        if re.search(r"^(?:volume\s+down|turn\s+down\s+volume|quieter|decrease\s+volume|lower\s+volume)$", p_clean):
-            res = self.execute_tool("media_control", {"action": "volume_down"})
-            msg, ok = self._reply(res, "Volume decreased.")
-            return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": "volume_down"}, "result": res}], "success": ok}
+        _vol_table = [
+            (re.compile(r"^(?:volume\s+up|turn\s+up\s+volume|louder|increase\s+volume)$"), "volume_up", "Volume increased."),
+            (re.compile(r"^(?:volume\s+down|turn\s+down\s+volume|quieter|decrease\s+volume|lower\s+volume)$"), "volume_down", "Volume decreased."),
+        ]
+        for _vpat, _vact, _vmsg in _vol_table:
+            if _vpat.search(p_clean):
+                res = self.execute_tool("media_control", {"action": _vact})
+                msg, ok = self._reply(res, _vmsg)
+                return {"response": msg, "steps": [{"tool": "media_control", "args": {"action": _vact}, "result": res}], "success": ok}
 
         # 13. YouTube & Google Direct Search & Playback (<10ms launch)
         yt_match = re.match(r"^(?:(?:please|can\s+you|could\s+you)\s+)?(?:search\s+(?:on\s+)?youtube\s+for|search\s+for\s+(.+?)\s+on\s+youtube|play\s+(.+?)\s+on\s+youtube|youtube\s+(?:search\s+for|search)|open\s+youtube\s+and\s+(?:search|play)\s+for?|search\s+youtube|open\s+youtube)\s*(.*)", p_clean)
