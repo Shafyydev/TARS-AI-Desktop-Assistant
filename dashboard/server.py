@@ -29,8 +29,8 @@ from core.scheduler import get_default_scheduler  # noqa: E402
 app = FastAPI(title="TARS Dashboard", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -39,9 +39,30 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 _agent_lock = threading.Lock()
 _agent: Optional[TARSAgent] = None
 
+# Interactive confirmation state for destructive tools invoked from the dashboard.
+_confirm_event = threading.Event()
+_confirm_result = False
+_confirm_pending: Optional[Dict[str, Any]] = None
+
+
+def _dashboard_confirm(tool_name: str, arguments: dict) -> bool:
+    global _confirm_pending, _confirm_result
+    _confirm_pending = {"tool": tool_name, "arguments": arguments}
+    _confirm_event.clear()
+    _confirm_result = False
+    # Block (up to 60s) for an explicit /api/confirm call from the client.
+    _confirm_event.wait(timeout=60.0)
+    pending = _confirm_pending
+    _confirm_pending = None
+    return bool(_confirm_result)
+
 
 class ChatRequest(BaseModel):
     prompt: str
+
+
+class ConfirmRequest(BaseModel):
+    approved: bool = False
 
 
 def get_agent() -> TARSAgent:
@@ -50,8 +71,7 @@ def get_agent() -> TARSAgent:
         with _agent_lock:
             if _agent is None:
                 _agent = TARSAgent()
-                # Dashboard cannot interactively confirm destructive actions; require explicit confirmation flow client-side if needed.
-                _agent.set_confirmation_callback(lambda tool, args: False)
+                _agent.set_confirmation_callback(_dashboard_confirm)
     return _agent
 
 
@@ -188,6 +208,21 @@ def screenshot() -> Any:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     raise HTTPException(status_code=404, detail="Screenshot unavailable")
+
+
+@app.get("/api/confirm/pending")
+def confirm_pending() -> Dict[str, Any]:
+    """Returns the destructive action currently awaiting confirmation (if any)."""
+    return {"pending": _confirm_pending}
+
+
+@app.post("/api/confirm")
+def confirm(req: ConfirmRequest) -> Dict[str, Any]:
+    """Approves or rejects the destructive action currently awaiting confirmation."""
+    global _confirm_result
+    _confirm_result = bool(req.approved)
+    _confirm_event.set()
+    return {"approved": _confirm_result}
 
 
 @app.post("/api/chat")

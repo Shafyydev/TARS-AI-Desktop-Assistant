@@ -40,7 +40,7 @@ def get_omniroute_api_key() -> Optional[str]:
         db_path = Path.home() / ".omniroute" / "storage.sqlite"
         if db_path.exists():
             import sqlite3
-            con = sqlite3.connect(str(db_path))
+            con = sqlite3.connect(str(db_path), check_same_thread=False)
             cur = con.cursor()
             row = cur.execute(
                 "SELECT key FROM api_keys WHERE is_active = 1 OR is_active IS NULL LIMIT 1"
@@ -818,7 +818,7 @@ class LLMProvider:
         kwargs: Dict[str, Any] = {
             "system_instruction": system_instruction,
             "tools": tools_list,
-            "temperature": 0.2,
+            "temperature": float(_load_llm_settings().get("temperature", 0.3)),
         }
         try:
             http_kwargs: Dict[str, Any] = {"timeout": int(max(1.0, timeout) * 1000)}
@@ -1150,7 +1150,7 @@ class LLMProvider:
                 call_kwargs: Dict[str, Any] = {
                     "model": self.model,
                     "messages": messages,
-                    "temperature": 0.2,
+                    "temperature": float(_load_llm_settings().get("temperature", 0.3)),
                     "max_tokens": max_tokens,
                     "timeout": timeout,
                 }
@@ -1295,7 +1295,7 @@ class LLMProvider:
             summary_resp = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=0.2,
+                temperature=float(_load_llm_settings().get("temperature", 0.3)),
                 max_tokens=max_tokens,
                 timeout=timeout,
             )
