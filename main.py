@@ -375,6 +375,16 @@ def main() -> None:
                 console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
                 # Output Spoken / Written Response
+                raw_response = (result.get("response") or "").strip()
+                # Keep replies short: first sentence/clause, capped at 120 chars.
+                short = raw_response
+                for sep in (". ", "; ", "! ", "? "):
+                    if sep in short:
+                        short = short.split(sep, 1)[0] + sep.strip()
+                        break
+                if len(short) > 120:
+                    short = short[:117].rstrip() + "..."
+                result["response"] = short
                 console.print(f"\n[bold green]TARS:[/bold green] {result['response']} [dim green]({exec_duration:.2f}s)[/dim green]\n")
 
                 # Show tool execution details if tools were used
