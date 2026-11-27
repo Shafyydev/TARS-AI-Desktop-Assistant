@@ -29,6 +29,7 @@ voice:
   stt_pause_threshold: 0.35      # Pause length (in seconds) to wait before considering speech finished
   stt_timeout: 8
   stt_phrase_time_limit: 10      # Maximum duration of a spoken phrase
+  barge_in_rest_sec: 0.6         # Brief pause after interrupting TARS before listening again
 
 execution:
   powershell_timeout_seconds: 30

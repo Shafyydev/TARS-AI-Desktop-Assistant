@@ -201,6 +201,7 @@ def main() -> None:
     v_cfg = agent.settings.get("voice", {})
     stt_timeout = int(v_cfg.get("stt_timeout", 8))
     stt_phrase_limit = int(v_cfg.get("stt_phrase_time_limit", 10))
+    barge_in_rest_sec = float(os.getenv("TARS_BARGE_IN_REST_SEC", v_cfg.get("barge_in_rest_sec", 0.6)))
     listener = (
         VoiceListener(
             energy_threshold=v_cfg.get("stt_energy_threshold", 250),
@@ -237,9 +238,19 @@ def main() -> None:
         with console.status("[dim cyan]Calibrating microphone for room acoustics...[/dim cyan]"):
             listener.calibrate(duration=0.45)
 
+    just_interrupted = False
     if speaker:
-        # Block on the brief startup greeting in voice mode so the mic does not capture TARS's own speaker output.
-        speaker.speak("TARS operational. All systems online.", blocking=voice_mode)
+        # Allow interrupting even the startup greeting safely with voice/key barge-in.
+        greet_interrupted = speaker.speak(
+            "TARS operational. All systems online.",
+            blocking=voice_mode,
+            listener=listener if voice_mode else None,
+        )
+        if greet_interrupted and voice_mode and listener:
+            console.print("[dim yellow]⚡ Interrupted — resting briefly before listening...[/dim yellow]")
+            time.sleep(barge_in_rest_sec)
+            listener.last_active_time = time.time()
+            just_interrupted = True
 
     if voice_mode:
         console.print("[bold green]🎙️  HANDS-FREE VOICE CONTROL ENGAGED[/bold green]")
@@ -266,10 +277,13 @@ def main() -> None:
 
                 if voice_mode:
                     if listener and listener.wake_detector.is_porcupine_active():
-                        console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
-                        if not listener.listen_for_wake_word():
-                            continue
-                        console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
+                        if just_interrupted:
+                            just_interrupted = False
+                        else:
+                            console.print("\n[bold green]🎙️  Waiting for wake word...[/bold green]")
+                            if not listener.listen_for_wake_word():
+                                continue
+                            console.print("[bold yellow]🎙️  Wake word detected. Listening for command...[/bold yellow]")
                         raw_speech, status = listener.listen_once(timeout=stt_timeout, phrase_time_limit=stt_phrase_limit)
                         if status == "timeout" or not raw_speech:
                             continue
@@ -395,8 +409,13 @@ def main() -> None:
                     _t_tts_end = time.time()
                     console.print("[dim]TIMING: TTS took {:.2f}s[/dim]".format(_t_tts_end - _t_tts_start))
                     if interrupted:
-                        console.print("[dim yellow]⚡ Speech interrupted by user. Standing by...[/dim yellow]")
+                        console.print("[dim yellow]⚡ Interrupted — resting briefly before listening...[/dim yellow]")
+                        if voice_mode and listener:
+                            time.sleep(barge_in_rest_sec)
+                            listener.last_active_time = time.time()
+                            just_interrupted = True
                     elif voice_mode:
+                        just_interrupted = False
                         # Prevent acoustic feedback: clear audio device buffers before listening again
                         time.sleep(0.15)
 

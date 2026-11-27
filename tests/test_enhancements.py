@@ -951,20 +951,33 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         self.assertIn("Gender]::Female", cmd)
         self.assertIn("Zira", cmd)
 
-    def test_neural_speak_with_listener_does_not_self_barge_in_by_default(self):
+    def test_neural_speak_wires_echo_aware_barge_in_and_chunked_playback(self):
         from unittest.mock import AsyncMock
-        from core.voice_speaker import VoiceSpeaker
+        from core.voice_speaker import VoiceSpeaker, _split_speech_chunks
+
+        chunks = _split_speech_chunks(
+            "Opening WhatsApp now. Searching for Reshmaa across your recent chats and checking your messages. Ready to type.",
+            max_chars=70,
+        )
+        self.assertGreaterEqual(len(chunks), 2)
 
         sp = VoiceSpeaker(fast_voice=False)
+        fake_monitor = MagicMock()
+        fake_monitor.is_triggered.return_value = False
         fake_listener = MagicMock()
+        fake_listener.create_barge_in_monitor.return_value = fake_monitor
+
         with patch.object(sp, "_synthesize_edge_tts", new=AsyncMock(return_value=True)), \
              patch("core.voice_speaker.os.path.getsize", return_value=1024), \
              patch.object(sp, "_play_audio_pygame", return_value=True) as mock_play:
             interrupted = sp.speak("Opening WhatsApp now.", blocking=True, listener=fake_listener)
+
         self.assertFalse(interrupted)
-        fake_listener.create_barge_in_monitor.assert_not_called()
+        fake_listener.create_barge_in_monitor.assert_called_once()
+        fake_monitor.start.assert_called_once()
+        fake_monitor.stop.assert_called_once()
         mock_play.assert_called_once()
-        self.assertIsNone(mock_play.call_args.kwargs.get("interrupt_check"))
+        self.assertEqual(mock_play.call_args.kwargs.get("interrupt_check"), fake_monitor.is_triggered)
         self.assertTrue(mock_play.call_args.kwargs.get("check_keyboard"))
 
     def test_stop_handles_unhashable_com_sapi_dispatch(self):
@@ -1019,6 +1032,40 @@ class TestFemaleSingleVoiceSpeaker(unittest.TestCase):
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
+
+    def test_ansi_escape_sequences_ignored_and_echo_barge_in_discriminates_speech(self):
+        import numpy as np
+        from core.voice_speaker import VoiceSpeaker
+        from core.voice_listener import VoiceBargeInMonitor
+
+        # Terminal focus escape sequence (\x1b[I) must NOT cut off TTS playback
+        seq = [b"\x1b", b"[", b"I"]
+        with patch("msvcrt.kbhit", side_effect=lambda: bool(seq)), \
+             patch("msvcrt.getch", side_effect=lambda: seq.pop(0)):
+            self.assertFalse(VoiceSpeaker._poll_key_interrupt())
+
+        # Intentional Spacebar press DOES interrupt
+        space_seq = [b" "]
+        with patch("msvcrt.kbhit", side_effect=lambda: bool(space_seq)), \
+             patch("msvcrt.getch", side_effect=lambda: space_seq.pop(0)):
+            self.assertTrue(VoiceSpeaker._poll_key_interrupt())
+
+        # Echo-aware VoiceBargeInMonitor: rejects speaker bleed proportional to ref_pcm,
+        # but triggers when overlapping human voice exceeds echo floor + VAD
+        ref = np.full(16000, 0.15, dtype=np.float32)  # TARS loud speaker playback
+        mon = VoiceBargeInMonitor(MagicMock(), MagicMock(), energy_threshold=260, required_frames=2)
+        mon.set_reference_audio(ref, lambda: 500.0)
+        fake_vad = MagicMock(return_value=np.array([0.85], dtype=np.float32))
+        mon._vad_model = fake_vad
+        mon._vad_checked = True
+
+        # Pure speaker echo (~25% of 0.15 = 0.0375): must NOT trigger
+        echo_frame = np.full(512, 0.035, dtype=np.float32)
+        self.assertFalse(mon._evaluate_frame(echo_frame, pos_ms=500.0, use_vad=True))
+
+        # Loud human speech over speaker playback (0.12 > 0.15 * 0.40): MUST trigger
+        user_frame = np.full(512, 0.12, dtype=np.float32)
+        self.assertTrue(mon._evaluate_frame(user_frame, pos_ms=500.0, use_vad=True))
 
 
 if __name__ == "__main__":

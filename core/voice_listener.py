@@ -546,40 +546,43 @@ class VoiceListener:
             self.close_stream()
             return None, f"error: {str(e)}"
 
-    def create_barge_in_monitor(self) -> Optional["VoiceBargeInMonitor"]:
-        """Creates a barge-in audio energy monitor calibrated to current room acoustics."""
+    def create_barge_in_monitor(
+        self,
+        ref_audio: Any = None,
+        pos_fn: Optional[Callable[[], float]] = None,
+    ) -> Optional["VoiceBargeInMonitor"]:
+        """Creates an echo-aware barge-in monitor calibrated to current room acoustics."""
         if not self._recognizer or not self._microphone:
             return None
         self.close_stream()
-        # Safe threshold: well above the measured noise floor and TARS's own
-        # speaker bleed (340-1800+ RMS on laptop speakers) to prevent self-cutoff.
-        thresh = max(1200, int(self._recognizer.energy_threshold * 3.5))
+        # Baseline floor above quiet room noise; echo subtraction + Silero VAD handle active speaker bleed.
+        thresh = max(260, int(self._recognizer.energy_threshold * 1.35))
         return VoiceBargeInMonitor(
             self._recognizer,
             self._microphone,
             energy_threshold=thresh,
-            grace_period=0.7,
-            required_frames=5,
+            grace_period=0.35,
+            required_frames=3,
+            ref_audio=ref_audio,
+            pos_fn=pos_fn,
         )
 
 
 class VoiceBargeInMonitor:
     """
-    Lightweight audio energy monitor that listens to the microphone
-    during TTS speech playback to trigger instant voice barge-in.
-
-    A grace period at the start of playback ignores TARS's own speaker output,
-    and sustained speech is required before a barge-in is accepted, so the
-    monitor does not fire on its own voice or on a single stray sample.
+    Echo-aware voice barge-in monitor that detects user speech over TARS's own
+    speaker playback using playback-reference envelope gating and Silero VAD.
     """
 
     def __init__(
         self,
         recognizer: Any,
         microphone: Any,
-        energy_threshold: int = 900,
-        grace_period: float = 0.8,
-        required_frames: int = 2,
+        energy_threshold: int = 350,
+        grace_period: float = 0.35,
+        required_frames: int = 3,
+        ref_audio: Any = None,
+        pos_fn: Optional[Callable[[], float]] = None,
     ):
         self.recognizer = recognizer
         self.microphone = microphone
@@ -590,6 +593,30 @@ class VoiceBargeInMonitor:
         self._triggered = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._started_at = 0.0
+        self._ref_lock = threading.Lock()
+        self._ref_audio = ref_audio
+        self._pos_fn = pos_fn
+        self._echo_gain = 0.35
+        self._vad_model = None
+        self._vad_checked = False
+        self._recent_hits: list = []
+
+    def set_reference_audio(self, ref_audio: Any, pos_fn: Optional[Callable[[], float]] = None) -> None:
+        """Updates the active 16kHz playback reference waveform and playback clock."""
+        with self._ref_lock:
+            self._ref_audio = ref_audio
+            self._pos_fn = pos_fn
+            self._recent_hits.clear()
+
+    def _get_vad(self) -> Any:
+        if not self._vad_checked:
+            self._vad_checked = True
+            try:
+                from faster_whisper import vad
+                self._vad_model = vad.get_vad_model()
+            except Exception:
+                self._vad_model = None
+        return self._vad_model
 
     def start(self) -> None:
         """Starts background monitoring."""
@@ -597,6 +624,7 @@ class VoiceBargeInMonitor:
             return
         self._stop_event.clear()
         self._triggered.clear()
+        self._recent_hits.clear()
         self._started_at = time.time()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -605,39 +633,138 @@ class VoiceBargeInMonitor:
         """Stops background monitoring."""
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=0.15)
+            self._thread.join(timeout=0.2)
 
     def is_triggered(self) -> bool:
-        """Returns True if user voice energy exceeded threshold."""
+        """Returns True if sustained user speech was detected."""
         return self._triggered.is_set()
+
+    def _ref_window_rms(self, pos_ms: Optional[float]) -> Optional[float]:
+        """Returns local speaker reference RMS around ``pos_ms`` (covering 180ms echo window)."""
+        with self._ref_lock:
+            ref = self._ref_audio
+        if ref is None or pos_ms is None or pos_ms < 0:
+            return None
+        try:
+            import numpy as np
+            center = int(pos_ms * 16.0)
+            lo = max(0, center - 2880)  # -180ms speaker->mic latency + room reverb
+            hi = min(len(ref), center + 640)
+            if hi <= lo:
+                return 0.0
+            win = ref[lo:hi]
+            # Peak 32ms block RMS inside echo window handles transient syllables accurately.
+            if len(win) <= 512:
+                return float(np.sqrt(np.mean(win * win)))
+            trimmed = win[: (len(win) // 512) * 512].reshape(-1, 512)
+            return float(np.max(np.sqrt(np.mean(trimmed * trimmed, axis=1))))
+        except Exception:
+            return None
+
+    def _evaluate_frame(self, mic_16k: Any, pos_ms: Optional[float] = None, use_vad: bool = True) -> bool:
+        """Evaluates one 512-sample 16kHz frame; returns True if overlapping user speech occurred."""
+        import numpy as np
+
+        mic_rms_f = float(np.sqrt(np.mean(mic_16k * mic_16k)))
+        mic_rms_int16 = mic_rms_f * 32768.0
+        min_floor = float(max(240, self.energy_threshold))
+
+        ref_rms = self._ref_window_rms(pos_ms)
+        vad_prob = None
+        if use_vad and mic_rms_int16 >= min_floor * 0.8:
+            vad_model = self._get_vad()
+            if vad_model is not None:
+                try:
+                    vad_prob = float(vad_model(mic_16k.astype(np.float32))[0])
+                except Exception:
+                    vad_prob = None
+
+        if ref_rms is not None:
+            if ref_rms > 0.015 and (vad_prob is None or vad_prob < 0.45):
+                sample_gain = min(0.65, max(0.18, mic_rms_f / ref_rms))
+                self._echo_gain = 0.85 * self._echo_gain + 0.15 * sample_gain
+            echo_ceiling = max(min_floor / 32768.0, ref_rms * max(self._echo_gain * 1.25, 0.40))
+            if mic_rms_f <= echo_ceiling:
+                return False
+            if vad_prob is not None and vad_prob < 0.50:
+                return False
+            return mic_rms_int16 >= min_floor
+
+        # Fallback without reference audio (SAPI / offline): require higher threshold + VAD
+        fallback_floor = max(900.0, float(self.energy_threshold) * 2.5)
+        if mic_rms_int16 < fallback_floor:
+            return False
+        if vad_prob is not None and vad_prob < 0.52:
+            return False
+        return True
 
     def _run(self) -> None:
         try:
+            import numpy as np
+
             with self.microphone as source:
-                consecutive = 0
+                rate = getattr(source, "SAMPLE_RATE", 16000)
+                chunk = getattr(source, "CHUNK", 1024)
+                if not isinstance(rate, int) or rate <= 0:
+                    rate = 16000
+                if not isinstance(chunk, int) or chunk <= 0:
+                    chunk = 1024
+                buf16 = np.array([], dtype=np.float32)
+                use_echo_model = not isinstance(source, object) or hasattr(source, "SAMPLE_RATE")
                 while not self._stop_event.is_set():
                     try:
-                        raw = source.stream.read(source.CHUNK)
+                        raw = source.stream.read(chunk)
                         if not raw:
                             continue
-                        # Ignore everything recorded while TARS's own voice is
-                        # still ramping up at the start of playback.
                         if (time.time() - self._started_at) < self.grace_period:
-                            consecutive = 0
+                            self._recent_hits.clear()
                             continue
-                        count = len(raw) // 2
-                        shorts = struct.unpack(f"{count}h", raw)
-                        sum_squares = sum(s * s for s in shorts)
-                        rms = int(math.sqrt(sum_squares / max(1, count)))
-                        if rms >= self.energy_threshold:
-                            consecutive += 1
-                            # Sustained speech only: a single loud frame is not a
-                            # person talking.
-                            if consecutive >= self.required_frames:
+
+                        with self._ref_lock:
+                            ref_audio = self._ref_audio
+                            pos_fn = self._pos_fn
+
+                        if ref_audio is None or rate == 16000:
+                            cnt = len(raw) // 2
+                            if cnt <= 0:
+                                continue
+                            shorts = np.frombuffer(raw[:cnt * 2], dtype=np.int16).astype(np.float32) / 32768.0
+                            x16 = shorts
+                        else:
+                            x = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                            out_len = max(1, int(round(len(x) * 16000.0 / rate)))
+                            idx = np.linspace(0, max(0, len(x) - 1), out_len)
+                            x16 = np.interp(idx, np.arange(len(x)), x).astype(np.float32)
+
+                        if ref_audio is None and not hasattr(self._microphone, "SAMPLE_RATE"):
+                            rms = int(math.sqrt(float(np.mean(x16 * x16))) * 32768.0)
+                            hit = rms >= self.energy_threshold
+                            self._recent_hits.append(1 if hit else 0)
+                            if len(self._recent_hits) > max(4, self.required_frames + 1):
+                                self._recent_hits.pop(0)
+                            if sum(self._recent_hits) >= self.required_frames:
                                 self._triggered.set()
                                 break
-                        else:
-                            consecutive = max(0, consecutive - 1)
+                            continue
+
+                        buf16 = np.concatenate([buf16, x16])
+                        while len(buf16) >= 512 and not self._stop_event.is_set():
+                            frame = buf16[:512]
+                            buf16 = buf16[512:]
+                            pos_ms = None
+                            if pos_fn is not None:
+                                try:
+                                    pos_ms = float(pos_fn())
+                                except Exception:
+                                    pos_ms = None
+                            hit = self._evaluate_frame(frame, pos_ms=pos_ms, use_vad=use_echo_model)
+                            self._recent_hits.append(1 if hit else 0)
+                            win_len = max(4, self.required_frames + 1)
+                            if len(self._recent_hits) > win_len:
+                                self._recent_hits.pop(0)
+                            if sum(self._recent_hits) >= self.required_frames:
+                                self._triggered.set()
+                                return
                     except Exception:
                         break
         except Exception:
