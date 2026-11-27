@@ -583,7 +583,7 @@ class TaskOrchestrator:
                 history=history,
                 user_preferences=user_prefs,
                 on_status=on_status,
-                max_iterations=10,
+                max_iterations=6,
                 timeout=self._llm_timeout(self.llm.provider)
             )
 
@@ -607,7 +607,7 @@ class TaskOrchestrator:
                 history=history,
                 user_preferences=user_prefs,
                 on_status=on_status,
-                max_iterations=10,
+                max_iterations=6,
                 timeout=self._llm_timeout(fallback.provider),
             )
             if fb_result and (fb_result.get("success") or fb_result.get("cancelled") or fb_result.get("steps")):
