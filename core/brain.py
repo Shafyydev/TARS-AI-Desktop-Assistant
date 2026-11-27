@@ -253,6 +253,7 @@ class TARSAgent:
             "cancel_active_reminder": cancel_active_reminder,
             # Google Workspace: Gmail & Calendar
             "list_unread_emails": google_ws.list_unread_emails,
+            "search_emails": google_ws.search_emails,
             "read_email": google_ws.read_email,
             "send_email": google_ws.send_email,
             "list_upcoming_events": google_ws.list_upcoming_events,
@@ -938,7 +939,12 @@ class TARSAgent:
             msg, ok = self._reply(res, "Window minimized.")
             return {"response": msg, "steps": [{"tool": "minimize_active_window", "args": {}, "result": res}], "success": ok}
 
-        if re.search(r"^(?:(?:make\s+(?:it|this|the\s+window)|go|switch\s+to|enter)\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode|toggle\s+fullscreen)$", p_clean):
+        if re.search(r"^(?:(?:make|put|toggle)\s+)?(?:the\s+video|video)\s+(?:in\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode)$|^(?:fullscreen|full\s+screen)\s+(?:the\s+)?video$", p_clean):
+            res = self.execute_tool("smart_click", {"target": "fullscreen"})
+            msg, ok = self._reply(res, "Video fullscreen toggled.")
+            return {"response": msg, "steps": [{"tool": "smart_click", "args": {"target": "fullscreen"}, "result": res}], "success": ok}
+
+        if re.search(r"^(?:(?:make\s+(?:it|this|the\s+window|screen)|go|switch\s+to|enter)\s+)?(?:fullscreen|full\s+screen|full\s+screen\s+mode|toggle\s+fullscreen)$", p_clean):
             res = self.execute_tool("press_keys", {"keys": ["f11"]})
             msg, ok = self._reply(res, "Fullscreen toggled.")
             return {"response": msg, "steps": [{"tool": "press_keys", "args": {"keys": ["f11"]}, "result": res}], "success": ok}
@@ -1022,6 +1028,8 @@ class TARSAgent:
             if close_target and close_target.startswith("process"):
                 close_target = None
                 close_match = None
+            elif close_target in {"another", "another one", "another one too", "another window", "this one", "that one", "that too"}:
+                close_target = None
         if close_match:
             args = {"window_name": close_target} if close_target else {}
             res = self.execute_tool("close_active_window", args)
@@ -1469,18 +1477,18 @@ class TARSAgent:
         whatsapp_send = re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
             r"(?:send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:to\s+)?|whatsapp\s+(?:to\s+)?|message\s+(?:to\s+)?|text\s+(?:to\s+)?)"
-            r"(.+?)\s+(?:saying|with(?:\s+(?:the\s+)?text)?)\s+(.+)$",
+            r"(.+?)\s+(?:saying|telling(?:\s+(?:her|him|them))?|with(?:\s+(?:the\s+)?text)?)\s+(.+)$",
             p_clean,
         )
         whatsapp_send_rev = None if whatsapp_send else re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
             r"send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+"
-            r"(?:saying|with(?:\s+(?:the\s+)?text)?)\s+(.+?)\s+to\s+(.+)$",
+            r"(?:saying|telling(?:\s+(?:her|him|them))?|with(?:\s+(?:the\s+)?text)?)\s+(.+?)\s+to\s+(.+)$",
             p_clean,
         )
         whatsapp_send_person_first = None if (whatsapp_send or whatsapp_send_rev) else re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
-            r"(?:send\s+(?!(?:a|an|the|this|that|it|my)\b)(.+?)\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:saying\s+)?|send\s+(?:in|on)\s+whatsapp\s+to\s+(.+?)\s+saying\s+|whatsapp\s+(.+?)\s+saying\s+)(.+)$",
+            r"(?:send\s+(?!(?:a|an|the|this|that|it|my)\b)(.+?)\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:(?:saying|telling)\s+)?|send\s+(?:in|on)\s+whatsapp\s+to\s+(.+?)\s+(?:saying|telling)\s+|whatsapp\s+(.+?)\s+(?:saying|telling)\s+)(.+)$",
             p_clean,
         )
         whatsapp_send_followup = None

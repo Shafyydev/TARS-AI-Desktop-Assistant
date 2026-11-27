@@ -64,6 +64,8 @@ class TaskOrchestrator:
         """
         if not llm_result.get("no_tool_calls"):
             return llm_result
+        if llm_result.get("steps"):
+            return llm_result
 
         text = (llm_result.get("response") or "").strip()
         lower = text.lower()
@@ -84,7 +86,7 @@ class TaskOrchestrator:
             for word in (
                 "done", "opened", "closed", "sent", "created", "deleted", "completed",
                 "maximized", "minimized", "launched", "typed", "pressed", "terminated",
-                "shutting down",
+                "shutting down", "searching", "opening", "closing",
             )
         )
         # Narrating an action in the present tense is the same lie as claiming it
@@ -136,7 +138,7 @@ class TaskOrchestrator:
         "smart_click", "smart_type",
         "open_whatsapp_chat", "send_whatsapp_message",
         "set_reminder", "list_active_reminders", "cancel_active_reminder",
-        "list_unread_emails", "read_email", "send_email", "list_upcoming_events",
+        "list_unread_emails", "search_emails", "read_email", "send_email", "list_upcoming_events",
         "create_calendar_event",
         "remember_fact", "verify_action", "cancel_current_task",
     })
@@ -173,7 +175,7 @@ class TaskOrchestrator:
         # Reminders & scheduling
         "set_reminder", "list_active_reminders", "cancel_active_reminder",
         # Google Workspace
-        "list_unread_emails", "read_email", "send_email", "list_upcoming_events",
+        "list_unread_emails", "search_emails", "read_email", "send_email", "list_upcoming_events",
         "create_calendar_event",
         # Memory & verification
         "remember_fact", "forget_fact", "verify_action", "cancel_current_task",
@@ -526,7 +528,7 @@ class TaskOrchestrator:
         if not isinstance(self.llm, LLMProvider) or os.getenv("TARS_DISABLE_PROVIDER_FAILOVER") == "1":
             return []
 
-        order = ("nvidia", "gemini", "openrouter", "omniroute", "ollama")
+        order = ("nvidia", "groq", "gemini", "openrouter", "omniroute", "ollama")
         candidates: List[LLMProvider] = []
         for prov_name in order:
             if prov_name == self.llm.provider:

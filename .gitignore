@@ -16,6 +16,8 @@ venv.bak/
 .env.local
 *.pem
 *.key
+config/credentials.json
+config/google_token.json
 
 # TARS Runtime & Logs
 logs/

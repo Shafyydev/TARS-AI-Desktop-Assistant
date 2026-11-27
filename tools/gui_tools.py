@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pyautogui
 
-# Keep PyAutoGUI's fail-safe corner protection enabled so an automated run
-# cannot leave the cursor pinned in a screen corner without a safe abort.
-pyautogui.FAILSAFE = True
+# Disable fail-safe corner abort so automated background/corner sessions do not crash
+pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.05
 
 
@@ -459,6 +458,10 @@ def _find_window_handle(title_or_process: str) -> Optional[int]:
                 process = psutil.Process(pid).name().lower()
             except Exception:
                 process = ""
+            # WhatsApp Desktop must never resolve to a browser window that
+            # happens to be titled "WhatsApp".
+            if query == "whatsapp" and process in {"brave.exe", "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe"}:
+                return
             proc_base = process[:-4] if process.endswith(".exe") else process
             # Tie-break equal titles by the owning process: "file explorer" should
             # close explorer.exe, not an editor tab that merely mentions it.
@@ -522,31 +525,32 @@ def focus_window(title_or_process: str) -> Dict[str, Any]:
         except Exception:
             # Windows only lets the foreground process hand focus to another
             # window.  TARS often runs in a background console, so attach to the
-            # current foreground thread, which is what the shell itself does.
-            import pyautogui
-            pyautogui.press("alt")
+            # current foreground thread without using pyautogui (which could fail
+            # if the cursor or input desktop is busy).
             try:
                 import win32api
                 import win32process
 
                 foreground = win32gui.GetForegroundWindow()
                 target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
-                current_thread, _ = win32process.GetWindowThreadProcessId(foreground)
+                current_thread, _ = (
+                    win32process.GetWindowThreadProcessId(foreground) if foreground else (0, 0)
+                )
                 my_thread = win32api.GetCurrentThreadId()
-                attached = False
-                for thread_id in {current_thread, my_thread}:
+                attached_tid = None
+                for thread_id in (tid for tid in (current_thread, my_thread) if tid and tid != target_thread):
                     try:
                         win32process.AttachThreadInput(thread_id, target_thread, True)
-                        attached = True
+                        attached_tid = thread_id
                         break
                     except Exception:
                         continue
                 try:
                     win32gui.SetForegroundWindow(hwnd)
                 finally:
-                    if attached:
+                    if attached_tid is not None:
                         try:
-                            win32process.AttachThreadInput(thread_id, target_thread, False)
+                            win32process.AttachThreadInput(attached_tid, target_thread, False)
                         except Exception:
                             pass
                 return {
@@ -554,12 +558,12 @@ def focus_window(title_or_process: str) -> Dict[str, Any]:
                     "window": win32gui.GetWindowText(hwnd),
                     "message": f"Focused window '{win32gui.GetWindowText(hwnd)}'.",
                 }
-            except Exception:
-                # Last resort: cycling the window through minimized state makes
-                # Windows treat the next activation as a user action.
-                win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.SetForegroundWindow(hwnd)
+            except Exception as focus_err:
+                try:
+                    win32gui.BringWindowToTop(hwnd)
+                except Exception:
+                    pass
+                return {"success": False, "error": f"Could not focus '{query}': {focus_err}"}
 
         return {
             "success": True,

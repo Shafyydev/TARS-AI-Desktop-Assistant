@@ -122,7 +122,8 @@ class TestPhase2Features(unittest.TestCase):
         self.assertFalse(res_denied.get("success", False))
         self.assertIn("DENIED", res_denied.get("error", ""))
 
-    def test_google_workspace_unauthenticated_graceful_handling(self):
+    @patch("tools.google_workspace_tools.get_google_credentials", return_value=None)
+    def test_google_workspace_unauthenticated_graceful_handling(self, _mock_creds):
         """Verify Google tools return informative dicts instead of raising when credentials are missing."""
         emails_res = list_unread_emails()
         self.assertFalse(emails_res["success"])

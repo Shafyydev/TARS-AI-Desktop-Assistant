@@ -111,6 +111,50 @@ def list_unread_emails(max_results: int = 5) -> Dict[str, Any]:
         return {"success": False, "error": f"Failed to list Gmail messages: {str(e)}", "emails": []}
 
 
+def search_emails(query: str, max_results: int = 5) -> Dict[str, Any]:
+    """
+    Searches Gmail messages using Gmail query syntax (e.g. "from:amazon", "subject:invoice").
+    Returns from, subject, date, snippet for each match.
+    """
+    creds = get_google_credentials()
+    if not creds:
+        return {
+            "success": False,
+            "error": "Google Workspace not authenticated.",
+            "emails": []
+        }
+
+    try:
+        from googleapiclient.discovery import build
+        service = build("gmail", "v1", credentials=creds)
+        results = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+        messages = results.get("messages", [])
+
+        email_list = []
+        for msg_meta in messages:
+            msg = service.users().messages().get(userId="me", id=msg_meta["id"], format="metadata").execute()
+            headers = msg.get("payload", {}).get("headers", [])
+            subject = next((h["value"] for h in headers if h["name"].lower() == "subject"), "(No Subject)")
+            sender = next((h["value"] for h in headers if h["name"].lower() == "from"), "(Unknown Sender)")
+            date = next((h["value"] for h in headers if h["name"].lower() == "date"), "")
+            snippet = msg.get("snippet", "")
+            email_list.append({
+                "id": msg_meta["id"],
+                "from": sender,
+                "subject": subject,
+                "date": date,
+                "snippet": snippet
+            })
+
+        return {
+            "success": True,
+            "count": len(email_list),
+            "emails": email_list
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to search Gmail: {str(e)}", "emails": []}
+
+
 def read_email(message_id: str) -> Dict[str, Any]:
     """
     Retrieves the full body text and headers of a specific Gmail message by ID.

@@ -105,6 +105,7 @@ from core.memory import remember_fact, forget_fact
 from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
 from tools.google_workspace_tools import (
     list_unread_emails,
+    search_emails,
     read_email,
     send_email,
     list_upcoming_events,
@@ -121,6 +122,7 @@ __all__ = [
     "cancel_active_reminder",
     "describe_screen",
     "list_unread_emails",
+    "search_emails",
     "read_email",
     "send_email",
     "list_upcoming_events",

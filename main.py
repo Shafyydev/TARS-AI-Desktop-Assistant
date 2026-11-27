@@ -144,6 +144,8 @@ def main() -> None:
     parser.add_argument("--list-mics", action="store_true", help="List all available microphones and exit")
     parser.add_argument("--test-mic", action="store_true", help="Test microphone input and speech recognition")
     parser.add_argument("--diagnostics", action="store_true", help="Run hardware and tool diagnostics")
+    parser.add_argument("--dashboard", action="store_true", default=True, help="Launch web dashboard on startup (default)")
+    parser.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard on startup")
     args = parser.parse_args()
 
     # Hands-free voice is the default; --text (or --text-only) switches to typed commands.
@@ -163,6 +165,20 @@ def main() -> None:
 
     # Initialize TARS Brain & Voice
     agent = TARSAgent()
+
+    # Launch web dashboard in background if enabled
+    if args.dashboard and not args.no_dashboard:
+        import threading, webbrowser, time as _t
+        def _start_dashboard():
+            try:
+                import uvicorn
+                uvicorn.run("dashboard.server:app", host="127.0.0.1", port=8765, log_level="warning")
+            except Exception as e:
+                console.print(f"[red]Dashboard failed to start: {e}[/red]")
+        threading.Thread(target=_start_dashboard, daemon=True).start()
+        _t.sleep(1.5)
+        webbrowser.open("http://127.0.0.1:8765")
+        console.print("[green][+] Web dashboard: http://127.0.0.1:8765[/green]")
 
     llm = agent.orchestrator.llm
     fallbacks = agent.orchestrator._get_fallback_providers()
@@ -263,7 +279,17 @@ def main() -> None:
                     pass
                 else:
                     console.print("\n[bold green]🎙️  Listening... (Speak now)[/bold green]")
+                    _t_stt_start = time.time()
                     raw_speech, status = listener.listen_once(timeout=3, phrase_time_limit=15) if listener else (None, "no listener")
+                    _t_stt_end = time.time()
+                    _timings = getattr(listener, "_stt_timings", {})
+                    console.print("[dim]TIMING: STT total {:.2f}s | wait+record {:.2f}s | transcription {:.2f}s | end_reason: {} | energy_threshold: {}[/dim]".format(
+                        _t_stt_end - _t_stt_start,
+                        _timings.get("wait_and_record", 0),
+                        _timings.get("transcription", 0),
+                        _timings.get("end_reason", "unknown"),
+                        getattr(listener, "energy_threshold", "?")
+                    ))
                 
                     if status == "timeout":
                         continue
@@ -337,6 +363,7 @@ def main() -> None:
             with console.status("[bold green]TARS reasoning & executing...[/bold green]", spinner="dots"):
                 result = agent.run_agent_loop(user_input, on_status_update=on_status)
             exec_duration = time.time() - t_exec_start
+            console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
             # Output Spoken / Written Response
             console.print(f"\n[bold green]TARS:[/bold green] {result['response']} [dim green]({exec_duration:.2f}s)[/dim green]\n")
@@ -355,11 +382,14 @@ def main() -> None:
 
             # Speak response aloud (with instant keyboard interruption & acoustic voice barge-in)
             if speaker and result.get("response"):
+                _t_tts_start = time.time()
                 interrupted = speaker.speak(
                     result["response"],
                     blocking=voice_mode,
                     listener=listener if voice_mode else None
                 )
+                _t_tts_end = time.time()
+                console.print("[dim]TIMING: TTS took {:.2f}s[/dim]".format(_t_tts_end - _t_tts_start))
                 if interrupted:
                     console.print("[dim yellow]⚡ Speech interrupted by user. Standing by...[/dim yellow]")
                 elif voice_mode:

@@ -28,12 +28,12 @@ class VoiceSpeaker:
         "Processing.",
     ]
 
-    def __init__(self, voice_name: str = "en-US-GuyNeural", rate: str = "+0%", pitch: str = "+0Hz", fast_voice: bool = True):
+    def __init__(self, voice_name: str = "en-US-JennyNeural", rate: str = "+0%", pitch: str = "+0Hz", fast_voice: bool = True):
         self.voice_name = os.getenv("TARS_VOICE", voice_name)
         self.rate = os.getenv("TARS_VOICE_RATE", rate)
         self.pitch = os.getenv("TARS_VOICE_PITCH", pitch)
         # Default to fast native Windows SAPI for zero-latency instant responses unless cloud neural voice requested
-        force_neural = (os.getenv("TARS_NEURAL_VOICE", "0") in ["1", "true", "True"]) or (not fast_voice)
+        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice)
         self.fast_voice = not force_neural
         self._is_speaking = False
         self._stop_requested = False
@@ -122,7 +122,7 @@ class VoiceSpeaker:
             if self._sapi_speaker is None:
                 self._sapi_speaker = win32com.client.Dispatch("SAPI.SpVoice")
                 for v in self._sapi_speaker.GetVoices():
-                    if "david" in v.GetDescription().lower():
+                    if "zira" in v.GetDescription().lower() or "hazel" in v.GetDescription().lower() or "female" in v.GetDescription().lower():
                         self._sapi_speaker.Voice = v
                         break
                 self._sapi_speaker.Rate = 1
@@ -228,9 +228,12 @@ class VoiceSpeaker:
         return interrupted
 
     def speak_ack(self) -> None:
-        """Speaks an instantaneous acknowledgment phrase (<20ms latency) without blocking."""
+        """Speaks an instantaneous acknowledgment phrase without blocking."""
         ack = random.choice(self.ACKNOWLEDGMENTS)
-        self._speak_sapi(ack, async_mode=True)
+        if self.fast_voice:
+            self._speak_sapi(ack, async_mode=True)
+        else:
+            threading.Thread(target=lambda: self.speak(ack, blocking=True), daemon=True).start()
 
     @staticmethod
     def _drain_keyboard() -> None:

@@ -256,19 +256,35 @@ class VoiceListener:
 
         import speech_recognition as sr
 
+        self._stt_timings = {"wait_and_record": 0.0, "transcription": 0.0, "end_reason": "unknown"}
         try:
             if on_listening_start:
                 on_listening_start()
 
+            _t0 = time.time()
             with self._microphone as source:
                 audio = self._recognizer.listen(
                     source,
                     timeout=timeout,
                     phrase_time_limit=phrase_time_limit
                 )
+            _t1 = time.time()
+            self._stt_timings["wait_and_record"] = _t1 - _t0
+            # Estimate end reason: if audio duration close to phrase_time_limit, hit limit
+            try:
+                audio_dur = audio.duration if hasattr(audio, "duration") else 0
+            except Exception:
+                audio_dur = 0
+            if timeout and (_t1 - _t0) >= timeout - 0.1:
+                self._stt_timings["end_reason"] = "timeout"
+            elif phrase_time_limit and audio_dur >= phrase_time_limit - 0.5:
+                self._stt_timings["end_reason"] = "phrase_time_limit"
+            else:
+                self._stt_timings["end_reason"] = "silence"
 
             # Local Whisper first (no network); fall back to Google STT.
             text = None
+            _t2 = time.time()
             if self.stt_engine == "whisper":
                 text = self._transcribe_whisper(audio)
             if not text:
@@ -283,6 +299,8 @@ class VoiceListener:
                     else:
                         return None, "unrecognized"
 
+            _t3 = time.time()
+            self._stt_timings["transcription"] = _t3 - _t2
             if text and text.strip():
                 normalized = normalize_voice_command(text.strip())
                 return normalized, "ok"
@@ -301,12 +319,12 @@ class VoiceListener:
             return None
         # Safe threshold: well above the measured noise floor and above TARS's own
         # playback level, so the assistant does not interrupt itself.
-        thresh = max(900, int(self._recognizer.energy_threshold * 3.0))
+        thresh = max(300, int(self._recognizer.energy_threshold * 1.5))
         return VoiceBargeInMonitor(
             self._recognizer,
             self._microphone,
             energy_threshold=thresh,
-            grace_period=0.8,
+            grace_period=0.3,
         )
 
 
@@ -326,7 +344,7 @@ class VoiceBargeInMonitor:
         microphone: Any,
         energy_threshold: int = 900,
         grace_period: float = 0.8,
-        required_frames: int = 4,
+        required_frames: int = 2,
     ):
         self.recognizer = recognizer
         self.microphone = microphone

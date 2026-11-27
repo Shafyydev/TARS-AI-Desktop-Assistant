@@ -12,8 +12,8 @@ personality:
   conciseness: true    # Keep spoken answers under 2 sentences unless requested
 
 llm:
-  provider: "nvidia"   # Options: "gemini" | "ollama" | "openrouter" | "omniroute" | "nvidia"
-  model: "nvidia/nemotron-3.5-lightning-30b-a3b"  # NVIDIA NIM (direct, free). Verified serving + tool-calling. Other: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning" | "minimaxai/minimax-m3.1-flash"
+  provider: "nvidia"   # Options: "gemini" | "ollama" | "openrouter" | "omniroute" | "nvidia" | "groq"
+  model: "nvidia/nemotron-3.5-lightning-30b-a3b"  # NVIDIA NIM
   fallback_models: ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "minimaxai/minimax-m3.1-flash"]
   temperature: 0.3
   max_output_tokens: 2048
@@ -21,10 +21,10 @@ llm:
 voice:
   enabled: true
   tts_engine: "edge-tts"
-  voice_name: "en-US-GuyNeural" # Natural, confident, slightly deep voice
+  voice_name: "en-US-JennyNeural" # Friendly, warm female assistant voice
   rate: "+5%"
   volume: "+0%"
-  stt_energy_threshold: 250
+  stt_energy_threshold: 150
   stt_pause_threshold: 0.6     # Pause length (in seconds) to wait before considering speech finished
   stt_timeout: 6
   stt_phrase_time_limit: 15    # Maximum duration of a spoken phrase

@@ -151,10 +151,20 @@ _LAUNCH_ALIAS_TOKENS: Dict[str, tuple] = {
 }
 
 
+_BROWSER_PROCESS_NAMES = frozenset({
+    "brave.exe", "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe",
+})
+
+
 def _has_visible_window(token: str) -> bool:
-    """True when a visible top-level window title contains ``token``."""
+    """True when a visible top-level window title contains ``token``.
+
+    For ``token == "whatsapp"``, browser windows whose active tab is titled
+    "WhatsApp" are ignored so WhatsApp Web is never confused with WhatsApp Desktop.
+    """
     try:
         import win32gui
+        import win32process
 
         matched = False
 
@@ -166,6 +176,14 @@ def _has_visible_window(token: str) -> bool:
                 if win32gui.IsWindowVisible(hwnd):
                     title = (win32gui.GetWindowText(hwnd) or "").lower()
                     if token in title:
+                        if token == "whatsapp":
+                            try:
+                                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                                proc = (psutil.Process(pid).name() or "").lower()
+                            except Exception:
+                                proc = ""
+                            if proc in _BROWSER_PROCESS_NAMES:
+                                return True
                         matched = True
                         return False
             except Exception:
@@ -183,18 +201,20 @@ def _launch_target_present(token: str) -> bool:
     if not token:
         return True
 
-    candidates = _LAUNCH_ALIAS_TOKENS.get(token, (token,))
-
     # UWP/WebView2 tray apps like WhatsApp stay running headless as WhatsApp.Root.exe
     # even when zero windows are visible, so process checks alone produce false positives.
-    if token != "whatsapp":
-        for proc in psutil.process_iter(["name"]):
-            try:
-                proc_name = (proc.info.get("name") or "").lower()
-                if any(alias in proc_name for alias in candidates):
-                    return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+    if token == "whatsapp":
+        return _has_visible_window("whatsapp")
+
+    candidates = _LAUNCH_ALIAS_TOKENS.get(token, (token,))
+
+    for proc in psutil.process_iter(["name"]):
+        try:
+            proc_name = (proc.info.get("name") or "").lower()
+            if any(alias in proc_name for alias in candidates):
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
     try:
         import win32gui
@@ -260,7 +280,8 @@ def launch_application(app_name: str) -> Dict[str, Any]:
 
     # WhatsApp Desktop (Store/WebView2) can remain wedged in the background with
     # WhatsApp.Root.exe alive and zero visible windows; focus if open, otherwise
-    # clear the headless process before launching so Windows renders the window.
+    # clear both the headless root process and its WhatsAppDesktop WebView2
+    # children (so EBWebView locks release) before launching.
     if clean_name == "whatsapp":
         if _has_visible_window("whatsapp"):
             from tools.gui_tools import focus_window
@@ -268,31 +289,45 @@ def launch_application(app_name: str) -> Dict[str, Any]:
             if foc.get("success"):
                 return {"success": True, "message": "Focused open WhatsApp window."}
             return {"success": False, "error": "WhatsApp window found but could not be focused."}
-        else:
-            for proc in psutil.process_iter(["name"]):
-                try:
-                    if (proc.info.get("name") or "").lower() in {"whatsapp.root.exe", "whatsapp.exe"}:
-                        proc.terminate()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            time.sleep(0.4)
 
-        # Launch WhatsApp Desktop through the Store app activation.  The
-        # `whatsapp:` URI scheme is NOT used: on this system it is captured by
-        # Brave and opens an `about:` page instead of WhatsApp Desktop.
+        stale_procs = []
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                pname = (proc.info.get("name") or "").lower()
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                if pname in {"whatsapp.root.exe", "whatsapp.exe"} or (
+                    "webview" in pname and "whatsappdesktop" in cmdline
+                ):
+                    proc.terminate()
+                    stale_procs.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if stale_procs:
+            psutil.wait_procs(stale_procs, timeout=2.0)
+
+        # Protocol activation (`start whatsapp:`) renders the desktop window cleanly
+        # in ~1s once stale processes are cleared; Store AUMID serves as fallback.
+        try:
+            subprocess.Popen(cmd, shell=True)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to launch whatsapp: {str(e)}"}
+
+        if _wait_for_launch("whatsapp", timeout=5.0):
+            return {"success": True, "message": "Successfully launched whatsapp."}
+
         try:
             subprocess.Popen(
                 ["explorer.exe", "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"],
                 shell=False,
             )
-        except Exception as e:
-            return {"success": False, "error": f"Failed to launch whatsapp: {str(e)}"}
+            if _wait_for_launch("whatsapp", timeout=3.0):
+                return {"success": True, "message": "Successfully launched whatsapp."}
+        except Exception:
+            pass
 
-        if _wait_for_launch("whatsapp", timeout=3.0):
-            return {"success": True, "message": "Successfully launched whatsapp."}
         return {
             "success": False,
-            "error": "Launched 'whatsapp' but no matching window appeared within 3.0 seconds.",
+            "error": "Launched 'whatsapp' but no matching window appeared within 5.0 seconds.",
         }
 
     try:

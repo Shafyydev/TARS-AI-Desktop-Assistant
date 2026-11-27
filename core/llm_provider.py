@@ -14,8 +14,10 @@ OLLAMA_DEFAULT_MODEL = "qwen3:4b"
 OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-flash"
 OMNIROUTE_DEFAULT_MODEL = "auto/best-fast"
 OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
-NVIDIA_DEFAULT_MODEL = "meta/llama-3.1-8b-instruct"
+NVIDIA_DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 NVIDIA_DEFAULT_URL = "https://integrate.api.nvidia.com/v1"
+GROQ_DEFAULT_URL = "https://api.groq.com/openai/v1"
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-20b"
 
 # Leading words that mean "send X Y" is not a real WhatsApp contact.  Mirrors
 # TARSAgent.WHATSAPP_SEND_STOPWORDS so the LLM loop can reject a misheard
@@ -206,6 +208,11 @@ class LLMProvider:
             model_env = os.getenv("NVIDIA_MODEL") or (
                 os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "nvidia" else None
             )
+        elif self.provider == "groq":
+            default_model = GROQ_DEFAULT_MODEL
+            model_env = os.getenv("GROQ_MODEL") or (
+                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "groq" else None
+            )
         else:
             default_model = DEFAULT_MODELS[0]
             model_env = os.getenv("GEMINI_MODEL") or (
@@ -220,6 +227,7 @@ class LLMProvider:
             os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or OMNIROUTE_DEFAULT_URL
         ).rstrip("/")
         self.nvidia_base_url = os.getenv("NVIDIA_BASE_URL", NVIDIA_DEFAULT_URL).rstrip("/")
+        self.groq_base_url = os.getenv("GROQ_BASE_URL", GROQ_DEFAULT_URL).rstrip("/")
         self._quota_exhausted_until = 0.0
         # model name -> epoch seconds until which that model is skipped
         self._model_pause_until: Dict[str, float] = {}
@@ -279,6 +287,24 @@ class LLMProvider:
                     )
                 except Exception as e:
                     logger.error(f"Failed to initialize NVIDIA client: {e}")
+                    self.client = None
+            else:
+                self.client = None
+        elif self.provider == "groq":
+            key = os.getenv("GROQ_API_KEY")
+            if key and key != "your_groq_api_key_here":
+                try:
+                    from openai import OpenAI
+                    self.client = OpenAI(
+                        base_url=self.groq_base_url,
+                        api_key=key,
+                        default_headers={
+                            "HTTP-Referer": "https://github.com/Shafyydev/TARS",
+                            "X-Title": "TARS AI Desktop Assistant",
+                        }
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to initialize Groq client: {e}")
                     self.client = None
             else:
                 self.client = None
@@ -414,7 +440,7 @@ class LLMProvider:
     def switch_provider(self, provider: str, model: Optional[str] = None) -> Dict[str, Any]:
         """Switches the active LLM provider and optional model at runtime."""
         prov = (provider or "").strip().lower()
-        if prov not in {"gemini", "openrouter", "omniroute", "ollama"}:
+        if prov not in {"gemini", "openrouter", "omniroute", "ollama", "nvidia", "groq"}:
             return {"success": False, "error": f"Unsupported provider '{provider}'."}
 
         defaults = {
@@ -422,6 +448,8 @@ class LLMProvider:
             "openrouter": os.getenv("OPENROUTER_MODEL") or OPENROUTER_DEFAULT_MODEL,
             "omniroute": os.getenv("OMNIROUTE_MODEL") or OMNIROUTE_DEFAULT_MODEL,
             "gemini": os.getenv("GEMINI_MODEL") or DEFAULT_MODELS[0],
+            "nvidia": os.getenv("NVIDIA_MODEL") or NVIDIA_DEFAULT_MODEL,
+            "groq": os.getenv("GROQ_MODEL") or GROQ_DEFAULT_MODEL,
         }
         self.provider = prov
         self.model = (model or "").strip() or defaults[prov]
@@ -440,7 +468,7 @@ class LLMProvider:
     def list_provider_statuses(cls) -> List[Dict[str, Any]]:
         """Probes all supported LLM backends and reports configuration and live availability."""
         statuses: List[Dict[str, Any]] = []
-        for prov in ("gemini", "openrouter", "omniroute", "ollama"):
+        for prov in ("gemini", "openrouter", "omniroute", "ollama", "nvidia", "groq"):
             probe = cls(provider=prov)
             avail = probe.available()
             statuses.append({
@@ -450,6 +478,35 @@ class LLMProvider:
                 "reason": "" if avail else probe.unavailable_reason(),
             })
         return statuses
+
+    @staticmethod
+    def _finalize_loop_reply(
+        final_text: str,
+        steps: List[Dict[str, Any]],
+        model_name: str,
+    ) -> Dict[str, Any]:
+        """Formats the terminal reply of any ReAct tool loop consistently."""
+        if steps:
+            any_ok = any(
+                (step.get("result") or {}).get("success") is not False
+                for step in steps
+                if isinstance(step.get("result"), dict)
+            )
+            return {
+                "success": any_ok,
+                "response": final_text,
+                "steps": steps,
+                "model": model_name,
+            }
+        # The model replied without running a single tool; the caller decides
+        # whether that is an answer or an unfulfilled action.
+        return {
+            "success": True,
+            "response": final_text,
+            "steps": [],
+            "model": model_name,
+            "no_tool_calls": True,
+        }
 
     def run_tool_agent_loop(
         self,
@@ -477,6 +534,8 @@ class LLMProvider:
                 reason = "OPENROUTER_API_KEY not configured or rate limit pause in effect"
             elif self.provider == "nvidia":
                 reason = "NVIDIA_API_KEY not configured or rate limit pause in effect"
+            elif self.provider == "groq":
+                reason = "GROQ_API_KEY not configured or rate limit pause in effect"
             else:
                 reason = "API key not configured or rate limit pause in effect"
             logger.warning(f"LLM execution skipped: {reason}")
@@ -504,6 +563,11 @@ class LLMProvider:
             )
         elif self.provider == "nvidia":
             return self._run_nvidia_tool_agent_loop(
+                prompt, system_instruction, tools_list, tool_executor,
+                history, user_preferences, on_status, max_iterations, timeout
+            )
+        elif self.provider == "groq":
+            return self._run_groq_tool_agent_loop(
                 prompt, system_instruction, tools_list, tool_executor,
                 history, user_preferences, on_status, max_iterations, timeout
             )
@@ -601,28 +665,7 @@ class LLMProvider:
                     # If no function calls requested, the model has finished
                     if not function_calls:
                         final_text = _strip_tool_markers(" ".join(text_parts).strip()) or "Task completed."
-                        if executed_steps:
-                            any_ok = any(
-                                (step.get("result") or {}).get("success") is not False
-                                for step in executed_steps
-                                if isinstance(step.get("result"), dict)
-                            )
-                            return {
-                                "success": any_ok,
-                                "response": final_text,
-                                "steps": executed_steps,
-                                "model": model_name
-                            }
-                        # The model replied without running a single tool.  The
-                        # caller decides whether that is an answer or an action that
-                        # was never carried out, so it must not claim success here.
-                        return {
-                            "success": True,
-                            "response": final_text,
-                            "steps": [],
-                            "model": model_name,
-                            "no_tool_calls": True
-                        }
+                        return self._finalize_loop_reply(final_text, executed_steps, model_name)
 
                     # Execute each requested tool call
                     response_parts = []
@@ -990,13 +1033,10 @@ class LLMProvider:
                 messages.append(assistant_message)
                 tool_calls = assistant_message.get("tool_calls") or []
                 if not tool_calls:
-                    return {
-                        "success": True,
-                        "response": _strip_tool_markers(self._strip_ollama_thinking(assistant_message.get("content", ""))) or "Task completed.",
-                        "steps": steps,
-                        "model": self.model,
-                        "no_tool_calls": True,
-                    }
+                    cleaned = _strip_tool_markers(
+                        self._strip_ollama_thinking(assistant_message.get("content", ""))
+                    ) or "Task completed."
+                    return self._finalize_loop_reply(cleaned, steps, self.model)
                 for call in tool_calls:
                     function = call.get("function", {})
                     tool_name = function.get("name", "")
@@ -1140,14 +1180,14 @@ class LLMProvider:
                 if tool_calls:
                     assistant_dict["tool_calls"] = [
                         {
-                            "id": tc.id,
+                            "id": getattr(tc, "id", None) or f"call_{idx}",
                             "type": "function",
                             "function": {
                                 "name": tc.function.name,
                                 "arguments": tc.function.arguments,
                             },
                         }
-                        for tc in tool_calls
+                        for idx, tc in enumerate(tool_calls)
                     ]
                 messages.append(assistant_dict)
 
@@ -1169,15 +1209,10 @@ class LLMProvider:
                             "error": cleaned,
                             "steps": steps,
                         }
-                    return {
-                        "success": True,
-                        "response": cleaned,
-                        "steps": steps,
-                        "model": self.model,
-                        "no_tool_calls": True,
-                    }
+                    return self._finalize_loop_reply(cleaned, steps, self.model)
 
-                for tc in tool_calls:
+                for tc_idx, tc in enumerate(tool_calls):
+                    tc_id = getattr(tc, "id", None) or f"call_{tc_idx}"
                     tool_name = tc.function.name
                     raw_args = tc.function.arguments or "{}"
                     try:
@@ -1219,7 +1254,8 @@ class LLMProvider:
                             steps.append({"tool": tool_name, "args": tool_args, "result": result})
                             messages.append({
                                 "role": "tool",
-                                "tool_name": tool_name,
+                                "tool_call_id": tc_id,
+                                "name": tool_name,
                                 "content": json.dumps(result, default=str),
                             })
                             continue
@@ -1228,7 +1264,7 @@ class LLMProvider:
                     steps.append({"tool": tool_name, "args": tool_args, "result": result})
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tc_id,
                         "name": tool_name,
                         "content": json.dumps(result, default=str),
                     })
@@ -1365,5 +1401,24 @@ class LLMProvider:
             prompt, system_instruction, tools_list, tool_executor,
             history, user_preferences, on_status, max_iterations, timeout,
             provider_name="NVIDIA"
+        )
+
+    def _run_groq_tool_agent_loop(
+        self,
+        prompt: str,
+        system_instruction: str,
+        tools_list: List[Callable],
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        history: Optional[List[Dict[str, Any]]] = None,
+        user_preferences: Optional[Dict[str, Any]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
+        max_iterations: int = 5,
+        timeout: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Runs multi-turn ReAct tool calling loop using the Groq API."""
+        return self._run_openai_compatible_loop(
+            prompt, system_instruction, tools_list, tool_executor,
+            history, user_preferences, on_status, max_iterations, timeout,
+            provider_name="Groq"
         )
 

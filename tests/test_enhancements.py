@@ -686,6 +686,127 @@ class TestRegressionFixes(unittest.TestCase):
         self.assertLessEqual(first_kwargs["max_tokens"], 2048)
         self.assertEqual(second_kwargs["max_tokens"], 512)
 
+    def test_nvidia_stopword_tool_result_includes_tool_call_id(self):
+        """Every tool-role message appended in OpenAI-compatible mode must carry tool_call_id."""
+        import json
+        from core.llm_provider import LLMProvider
+
+        llm = LLMProvider(provider="nvidia", model="nvidia/nemotron-3.5-lightning-30b-a3b")
+        tc = MagicMock()
+        tc.id = "call-nvidia-stopword-1"
+        tc.function.name = "send_whatsapp_message"
+        tc.function.arguments = json.dumps({"contact_name": "hello", "message": "how are you"})
+
+        choice1 = MagicMock()
+        choice1.message.content = ""
+        choice1.message.tool_calls = [tc]
+
+        choice2 = MagicMock()
+        choice2.message.content = "Who should I send that message to?"
+        choice2.message.tool_calls = None
+
+        seen_payloads = []
+
+        def fake_create(**kwargs):
+            seen_payloads.append(json.loads(json.dumps(kwargs["messages"])))
+            return MagicMock(choices=[choice1 if len(seen_payloads) == 1 else choice2])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = fake_create
+        llm.client = mock_client
+
+        res = llm._run_openai_compatible_loop(
+            "send hello how are you",
+            "sys",
+            [],
+            lambda n, a: {"success": True},
+            provider_name="NVIDIA",
+        )
+        self.assertFalse(res["success"])
+        self.assertEqual(res["response"], "Who should I send that message to?")
+        self.assertEqual(len(seen_payloads), 2)
+        tool_msgs = [m for m in seen_payloads[1] if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertEqual(tool_msgs[0]["tool_call_id"], "call-nvidia-stopword-1")
+        self.assertEqual(tool_msgs[0]["name"], "send_whatsapp_message")
+
+    def test_whatsapp_emoji_honorific_and_default_chats_section(self):
+        """Contacts with emojis/honorifics or without a Chats DataItem divider must match cleanly."""
+        import tools.interaction_tools as it
+
+        window = MagicMock()
+        window.element_info.name = "WhatsApp"
+        window.rectangle.return_value = MagicMock(top=0, left=0, right=1920, bottom=1200)
+
+        search_edit = MagicMock()
+        search_edit.element_info.name = "Search or start a new chat"
+        search_edit.get_value.return_value = "reshmaa"
+
+        row_amma = MagicMock()
+        row_amma.element_info.name = "Amma 💗 3:33 pm hi"
+        row_amma.descendants.return_value = []
+
+        row_reshma = MagicMock()
+        row_reshma.element_info.name = "Dr. Reshmaa 🫴🏻 🤍 4:36 pm Ena pannuva"
+        row_reshma.descendants.return_value = []
+
+        header_text = MagicMock()
+        header_text.element_info.name = "Dr. Reshmaa 🫴🏻 🤍"
+        header_text.rectangle.return_value = MagicMock(top=40, left=600, right=900, bottom=70)
+
+        window.descendants.side_effect = [
+            [search_edit],
+            [row_amma, row_reshma],
+            [header_text],
+        ]
+
+        with patch("pywinauto.Desktop") as mock_desktop, \
+             patch("tools.interaction_tools.copy_to_clipboard", return_value=True), \
+             patch("tools.interaction_tools.gui.press_keys"):
+            mock_desktop.return_value.windows.return_value = [window]
+            res = it.open_whatsapp_chat("reshma")
+
+        self.assertTrue(res["success"], f"Expected match for Dr. Reshmaa, got: {res}")
+        row_reshma.click_input.assert_called_once()
+        # Unrelated person must still mismatch header verification
+        self.assertEqual(it._contact_match_tier("reshmaa", "John Doe"), None)
+        # Unread prefix must be stripped cleanly from chat row labels
+        self.assertEqual(
+            it._extract_chat_name("1 unread message Dr. Reshmaa 🫴🏻 🤍 5:03 pm hello"),
+            "Dr. Reshmaa 🫴🏻 🤍",
+        )
+        fake_edit = MagicMock()
+        fake_edit.get_value.return_value = "Shafyy\nShafyy\nShafyy"
+        self.assertTrue(it._search_edit_matches(fake_edit, "shafyy"))
+        fake_edit.get_value.return_value = "Reshma\nReshma"
+        self.assertFalse(it._search_edit_matches(fake_edit, "shafyy"))
+
+    def test_switch_provider_and_new_fast_paths(self):
+        from core.llm_provider import LLMProvider
+
+        llm = LLMProvider(provider="gemini")
+        with patch.object(llm, "_init_client"), patch.object(llm, "available", return_value=True), \
+             patch.object(llm, "unavailable_reason", return_value=""):
+            self.assertTrue(llm.switch_provider("nvidia")["success"])
+            self.assertTrue(llm.switch_provider("groq")["success"])
+
+        with patch("core.brain.TARSAgent._init_llm_client"):
+            agent = __import__("core.brain", fromlist=["TARSAgent"]).TARSAgent()
+
+        cloud_names = {t.__name__ for t in agent.orchestrator._tools_for_provider(provider_name="nvidia")}
+        self.assertIn("close_active_window", cloud_names)
+        self.assertIn("search_emails", cloud_names)
+
+        with patch.object(agent, "execute_tool", return_value={"success": True}) as mock_exec:
+            self.assertIsNotNone(agent._autonomous_local_execute("make the video full screen"))
+            mock_exec.assert_called_with("smart_click", {"target": "fullscreen"})
+
+            self.assertIsNotNone(agent._autonomous_local_execute("close another one too"))
+            mock_exec.assert_called_with("close_active_window", {})
+
+            self.assertIsNotNone(agent._autonomous_local_execute("send a message to amma telling hello"))
+            mock_exec.assert_called_with("send_whatsapp_message", {"contact_name": "amma", "message": "hello"})
+
 
 if __name__ == "__main__":
     unittest.main()
