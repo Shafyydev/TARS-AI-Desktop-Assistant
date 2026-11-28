@@ -433,9 +433,11 @@ def main() -> None:
                     console.print(f"[dim yellow]⚡ {msg}[/dim yellow]")
 
                 # Speak an immediate ack for search/news queries so the user knows TARS is working.
-                # Speak an immediate ack for every query.
-                if speaker:
-                    speaker.speak("Yes chief, give me a moment.", blocking=True)
+                _lower = user_input.lower()
+                _info_kw = ["news", "update", "updates", "what", "who", "how", "why", "when", "where", "tell me", "explain", "summarize", "latest", "recent", "about"]
+                if any(kw in _lower for kw in _info_kw):
+                    if speaker:
+                        speaker.speak("Yes chief, I'll search the internet. Give me a moment.", blocking=True)
 
                 # Run through Agent ReAct Loop with precise timing
                 t_exec_start = time.time()
