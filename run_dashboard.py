@@ -39,8 +39,20 @@ def main() -> None:
 
     def _open_fullscreen():
         import time
-        import webbrowser
+        import shutil
+        import subprocess
         time.sleep(2.0)
+        # Prefer a browser that supports --start-fullscreen.
+        for exe in ("msedge.exe", "chrome.exe", "brave.exe"):
+            path = shutil.which(exe)
+            if path:
+                try:
+                    subprocess.Popen([path, "--start-fullscreen", url])
+                    return
+                except Exception:
+                    continue
+        # Fallback: default browser + F11.
+        import webbrowser
         try:
             webbrowser.open(url, new=2)
         except Exception:

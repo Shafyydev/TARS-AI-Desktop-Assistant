@@ -14,6 +14,13 @@ from rich.prompt import Prompt
 from core.brain import TARSAgent, is_affirmative
 from core.voice_speaker import VoiceSpeaker
 from core.voice_listener import VoiceListener
+
+# Set console window title so TARS can refocus it after browser searches.
+try:
+    import ctypes
+    ctypes.windll.kernel32.SetConsoleTitleW("TARS")
+except Exception:
+    pass
 import tools
 
 # Set UTF-8 encoding for Windows console
@@ -461,8 +468,22 @@ def main() -> None:
 
                 # Output Spoken / Written Response
                 raw_response = (result.get("response") or "").strip()
-                # Speak the full response (no artificial truncation).
-                result["response"] = raw_response
+                # Sanitize markdown (tables, pipes, headers) for spoken output.
+                import re as _re
+                lines = raw_response.splitlines()
+                cleaned = []
+                for ln in lines:
+                    s = ln.strip()
+                    if not s:
+                        continue
+                    if s.startswith("|") or set(s) <= set("|-: "):
+                        continue
+                    s = s.replace("|", " ").strip()
+                    s = _re.sub(r"[*_`#]", "", s)
+                    cleaned.append(s)
+                spoken = " ".join(cleaned).strip()
+                spoken = _re.sub(r"\s+", " ", spoken)
+                result["response"] = spoken if spoken else raw_response
                 console.print(f"\n[bold green]TARS:[/bold green] {result['response']} [dim green]({exec_duration:.2f}s)[/dim green]\n")
 
                 # Show tool execution details if tools were used
