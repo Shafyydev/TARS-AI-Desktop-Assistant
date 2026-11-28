@@ -48,7 +48,7 @@ class TaskOrchestrator:
     # Per-request budget.  A Gemini flash call that has not answered in 15s is a
     # dead request (504 DEADLINE_EXCEEDED) rather than slow thinking, so a long
     # budget only adds dead air before the failover kicks in.
-    LLM_TIMEOUTS = {"gemini": 10.0, "ollama": 10.0, "openrouter": 20.0, "omniroute": 20.0, "nvidia": 10.0}
+    LLM_TIMEOUTS = {"nvidia": 10.0, "groq": 10.0}
 
     @classmethod
     def _llm_timeout(cls, provider: Optional[str]) -> float:
@@ -186,11 +186,7 @@ class TaskOrchestrator:
         import tools as tools_pkg
 
         active_provider = provider_name or getattr(self.llm, "provider", "")
-        selected = (
-            self.OLLAMA_TOOL_NAMES
-            if active_provider == "ollama"
-            else self.MODEL_TOOL_NAMES
-        )
+        selected = self.MODEL_TOOL_NAMES
         declarations: List[Callable] = []
         for name in sorted(selected):
             if name not in self.agent.tool_registry:
@@ -532,7 +528,7 @@ class TaskOrchestrator:
         if not isinstance(self.llm, LLMProvider) or os.getenv("TARS_DISABLE_PROVIDER_FAILOVER") == "1":
             return []
 
-        order = ("nvidia", "groq", "gemini", "openrouter", "omniroute", "ollama")
+        order = ("groq", "nvidia")
         candidates: List[LLMProvider] = []
         for prov_name in order:
             if prov_name == self.llm.provider:

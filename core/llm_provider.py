@@ -188,22 +188,7 @@ class LLMProvider:
         self.provider = (provider or configured_provider or os.getenv("AI_PROVIDER", "ollama")).lower()
         settings_model = "" if provider else str(settings_llm.get("model") or "").strip()
 
-        if self.provider == "ollama":
-            default_model = OLLAMA_DEFAULT_MODEL
-            model_env = os.getenv("OLLAMA_MODEL") or (
-                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "ollama" else None
-            )
-        elif self.provider == "openrouter":
-            default_model = OPENROUTER_DEFAULT_MODEL
-            model_env = os.getenv("OPENROUTER_MODEL") or (
-                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "openrouter" else None
-            )
-        elif self.provider == "omniroute":
-            default_model = OMNIROUTE_DEFAULT_MODEL
-            model_env = os.getenv("OMNIROUTE_MODEL") or (
-                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "omniroute" else None
-            )
-        elif self.provider == "nvidia":
+        if self.provider == "nvidia":
             default_model = NVIDIA_DEFAULT_MODEL
             model_env = os.getenv("NVIDIA_MODEL") or (
                 os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "nvidia" else None
@@ -214,10 +199,10 @@ class LLMProvider:
                 os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "groq" else None
             )
         else:
-            default_model = DEFAULT_MODELS[0]
-            model_env = os.getenv("GEMINI_MODEL") or (
-                os.getenv("AI_MODEL") if os.getenv("AI_PROVIDER", "").lower() == "gemini" else None
-            )
+            # Unknown provider -> default to groq
+            self.provider = "groq"
+            default_model = GROQ_DEFAULT_MODEL
+            model_env = os.getenv("GROQ_MODEL")
 
         self.model = model or settings_model or model_env or default_model
         self.client = None
@@ -235,44 +220,7 @@ class LLMProvider:
         self._init_client()
 
     def _init_client(self) -> None:
-        if self.provider == "ollama":
-            # The Ollama server is checked lazily in available(), so startup
-            # remains usable even while Ollama is still launching.
-            self.client = object()
-        elif self.provider == "openrouter":
-            key = os.getenv("OPENROUTER_API_KEY")
-            if key and key != "your_openrouter_api_key_here":
-                try:
-                    from openai import OpenAI
-                    self.client = OpenAI(
-                        base_url=self.openrouter_base_url,
-                        api_key=key,
-                        default_headers={
-                            "HTTP-Referer": "https://github.com/Shafyydev/TARS",
-                            "X-Title": "TARS AI Desktop Assistant",
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to initialize OpenRouter client: {e}")
-                    self.client = None
-            else:
-                self.client = None
-        elif self.provider == "omniroute":
-            key = get_omniroute_api_key() or "omniroute-default"
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(
-                    base_url=self.omniroute_base_url,
-                    api_key=key,
-                    default_headers={
-                        "HTTP-Referer": "https://github.com/Shafyydev/TARS",
-                        "X-Title": "TARS AI Desktop Assistant",
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Failed to initialize OmniRoute client: {e}")
-                self.client = None
-        elif self.provider == "nvidia":
+        if self.provider == "nvidia":
             key = os.getenv("NVIDIA_API_KEY")
             if key and key != "your_nvidia_api_key_here":
                 try:

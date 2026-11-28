@@ -10,11 +10,10 @@ personality:
   honesty: 0.90        # Scale: 0.0 (diplomatic) to 1.0 (blunt truth)
   sarcasm: 0.60        # Scale: 0.0 (literal) to 1.0 (sharp wit)
   conciseness: true    # Keep spoken answers under 2 sentences unless requested
-
 llm:
-  provider: "nvidia"   # Options: "gemini" | "ollama" | "openrouter" | "omniroute" | "nvidia" | "groq"
-  model: "nvidia/nemotron-3.5-lightning-30b-a3b"  # NVIDIA NIM
-  fallback_models: ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "minimaxai/minimax-m3.1-flash"]
+  provider: "groq"   # Options: "groq" | "nvidia"
+  model: "openai/gpt-oss-20b"  # Groq
+  fallback_models: ["nvidia/nemotron-3.5-lightning-30b-a3b"]
   temperature: 0.3
   max_output_tokens: 2048
 
