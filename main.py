@@ -434,14 +434,12 @@ def main() -> None:
 
                 # Output Spoken / Written Response
                 raw_response = (result.get("response") or "").strip()
-                # Keep replies short: first sentence/clause, capped at 120 chars.
-                short = raw_response
-                for sep in (". ", "; ", "! ", "? "):
-                    if sep in short:
-                        short = short.split(sep, 1)[0] + sep.strip()
-                        break
-                if len(short) > 120:
-                    short = short[:117].rstrip() + "..."
+                # Allow up to 2 sentences / 300 chars so summaries (news, etc.) are spoken fully.
+                import re as _re
+                parts = _re.split(r"(?<=[.!?])\s+", raw_response)
+                short = " ".join(parts[:2]).strip() if len(parts) > 2 else raw_response
+                if len(short) > 300:
+                    short = short[:297].rstrip() + "..."
                 result["response"] = short
                 console.print(f"\n[bold green]TARS:[/bold green] {result['response']} [dim green]({exec_duration:.2f}s)[/dim green]\n")
 
