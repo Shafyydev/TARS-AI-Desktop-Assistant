@@ -481,36 +481,6 @@ class LLMProvider:
                 descriptions[match.group(1).lstrip("*")] = match.group(2).strip()
         return descriptions
 
-    @classmethod
-    def _ollama_tool_schema(cls, function: Callable) -> Dict[str, Any]:
-        """Converts a registered Python tool into Ollama's function schema."""
-        signature = inspect.signature(function)
-        properties: Dict[str, Any] = {}
-        required: List[str] = []
-        descriptions = cls._arg_descriptions(function)
-        for name, parameter in signature.parameters.items():
-            if name.startswith("_"):
-                continue
-            schema = cls._json_schema_for(parameter.annotation)
-            enum_values = cls._ENUM_VALUES.get(f"{function.__name__}.{name}")
-            if enum_values:
-                schema = {**schema, "enum": enum_values}
-            description = descriptions.get(name)
-            if description:
-                schema = {**schema, "description": description}
-            properties[name] = schema
-            if parameter.default is inspect.Parameter.empty:
-                required.append(name)
-        return {
-            "type": "function",
-            "function": {
-                "name": function.__name__,
-                "description": inspect.getdoc(function) or f"Run {function.__name__}.",
-                "parameters": {"type": "object", "properties": properties, "required": required},
-            },
-        }
-
-    @staticmethod
     def _strip_ollama_thinking(content: str) -> str:
         """Removes Qwen thinking text when a model emits it despite think=false."""
         if "</think>" in content:
