@@ -527,9 +527,9 @@ class TestConfirmationGate(unittest.TestCase):
         self.assertLess(len(tools_list), len(self.agent.tool_registry))
 
     def test_settings_models_no_duplicates(self):
-        from core.llm_provider import DEFAULT_MODELS
-        # Verify no duplicates in DEFAULT_MODELS
-        self.assertEqual(len(DEFAULT_MODELS), len(set(DEFAULT_MODELS)))
+        from core.llm_provider import NVIDIA_DEFAULT_MODEL, GROQ_DEFAULT_MODEL
+        # Verify the two remaining default models are distinct
+        self.assertNotEqual(NVIDIA_DEFAULT_MODEL, GROQ_DEFAULT_MODEL)
 
         # Verify no duplicate in settings.yaml fallback
         import yaml
