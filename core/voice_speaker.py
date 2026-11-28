@@ -400,12 +400,13 @@ class VoiceSpeaker:
                     if resp.status_code in (401, 402, 403, 429) or "quota" in (resp.text or "").lower():
                         if api_key:
                             _EL_EXHAUSTED_KEYS.add(api_key)
+                        global ELEVENLABS_QUOTA_EXHAUSTED
+                        ELEVENLABS_QUOTA_EXHAUSTED = True
+                        print(f"[VoiceSpeaker] REMINDER: An ElevenLabs API key exhausted its credits (HTTP {resp.status_code}). Switched to next key.")
                         # If all keys exhausted, disable for session.
                         if all(k in _EL_EXHAUSTED_KEYS for k in keys if k):
                             self._elevenlabs_disabled = True
-                            global ELEVENLABS_QUOTA_EXHAUSTED
-                            ELEVENLABS_QUOTA_EXHAUSTED = True
-                            print("[VoiceSpeaker] REMINDER: All ElevenLabs API keys have exhausted their credits. Top up or add new keys to ELEVENLABS_API_KEYS in .env. Falling back to Edge-TTS/SAPI.")
+                            print("[VoiceSpeaker] All ElevenLabs keys exhausted; falling back to Edge-TTS/SAPI.")
                             return False
                         continue
             except Exception as exc:

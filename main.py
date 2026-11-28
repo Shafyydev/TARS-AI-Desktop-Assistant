@@ -452,7 +452,7 @@ def main() -> None:
                     import core.voice_speaker as _vs
                     if getattr(_vs, "ELEVENLABS_QUOTA_EXHAUSTED", False):
                         if speaker:
-                            speaker.speak("Reminder: all ElevenLabs API keys have exhausted their credits. Top up or add new keys to use ElevenLabs again. Using fallback voice.", blocking=False)
+                            speaker.speak("Reminder: an ElevenLabs API key has exhausted its credits. Switched to the next key.", blocking=False)
                         _vs.ELEVENLABS_QUOTA_EXHAUSTED = False
                 except Exception:
                     pass
