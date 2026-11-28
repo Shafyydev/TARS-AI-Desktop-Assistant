@@ -164,10 +164,10 @@ class TaskOrchestrator:
         "maximize_active_window", "minimize_active_window",
         # Web, Playwright & free knowledge
         "open_url", "fetch_webpage_summary", "get_free_knowledge", "get_weather",
-        "browser_navigate", "browser_search", "browser_click_first_result",
+        "browser_navigate", "browser_click_first_result",
         "browser_find_elements", "browser_click_element", "browser_extract_text",
         "browser_type", "browser_scroll", "browser_history_nav", "browser_get_tabs",
-        "browser_switch_tab", "smart_search",
+        "browser_switch_tab",
         # Desktop UI automation & WhatsApp
         "get_active_window", "get_active_window_context", "list_running_applications",
         "get_ui_elements", "click_ui_element", "type_into_ui_element", "wait_for_condition",
@@ -226,7 +226,11 @@ class TaskOrchestrator:
                     "success": False,
                     "error": f"'{args.get('contact_name')}' is not a valid contact name. Ask the user who to message.",
                 }
-        result = self.agent.execute_tool(name, args)
+        # Reject hallucinated/unknown tool names (and search/browser tools that are
+        # not exposed to the model) so it answers from its own knowledge instead.
+        allowed = self.MODEL_TOOL_NAMES | self.OLLAMA_TOOL_NAMES
+        if name not in allowed:
+            return {"success": False, "error": f"Tool '{name}' is not available. Answer from your own knowledge."}
         if isinstance(result, dict):
             return result
         return {"success": result is not None, "result": result}
