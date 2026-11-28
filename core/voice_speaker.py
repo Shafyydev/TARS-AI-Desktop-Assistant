@@ -86,6 +86,14 @@ class VoiceSpeaker:
         self._audio_active: bool = False
         self._elevenlabs_disabled: bool = False
 
+        # Auto-launch VoiceStudio if configured and not already running.
+        _base = (os.getenv("ELEVENLABS_BASE_URL") or "").strip()
+        if _base and ("127.0.0.1" in _base or "localhost" in _base):
+            try:
+                _ensure_voicestudio_running(_base)
+            except Exception:
+                pass
+
         # Pre-warm audio subsystem at startup
         self._init_pygame()
 
@@ -736,3 +744,55 @@ class VoiceSpeaker:
                 pygame.mixer.music.stop()
             except Exception:
                 pass
+
+
+def _ensure_voicestudio_running(base_url: str) -> bool:
+    """Best-effort auto-launch of VoiceStudio if its local server isn't up yet."""
+    import socket
+    import time
+    # Extract host/port from base_url
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 3900
+    except Exception:
+        host, port = "127.0.0.1", 3900
+
+    def _port_open():
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except Exception:
+            return False
+
+    if _port_open():
+        return True
+
+    # Try common install locations.
+    import os
+    candidates = [
+        r"C:\Program Files\VoiceStudio\VoiceStudio.exe",
+        r"C:\Program Files (x86)\VoiceStudio\VoiceStudio.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "VoiceStudio", "VoiceStudio.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "VoiceStudio", "VoiceStudio.exe"),
+        os.path.join(os.environ.get("ProgramFiles", ""), "VoiceStudio", "VoiceStudio.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            try:
+                import subprocess
+                subprocess.Popen([path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                break
+            except Exception:
+                continue
+    else:
+        return False
+
+    # Wait up to 15s for the server to come up.
+    for _ in range(30):
+        if _port_open():
+            return True
+        time.sleep(0.5)
+    return False
+PYEOF
