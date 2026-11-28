@@ -223,6 +223,7 @@ class TARSAgent:
             "get_weather": tools.get_weather,
             "browser_navigate": tools.browser_navigate,
             "browser_search": tools.browser_search,
+            "web_search": tools.web_search,
             "browser_click_first_result": tools.browser_click_first_result,
             "browser_find_elements": tools.browser_find_elements,
             "browser_click_element": tools.browser_click_element,

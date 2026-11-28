@@ -73,6 +73,7 @@ from tools.verification import (
 from tools.browser_automation import (
     browser_navigate,
     browser_search,
+    web_search,
     browser_click_first_result,
     browser_find_elements,
     browser_click_element,
@@ -185,6 +186,7 @@ __all__ = [
     "get_weather",
     "browser_navigate",
     "browser_search",
+    "web_search",
     "browser_click_first_result",
     "browser_find_elements",
     "browser_click_element",

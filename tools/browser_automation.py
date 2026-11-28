@@ -421,29 +421,36 @@ atexit.register(browser_close)
 
 def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """
-    Web search. Opens the search engine in the browser (visible by default),
-    extracts readable text, and returns it for the LLM to synthesize an answer.
+    Backend (headless) web search. Uses a headless browser to load Google
+    results and extracts readable text for the LLM to synthesize an answer.
+    No visible browser window is opened.
     """
     try:
         clean_q = (query or "").strip()
         if not clean_q:
             return {"success": False, "error": "Empty query."}
-        # Reuse browser_search to load the results page.
-        sr = browser_search(clean_q, "google")
-        if not sr.get("success"):
-            return sr
         page = _ensure_browser()
+        import urllib.parse
+        encoded = urllib.parse.quote_plus(clean_q)
+        url = f"https://www.google.com/search?q={encoded}&num=8&hl=en"
+        page.goto(url, timeout=30000, wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
         try:
             text = page.inner_text("body")
         except Exception:
             text = ""
+        try:
+            title = page.title()
+        except Exception:
+            title = ""
         text = (text or "")[:2000]
+        if not text.strip():
+            return {"success": False, "error": "No text extracted from search results."}
         return {
             "success": True,
             "query": clean_q,
             "url": page.url,
-            "title": page.title(),
+            "title": title,
             "text": text,
             "message": f"Searched for '{clean_q}'; extracted page text for synthesis.",
         }
