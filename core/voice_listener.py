@@ -354,6 +354,41 @@ class VoiceListener:
             self._groq_cooldown_until = time.time() + 15.0
             return None, False
 
+    def _transcribe_elevenlabs_scribe(self, audio: Any) -> Tuple[Optional[str], bool]:
+        """Transcribes 16kHz WAV audio via ElevenLabs Scribe.
+
+        Returns (text, reachable) where reachable is True on HTTP 200.
+        """
+        api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+        if not api_key or api_key.startswith("your_"):
+            return None, False
+        try:
+            raw16 = audio.get_raw_data(convert_rate=16000, convert_width=2)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(raw16)
+            sess = self._get_http_session()
+            model = os.getenv("TARS_ELEVENLABS_STT_MODEL", "scribe_v1").strip()
+            resp = sess.post(
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers={"xi-api-key": api_key},
+                files={"file": ("cmd.wav", buf.getvalue(), "audio/wav")},
+                data={"model_id": model},
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                payload = resp.json() if hasattr(resp, "json") else {}
+                text = (payload.get("text") or "").strip()
+                return (text or None), True
+            if resp.status_code in (401, 403, 429):
+                self._groq_cooldown_until = time.time() + 60.0
+            return None, False
+        except Exception:
+            self._groq_cooldown_until = time.time() + 15.0
+            return None, False
     def _transcribe_whisper(self, audio) -> Optional[str]:
         """
         Transcribes a speech_recognition.AudioData object locally.
@@ -498,14 +533,24 @@ class VoiceListener:
             text = None
             used_engine = self.stt_engine
             _t2 = time.time()
-            if self.stt_engine in ("auto", "groq"):
-                text, groq_ok = self._transcribe_groq_whisper(audio)
-                if groq_ok:
-                    used_engine = "groq"
-                    if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
-                        text = None
+            if self.stt_engine in ("auto", "groq", "elevenlabs", "scribe"):
+                # Try ElevenLabs Scribe first if available
+                if self.stt_engine in ("elevenlabs", "scribe") or os.getenv("ELEVENLABS_API_KEY"):
+                    text, el_ok = self._transcribe_elevenlabs_scribe(audio)
+                    if el_ok:
+                        used_engine = "elevenlabs"
+                        if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                            text = None
+                        if text:
+                            pass
+                if not text and self.stt_engine in ("auto", "groq"):
+                    text, groq_ok = self._transcribe_groq_whisper(audio)
+                    if groq_ok:
+                        used_engine = "groq"
+                        if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                            text = None
                 else:
-                    if self.stt_engine == "auto":
+                    if self.stt_engine == "auto" and not text:
                         text = self._transcribe_whisper(audio)
                         if text:
                             used_engine = "whisper"
