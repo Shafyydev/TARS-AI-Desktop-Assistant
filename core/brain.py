@@ -1300,6 +1300,18 @@ class TARSAgent:
                 "success": False,
             }
 
+        # Hydrate the last WhatsApp contact from persisted memory so a follow-up
+        # "send a message saying ..." without an explicit name still targets the
+        # right person instead of falling through to the LLM (which may shorten
+        # the requested text).
+        if not getattr(self, "last_whatsapp_contact", None):
+            try:
+                _pref = self.memory.get_user_preference("last_whatsapp_message") if hasattr(self, "memory") and self.memory else None
+                if isinstance(_pref, dict) and _pref.get("contact"):
+                    self.last_whatsapp_contact = _pref.get("contact")
+            except Exception:
+                pass
+
         whatsapp_send = re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
             r"(?:send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:to\s+)?|whatsapp\s+(?:to\s+)?|message\s+(?:to\s+)?|text\s+(?:to\s+)?)"
@@ -1576,6 +1588,46 @@ class TARSAgent:
             res = self.execute_tool("smart_click", {"target": "image"})
             msg, ok = self._reply(res, "Clicked the image.")
             return {"response": msg, "steps": [{"tool": "smart_click", "args": {"target": "image"}, "result": res}], "success": ok}
+
+        # Recall the last sent WhatsApp message.
+        if re.search(r"^(?:what|which)\s+(?:message|msg|text)\s+(?:did\s+you\s+send|was\s+sent|sent)(?:\s+.*)?$", p_clean) or p_clean in ("what message did you send", "what did you send", "what message sent"):
+            try:
+                pref = self.memory.get_user_preference("last_whatsapp_message") if hasattr(self, "memory") and self.memory else None
+            except Exception:
+                pref = None
+            if isinstance(pref, dict) and (pref.get("message") or pref.get("contact")):
+                contact = pref.get("contact") or "the contact"
+                message = pref.get("message") or "(unknown)"
+                ver = pref.get("verification")
+                extra = ""
+                if ver == "UNCONFIRMED":
+                    extra = " (delivery unconfirmed)"
+                elif ver == "FAILED":
+                    extra = " (delivery failed)"
+                return {
+                    "response": f"I sent '{message}' to {contact}{extra}.",
+                    "steps": [],
+                    "success": True,
+                }
+            return {"response": "I don't have a record of a recently sent WhatsApp message.", "steps": [], "success": True}
+
+        # Fast path: a bare name while WhatsApp is already open should open that
+        # chat directly instead of routing through the LLM (which can take 20-40s).
+        if any("whatsapp" in str(t).lower() for t in tools.get_running_windows()):
+            if (
+                re.fullmatch(r"[a-z][a-z0-9._'-]{1,30}", p_clean)
+                and p_clean not in self.WHATSAPP_SEND_STOPWORDS
+            ):
+                res = self.execute_tool("open_whatsapp_chat", {"contact_name": p_clean})
+                if isinstance(res, dict) and res.get("success"):
+                    self.last_whatsapp_contact = p_clean
+                return {
+                    "response": (res.get("message") if isinstance(res, dict) else None)
+                    or (res.get("error") if isinstance(res, dict) else None)
+                    or f"Could not find WhatsApp chat '{p_clean}'.",
+                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": p_clean}, "result": res}],
+                    "success": (res.get("success", False) if isinstance(res, dict) else False),
+                }
 
         return None
 
