@@ -239,7 +239,7 @@ class VoiceSpeaker:
             _vs_url = (os.getenv("VOICESTUDIO_URL") or "").strip()
             if _vs_url or ("127.0.0.1" in _base or "localhost" in _base):
                 ok = self._synthesize_voicestudio(speech_text, output_path)
-            if not ok and ((os.getenv("ELEVENLABS_API_KEY") or "").strip()):
+            if not ok and ((os.getenv("ELEVENLABS_API_KEY") or "").strip() or (os.getenv("ELEVENLABS_API_KEYS") or "").strip()):
                 ok = self._synthesize_elevenlabs(speech_text, output_path)
             if not ok:
                 ok = loop.run_until_complete(self._synthesize_edge_tts(speech_text, output_path))
