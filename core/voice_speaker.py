@@ -68,7 +68,7 @@ class VoiceSpeaker:
         self.rate = os.getenv("TARS_VOICE_RATE", rate)
         self.pitch = os.getenv("TARS_VOICE_PITCH", pitch)
         # Default to fast native Windows SAPI for zero-latency instant responses unless cloud neural voice requested
-        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip())
+        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip()) or bool((os.getenv("ELEVENLABS_BASE_URL") or "").strip())
         self.fast_voice = not force_neural
         self._is_speaking = False
         self._stop_requested = False
@@ -188,7 +188,7 @@ class VoiceSpeaker:
         asyncio.set_event_loop(loop)
         ok = False
         try:
-            if (os.getenv("ELEVENLABS_API_KEY") or "").strip():
+            if (os.getenv("ELEVENLABS_API_KEY") or "").strip() or (os.getenv("ELEVENLABS_BASE_URL") or "").strip():
                 ok = self._synthesize_elevenlabs(speech_text, output_path)
             if not ok:
                 ok = loop.run_until_complete(self._synthesize_edge_tts(speech_text, output_path))
@@ -317,11 +317,15 @@ class VoiceSpeaker:
         if getattr(self, "_elevenlabs_disabled", False):
             return False
         api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
-        if not api_key:
+        base_url = (os.getenv("ELEVENLABS_BASE_URL") or "https://api.elevenlabs.io").rstrip("/")
+        # VoiceStudio runs locally and needs no API key; allow empty key for local URLs.
+        if not api_key and "127.0.0.1" not in base_url and "localhost" not in base_url:
             return False
-        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "EXAVITQu4vr4xnSDxMaL").strip()
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-        headers = {"xi-api-key": api_key, "Content-Type": "application/json", "Accept": "audio/mpeg"}
+        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "default").strip()
+        url = f"{base_url}/v1/text-to-speech/{voice_id}"
+        headers = {"Content-Type": "application/json", "Accept": "audio/mpeg"}
+        if api_key:
+            headers["xi-api-key"] = api_key
         payload = {
             "text": text,
             "model_id": os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
