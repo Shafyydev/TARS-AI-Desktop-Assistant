@@ -39,28 +39,26 @@ def main() -> None:
 
     def _open_fullscreen():
         import time
-        import shutil
+        import os
         import subprocess
         time.sleep(2.0)
-        # Prefer a browser that supports --start-fullscreen.
-        for exe in ("msedge.exe", "chrome.exe", "brave.exe"):
-            path = shutil.which(exe)
-            if path:
+        browser_paths = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        ]
+        for path in browser_paths:
+            if os.path.exists(path):
                 try:
                     subprocess.Popen([path, "--start-fullscreen", url])
                     return
                 except Exception:
                     continue
-        # Fallback: default browser + F11.
         import webbrowser
         try:
             webbrowser.open(url, new=2)
-        except Exception:
-            return
-        time.sleep(2.5)
-        try:
-            import pyautogui
-            pyautogui.press("f11")
         except Exception:
             pass
 

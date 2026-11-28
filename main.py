@@ -445,22 +445,49 @@ def main() -> None:
                 exec_duration = time.time() - t_exec_start
                 console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
-                # Return focus to the TARS window after a visible browser search.
+                # Return focus to the TARS console window after a visible browser search.
                 try:
                     _used_browser = any(str(s.get("tool", "")).startswith("browser_") or s.get("tool") == "web_search" for s in (result.get("steps") or []))
                     if _used_browser:
-                        import tools.gui_tools as _gt
-                        for _title in ("TARS", "Dashboard", "python", "PowerShell", "Command Prompt", "Terminal"):
-                            _r = _gt.focus_window(_title)
-                            if _r.get("success"):
-                                break
-                        else:
-                            # Fallback: minimize the foreground (browser) window to reveal TARS.
+                        import win32con
+                        import win32gui
+                        import win32process
+                        # Find the TARS console window (title contains TARS or python).
+                        _target = None
+                        def _enum(hwnd, _):
+                            nonlocal _target
+                            if not win32gui.IsWindowVisible(hwnd):
+                                return
+                            title = (win32gui.GetWindowText(hwnd) or "").lower()
+                            if "tars" in title or "python" in title or "powershell" in title or "command prompt" in title:
+                                _target = hwnd
+                        win32gui.EnumWindows(_enum, None)
+                        # Minimize the foreground browser window first.
+                        _fg = win32gui.GetForegroundWindow()
+                        if _fg and _fg != _target:
+                            win32gui.ShowWindow(_fg, win32con.SW_MINIMIZE)
+                        if _target:
+                            if win32gui.IsIconic(_target):
+                                win32gui.ShowWindow(_target, win32con.SW_RESTORE)
+                            else:
+                                win32gui.ShowWindow(_target, win32con.SW_SHOW)
+                            # Attach thread input to allow SetForegroundWindow.
                             try:
-                                import win32gui, win32con
-                                _hwnd = win32gui.GetForegroundWindow()
-                                if _hwnd:
-                                    win32gui.ShowWindow(_hwnd, win32con.SW_MINIMIZE)
+                                _ft, _ = win32process.GetWindowThreadProcessId(_fg) if _fg else (0, 0)
+                                _tt, _ = win32process.GetWindowThreadProcessId(_target)
+                                import win32api
+                                _my = win32api.GetCurrentThreadId()
+                                for tid in (_ft, _my):
+                                    if tid and tid != _tt:
+                                        try:
+                                            win32process.AttachThreadInput(tid, _tt, True)
+                                            break
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            try:
+                                win32gui.SetForegroundWindow(_target)
                             except Exception:
                                 pass
                 except Exception:
