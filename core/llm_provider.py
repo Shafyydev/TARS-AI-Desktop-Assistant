@@ -31,26 +31,6 @@ _BARE_SEND_STOPWORDS = frozenset({
 })
 
 
-def get_omniroute_api_key() -> Optional[str]:
-    """Retrieves OmniRoute API key from environment or local storage.sqlite."""
-    key = os.getenv("OMNIROUTE_API_KEY")
-    if key and key != "your_omniroute_api_key_here":
-        return key
-    try:
-        db_path = Path.home() / ".omniroute" / "storage.sqlite"
-        if db_path.exists():
-            import sqlite3
-            con = sqlite3.connect(str(db_path), check_same_thread=False)
-            cur = con.cursor()
-            row = cur.execute(
-                "SELECT key FROM api_keys WHERE is_active = 1 OR is_active IS NULL LIMIT 1"
-            ).fetchone()
-            if row and row[0]:
-                return row[0]
-    except Exception:
-        pass
-    return None
-
 # Set up dedicated logger for LLM interactions
 logger = logging.getLogger("TARS.LLM")
 log_dir = Path(__file__).resolve().parent.parent / "logs"
@@ -206,11 +186,6 @@ class LLMProvider:
 
         self.model = model or settings_model or model_env or default_model
         self.client = None
-        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-        self.openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
-        self.omniroute_base_url = (
-            os.getenv("OMNIROUTE_URL") or os.getenv("OMNIROUTE_BASE_URL") or OMNIROUTE_DEFAULT_URL
-        ).rstrip("/")
         self.nvidia_base_url = os.getenv("NVIDIA_BASE_URL", NVIDIA_DEFAULT_URL).rstrip("/")
         self.groq_base_url = os.getenv("GROQ_BASE_URL", GROQ_DEFAULT_URL).rstrip("/")
         self._quota_exhausted_until = 0.0
@@ -256,17 +231,6 @@ class LLMProvider:
                     self.client = None
             else:
                 self.client = None
-        elif self.provider == "gemini":
-            key = os.getenv("GEMINI_API_KEY")
-            if key and key != "your_gemini_api_key_here":
-                try:
-                    from google import genai
-                    self.client = genai.Client(api_key=key)
-                except Exception as e:
-                    logger.error(f"Failed to initialize GenAI client: {e}")
-                    self.client = None
-            else:
-                self.client = None
 
     def available(self) -> bool:
         """Returns True if the client is configured and not under an active rate limit pause."""
@@ -276,24 +240,6 @@ class LLMProvider:
         # health endpoint stays up while the routed model keeps failing.
         if time.time() < self._quota_exhausted_until:
             return False
-        if self.provider == "ollama":
-            try:
-                import requests
-                response = requests.get(f"{self.ollama_url}/api/tags", timeout=1.5)
-                return response.ok
-            except Exception:
-                return False
-        if self.provider == "omniroute":
-            try:
-                import requests
-                base = self.omniroute_base_url.rsplit("/v1", 1)[0]
-                response = requests.get(f"{base}/api/health", timeout=1.5)
-                if response.ok:
-                    return True
-                fallback = requests.get(self.omniroute_base_url, timeout=1.5)
-                return fallback.status_code in (200, 401, 404)
-            except Exception:
-                return False
         return True
 
     def unavailable_reason(self) -> str:
@@ -305,41 +251,15 @@ class LLMProvider:
         identical from the outside.
         """
         if not self.client:
-            if self.provider == "openrouter":
-                return "OPENROUTER_API_KEY is not configured"
-            if self.provider == "gemini":
-                return "GEMINI_API_KEY is not configured"
-            if self.provider == "omniroute":
-                return f"OmniRoute client could not be created for {self.omniroute_base_url}"
             if self.provider == "nvidia":
                 return "NVIDIA_API_KEY is not configured"
+            if self.provider == "groq":
+                return "GROQ_API_KEY is not configured"
             return f"client for provider '{self.provider}' could not be created"
 
         if time.time() < self._quota_exhausted_until:
             remaining = int(self._quota_exhausted_until - time.time())
             return f"paused after a rate limit for another {remaining}s"
-
-        if self.provider == "ollama":
-            try:
-                import requests
-                requests.get(f"{self.ollama_url}/api/tags", timeout=1.5)
-                return ""
-            except Exception:
-                return f"Ollama is unreachable at {self.ollama_url}"
-
-        if self.provider == "omniroute":
-            base = self.omniroute_base_url.rsplit("/v1", 1)[0]
-            try:
-                import requests
-                response = requests.get(f"{base}/api/health", timeout=1.5)
-                if response.ok:
-                    return ""
-                fallback = requests.get(self.omniroute_base_url, timeout=1.5)
-                if fallback.status_code in (200, 401, 404):
-                    return ""
-                return f"OmniRoute is unreachable at {base}"
-            except Exception:
-                return f"OmniRoute is unreachable at {base}"
 
         return ""
 
