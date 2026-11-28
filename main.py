@@ -434,7 +434,7 @@ def main() -> None:
 
                 # Speak an immediate ack for search/news queries so the user knows TARS is working.
                 _lower = user_input.lower()
-                if any(kw in _lower for kw in ["search", "news", "look up", "find out", "google", "what is", "who is", "latest"]):
+                if any(kw in _lower for kw in ["search the web", "look up online", "look it up", "search online", "google it"]):
                     if speaker:
                         speaker.speak("Yes chief, I will search the internet. Give me a moment.", blocking=True)
 
