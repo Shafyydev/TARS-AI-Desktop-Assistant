@@ -80,7 +80,7 @@ class VoiceSpeaker:
         self.rate = os.getenv("TARS_VOICE_RATE", rate)
         self.pitch = os.getenv("TARS_VOICE_PITCH", pitch)
         # Default to fast native Windows SAPI for zero-latency instant responses unless cloud neural voice requested
-        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip()) or bool((os.getenv("ELEVENLABS_BASE_URL") or "").strip()) or bool((os.getenv("VOICESTUDIO_URL") or "").strip())
+        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip()) or bool((os.getenv("ELEVENLABS_API_KEYS") or "").strip()) or bool((os.getenv("ELEVENLABS_BASE_URL") or "").strip()) or bool((os.getenv("VOICESTUDIO_URL") or "").strip())
         self.fast_voice = not force_neural
         self._is_speaking = False
         self._stop_requested = False
