@@ -1,3 +1,12 @@
+def _el_keys():
+    keys = []
+    raw = os.getenv("ELEVENLABS_API_KEYS", "")
+    if raw.strip():
+        keys.extend([k.strip() for k in raw.split(",") if k.strip()])
+    single = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    if single and single not in keys:
+        keys.append(single)
+    return keys
 """Low-latency streaming neural TTS speaker for TARS with offline SAPI fallback and instant async acknowledgments."""
 import asyncio
 import hashlib
@@ -44,6 +53,9 @@ def _pick_female_sapi_voice(sp_voice: Any) -> Any:
         if fallback is None and "david" not in desc and not re.search(r"\bmale\b", desc):
             fallback = v
     return fallback
+
+
+_EL_EXHAUSTED_KEYS = set()
 
 
 class VoiceSpeaker:
@@ -351,39 +363,51 @@ class VoiceSpeaker:
         return False
 
     def _synthesize_elevenlabs(self, text: str, output_path: str) -> bool:
-        """Synthesizes text into an MP3 file using the ElevenLabs REST API (optional, cloud)."""
+        """Synthesizes text via ElevenLabs REST API, rotating API keys on quota/auth failure."""
         if getattr(self, "_elevenlabs_disabled", False):
             return False
-        api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
         base_url = (os.getenv("ELEVENLABS_BASE_URL") or "https://api.elevenlabs.io").rstrip("/")
         # VoiceStudio runs locally and needs no API key; allow empty key for local URLs.
-        if not api_key and "127.0.0.1" not in base_url and "localhost" not in base_url:
-            return False
-        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "default").strip()
+        is_local = ("127.0.0.1" in base_url or "localhost" in base_url)
+        voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "EXAVITQu4vr4xnSDxMaL").strip()
         url = f"{base_url}/v1/text-to-speech/{voice_id}"
-        headers = {"Content-Type": "application/json", "Accept": "audio/mpeg"}
-        if api_key:
-            headers["xi-api-key"] = api_key
         payload = {
             "text": text,
             "model_id": os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
         }
-        try:
-            import requests
-            resp = requests.post(url, json=payload, headers=headers, timeout=15.0)
-            if resp.status_code == 200 and resp.content:
-                with open(output_path, "wb") as f:
-                    f.write(resp.content)
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                    return True
-            else:
-                print(f"[VoiceSpeaker] ElevenLabs failed: HTTP {resp.status_code} {resp.text[:120]}")
-                if resp.status_code in (401, 402, 403, 429) or "quota" in (resp.text or "").lower():
-                    self._elevenlabs_disabled = True
-                    print("[VoiceSpeaker] ElevenLabs disabled for this session; falling back to Edge-TTS/SAPI.")
-        except Exception as exc:
-            print(f"[VoiceSpeaker] ElevenLabs failed ({type(exc).__name__}); falling back to Edge-TTS.")
+        keys = _el_keys() if not is_local else [""]
+        if not keys and not is_local:
+            return False
+        if not keys:
+            keys = [""]
+        for api_key in keys:
+            headers = {"Content-Type": "application/json", "Accept": "audio/mpeg"}
+            if api_key:
+                headers["xi-api-key"] = api_key
+            try:
+                import requests
+                resp = requests.post(url, json=payload, headers=headers, timeout=15.0)
+                if resp.status_code == 200 and resp.content:
+                    with open(output_path, "wb") as f:
+                        f.write(resp.content)
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        return True
+                else:
+                    msg = (resp.text or "")[:120]
+                    print(f"[VoiceSpeaker] ElevenLabs failed: HTTP {resp.status_code} {msg}")
+                    if resp.status_code in (401, 402, 403, 429) or "quota" in (resp.text or "").lower():
+                        if api_key:
+                            _EL_EXHAUSTED_KEYS.add(api_key)
+                        # If all keys exhausted, disable for session.
+                        if all(k in _EL_EXHAUSTED_KEYS for k in keys if k):
+                            self._elevenlabs_disabled = True
+                            print("[VoiceSpeaker] All ElevenLabs keys exhausted; falling back to Edge-TTS/SAPI.")
+                            return False
+                        continue
+            except Exception as exc:
+                print(f"[VoiceSpeaker] ElevenLabs failed ({type(exc).__name__}); trying next key.")
+                continue
         return False
 
     def _play_audio_pygame(

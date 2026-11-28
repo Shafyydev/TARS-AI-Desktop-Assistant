@@ -1,3 +1,4 @@
+_EL_EXHAUSTED_KEYS = set()
 """High-accuracy, locale-aware voice capture and speech recognition listener for TARS."""
 import io
 import os
@@ -359,36 +360,51 @@ class VoiceListener:
 
         Returns (text, reachable) where reachable is True on HTTP 200.
         """
-        api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
-        if not api_key or api_key.startswith("your_"):
+        # Collect keys (supports rotation via comma-separated ELEVENLABS_API_KEYS).
+        keys = []
+        raw_multi = os.getenv("ELEVENLABS_API_KEYS", "")
+        if raw_multi.strip():
+            keys.extend([k.strip() for k in raw_multi.split(",") if k.strip()])
+        single = os.getenv("ELEVENLABS_API_KEY", "").strip()
+        if single and single not in keys:
+            keys.append(single)
+        if not keys:
             return None, False
-        try:
-            raw16 = audio.get_raw_data(convert_rate=16000, convert_width=2)
-            buf = io.BytesIO()
-            with wave.open(buf, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(16000)
-                wf.writeframes(raw16)
-            sess = self._get_http_session()
-            model = os.getenv("TARS_ELEVENLABS_STT_MODEL", "scribe_v1").strip()
-            resp = sess.post(
-                "https://api.elevenlabs.io/v1/speech-to-text",
-                headers={"xi-api-key": api_key},
-                files={"file": ("cmd.wav", buf.getvalue(), "audio/wav")},
-                data={"model_id": model},
-                timeout=8.0,
-            )
-            if resp.status_code == 200:
-                payload = resp.json() if hasattr(resp, "json") else {}
-                text = (payload.get("text") or "").strip()
-                return (text or None), True
-            if resp.status_code in (401, 403, 429):
-                self._groq_cooldown_until = time.time() + 60.0
-            return None, False
-        except Exception:
-            self._groq_cooldown_until = time.time() + 15.0
-            return None, False
+
+        raw16 = audio.get_raw_data(convert_rate=16000, convert_width=2)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(raw16)
+        audio_bytes = buf.getvalue()
+        model = os.getenv("TARS_ELEVENLABS_STT_MODEL", "scribe_v1").strip()
+        sess = self._get_http_session()
+
+        for api_key in keys:
+            if api_key in _EL_EXHAUSTED_KEYS:
+                continue
+            try:
+                resp = sess.post(
+                    "https://api.elevenlabs.io/v1/speech-to-text",
+                    headers={"xi-api-key": api_key},
+                    files={"file": ("cmd.wav", audio_bytes, "audio/wav")},
+                    data={"model_id": model},
+                    timeout=8.0,
+                )
+                if resp.status_code == 200:
+                    payload = resp.json() if hasattr(resp, "json") else {}
+                    text = (payload.get("text") or "").strip()
+                    return (text or None), True
+                if resp.status_code in (401, 403, 429):
+                    _EL_EXHAUSTED_KEYS.add(api_key)
+                    print(f"[Listener] ElevenLabs key exhausted ({resp.status_code}); trying next.")
+                    continue
+                return None, False
+            except Exception:
+                continue
+        return None, False
     def _transcribe_whisper(self, audio) -> Optional[str]:
         """
         Transcribes a speech_recognition.AudioData object locally.
