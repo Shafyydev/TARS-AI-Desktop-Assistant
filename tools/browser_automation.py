@@ -280,7 +280,7 @@ def browser_extract_text(selector: Optional[str] = None) -> Dict[str, Any]:
             text = page.inner_text("body")
         return {
             "success": True,
-            "text": text[:8000],
+            "text": text[:2000],
             "url": page.url,
             "title": page.title()
         }
@@ -417,3 +417,35 @@ def browser_switch_tab(index: int = 0) -> Dict[str, Any]:
 
 # Cleanup on exit
 atexit.register(browser_close)
+
+
+def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
+    """
+    Web search. Opens the search engine in the browser (visible by default),
+    extracts readable text, and returns it for the LLM to synthesize an answer.
+    """
+    try:
+        clean_q = (query or "").strip()
+        if not clean_q:
+            return {"success": False, "error": "Empty query."}
+        # Reuse browser_search to load the results page.
+        sr = browser_search(clean_q, "google")
+        if not sr.get("success"):
+            return sr
+        page = _ensure_browser()
+        page.wait_for_timeout(1500)
+        try:
+            text = page.inner_text("body")
+        except Exception:
+            text = ""
+        text = (text or "")[:2000]
+        return {
+            "success": True,
+            "query": clean_q,
+            "url": page.url,
+            "title": page.title(),
+            "text": text,
+            "message": f"Searched for '{clean_q}'; extracted page text for synthesis.",
+        }
+    except Exception as exc:
+        return {"success": False, "error": f"Web search failed: {exc}"}
