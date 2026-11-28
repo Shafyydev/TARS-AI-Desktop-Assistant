@@ -434,12 +434,6 @@ def main() -> None:
 
                 # Speak an immediate ack for search/news queries so the user knows TARS is working.
                 import re as _re
-                _lower = user_input.lower()
-                _info_kw = ["news", "update", "updates", "what", "who", "how", "why", "when", "where", "tell me", "explain", "summarize", "latest", "recent", "about"]
-                if any(_re.search(r"\b" + kw + r"\b", _lower) for kw in _info_kw):
-                    if speaker:
-                        speaker.speak("Yes chief, I'll search the internet. Give me a moment.", blocking=True)
-
                 # Run through Agent ReAct Loop with precise timing
                 t_exec_start = time.time()
                 with console.status("[bold green]TARS reasoning & executing...[/bold green]", spinner="dots"):
