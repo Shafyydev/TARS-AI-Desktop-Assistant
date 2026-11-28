@@ -425,6 +425,12 @@ def main() -> None:
                 def on_status(msg: str) -> None:
                     console.print(f"[dim yellow]⚡ {msg}[/dim yellow]")
 
+                # Speak an immediate ack for search/news queries so the user knows TARS is working.
+                _lower = user_input.lower()
+                if any(kw in _lower for kw in ["search", "news", "look up", "find out", "google", "what is", "who is", "latest"]):
+                    if speaker:
+                        speaker.speak("Yes chief, I will search the internet. Give me a moment.", blocking=True)
+
                 # Run through Agent ReAct Loop with precise timing
                 t_exec_start = time.time()
                 with console.status("[bold green]TARS reasoning & executing...[/bold green]", spinner="dots"):
