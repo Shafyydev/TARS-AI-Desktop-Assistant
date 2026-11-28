@@ -36,6 +36,25 @@ def main() -> None:
     url = f"http://{args.host}:{args.port}"
     print(f"TARS Dashboard starting at {url}")
     print("Open the URL in your browser. Press Ctrl+C to stop.")
+
+    def _open_fullscreen():
+        import time
+        import webbrowser
+        time.sleep(2.0)
+        try:
+            webbrowser.open(url, new=2)
+        except Exception:
+            return
+        time.sleep(2.5)
+        try:
+            import pyautogui
+            pyautogui.press("f11")
+        except Exception:
+            pass
+
+    import threading
+    threading.Thread(target=_open_fullscreen, daemon=True).start()
+
     uvicorn.run("dashboard.server:app", host=args.host, port=args.port, reload=args.reload)
 
 

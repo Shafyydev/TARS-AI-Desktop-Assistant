@@ -438,13 +438,24 @@ def main() -> None:
                 exec_duration = time.time() - t_exec_start
                 console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
-                # Return focus to the dashboard/TARS window after a visible browser search.
+                # Return focus to the TARS window after a visible browser search.
                 try:
-                    _used_browser = any(str(s.get("tool", "")).startswith("browser_") for s in (result.get("steps") or []))
+                    _used_browser = any(str(s.get("tool", "")).startswith("browser_") or s.get("tool") == "web_search" for s in (result.get("steps") or []))
                     if _used_browser:
                         import tools.gui_tools as _gt
-                        _gt.focus_window("Dashboard")
-                        _gt.focus_window("TARS")
+                        for _title in ("TARS", "Dashboard", "python", "PowerShell", "Command Prompt", "Terminal"):
+                            _r = _gt.focus_window(_title)
+                            if _r.get("success"):
+                                break
+                        else:
+                            # Fallback: minimize the foreground (browser) window to reveal TARS.
+                            try:
+                                import win32gui, win32con
+                                _hwnd = win32gui.GetForegroundWindow()
+                                if _hwnd:
+                                    win32gui.ShowWindow(_hwnd, win32con.SW_MINIMIZE)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
