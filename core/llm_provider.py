@@ -481,7 +481,58 @@ class LLMProvider:
                 descriptions[match.group(1).lstrip("*")] = match.group(2).strip()
         return descriptions
 
-    def _strip_ollama_thinking(content: str) -> str:
+    @staticmethod
+    def _openai_tool_schema(function: Callable) -> Dict[str, Any]:
+        """Converts a registered Python tool into an OpenAI-compatible function schema."""
+        signature = inspect.signature(function)
+        properties: Dict[str, Any] = {}
+        required: List[str] = []
+        for name, parameter in signature.parameters.items():
+            if name.startswith("_"):
+                continue
+            annotation = parameter.annotation
+            if annotation is inspect.Parameter.empty:
+                schema = {"type": "string"}
+            elif annotation is str:
+                schema = {"type": "string"}
+            elif annotation is int:
+                schema = {"type": "integer"}
+            elif annotation is float:
+                schema = {"type": "number"}
+            elif annotation is bool:
+                schema = {"type": "boolean"}
+            elif annotation is list or annotation is List:
+                schema = {"type": "array"}
+            elif annotation is dict or annotation is Dict:
+                schema = {"type": "object"}
+            else:
+                schema = {"type": "string"}
+            desc_match = None
+            try:
+                doc = inspect.getdoc(function) or ""
+                # try to extract per-arg description from docstring "name: desc"
+                import re
+                for line in doc.splitlines():
+                    m = re.match(r"\s*(\w+)\s*:\s*(.+)", line)
+                    if m and m.group(1) == name:
+                        desc_match = m.group(2).strip()
+                        break
+            except Exception:
+                pass
+            if desc_match:
+                schema = {**schema, "description": desc_match}
+            properties[name] = schema
+            if parameter.default is inspect.Parameter.empty:
+                required.append(name)
+        return {
+            "type": "function",
+            "function": {
+                "name": function.__name__,
+                "description": inspect.getdoc(function) or f"Run {function.__name__}.",
+                "parameters": {"type": "object", "properties": properties, "required": required},
+            },
+        }
+    def _strip_ollama_thinking(self, content: str) -> str:
         """Removes Qwen thinking text when a model emits it despite think=false."""
         if "</think>" in content:
             return content.rsplit("</think>", 1)[-1].strip()
@@ -559,7 +610,7 @@ class LLMProvider:
             messages.pop()
         messages.append({"role": "user", "content": prompt})
 
-        tool_schemas = [self._ollama_tool_schema(function) for function in tools_list] if tools_list else []
+        tool_schemas = [self._openai_tool_schema(function) for function in tools_list] if tools_list else []
         steps: List[Dict[str, Any]] = []
         from tools.verification import is_task_cancelled
 
