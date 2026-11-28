@@ -68,7 +68,7 @@ class VoiceSpeaker:
         self.rate = os.getenv("TARS_VOICE_RATE", rate)
         self.pitch = os.getenv("TARS_VOICE_PITCH", pitch)
         # Default to fast native Windows SAPI for zero-latency instant responses unless cloud neural voice requested
-        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip()) or bool((os.getenv("ELEVENLABS_BASE_URL") or "").strip())
+        force_neural = (os.getenv("TARS_NEURAL_VOICE", "1") in ["1", "true", "True"]) or (not fast_voice) or bool((os.getenv("ELEVENLABS_API_KEY") or "").strip()) or bool((os.getenv("ELEVENLABS_BASE_URL") or "").strip()) or bool((os.getenv("VOICESTUDIO_URL") or "").strip())
         self.fast_voice = not force_neural
         self._is_speaking = False
         self._stop_requested = False
@@ -190,13 +190,43 @@ class VoiceSpeaker:
         cadence = 0.52 + 0.30 * abs(math.sin(elap * 12.0)) + 0.18 * abs(math.sin(elap * 24.5))
         return {"speaking": True, "level": round(min(1.0, max(0.18, cadence)), 3)}
 
+    def _synthesize_voicestudio(self, text: str, output_path: str) -> bool:
+        """Synthesizes text via VoiceStudio's OpenAI-compatible local TTS API."""
+        base_url = (os.getenv("VOICESTUDIO_URL") or os.getenv("ELEVENLABS_BASE_URL") or "").strip().rstrip("/")
+        if not base_url:
+            return False
+        # Normalize: strip /elevenlabs suffix if present (VoiceStudio uses /v1/audio/speech).
+        if base_url.endswith("/elevenlabs"):
+            base_url = base_url[:-len("/elevenlabs")]
+        url = base_url + "/v1/audio/speech"
+        voice = (os.getenv("VOICESTUDIO_VOICE") or os.getenv("ELEVENLABS_VOICE_ID") or "default").strip()
+        model = os.getenv("VOICESTUDIO_MODEL", "omnivoice")
+        payload = {"model": model, "input": text, "voice": voice}
+        try:
+            import requests
+            resp = requests.post(url, json=payload, timeout=30.0)
+            if resp.status_code == 200 and resp.content:
+                with open(output_path, "wb") as f:
+                    f.write(resp.content)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    return True
+            else:
+                print(f"[VoiceSpeaker] VoiceStudio failed: HTTP {resp.status_code} {resp.text[:120]}")
+        except Exception as exc:
+            print(f"[VoiceSpeaker] VoiceStudio failed ({type(exc).__name__}); falling back to Edge-TTS/SAPI.")
+        return False
+
     def _synthesize_to_file(self, speech_text: str, output_path: str) -> bool:
         """Synthesizes speech_text to output_path using ElevenLabs or Edge-TTS."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         ok = False
         try:
-            if (os.getenv("ELEVENLABS_API_KEY") or "").strip() or (os.getenv("ELEVENLABS_BASE_URL") or "").strip():
+            _base = (os.getenv("ELEVENLABS_BASE_URL") or "").strip()
+            _vs_url = (os.getenv("VOICESTUDIO_URL") or "").strip()
+            if _vs_url or ("127.0.0.1" in _base or "localhost" in _base):
+                ok = self._synthesize_voicestudio(speech_text, output_path)
+            if not ok and ((os.getenv("ELEVENLABS_API_KEY") or "").strip()):
                 ok = self._synthesize_elevenlabs(speech_text, output_path)
             if not ok:
                 ok = loop.run_until_complete(self._synthesize_edge_tts(speech_text, output_path))
