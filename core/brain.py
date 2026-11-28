@@ -428,6 +428,9 @@ class TARSAgent:
         Delivers <1ms response latency for GUI, OS, Browser, and Terminal controls.
         """
         p = prompt.strip().lower()
+        # Normalize spoken punctuation so "open, brave." still matches fast paths.
+        p = re.sub(r"[,]", " ", p)
+        p = re.sub(r"\s+", " ", p).strip()
         # Clean conversational prefixes and suffixes
         p_clean = re.sub(r"^(?:can you|could you|please|would you|tars|hey tars|yo tars|ok tars|okay tars)\s+", "", p).strip("?!.,; ")
         p_clean = re.sub(r"\s+(?:tars|please)$", "", p_clean).strip("?!.,; ")
@@ -1468,6 +1471,24 @@ class TARSAgent:
                 "response": msg,
                 "steps": [{"tool": "open_folder", "args": {"folder_path": target_drive}, "result": res}],
                 "success": ok
+            }
+
+        # "open chat with <name>" / "open whatsapp chat with <name>"
+        whatsapp_chat_with = re.match(
+            r"^(?:open|show|go\s+to|select)\s+(?:the\s+)?(?:whatsapp\s+)?chat\s+with\s+(.+)$",
+            p_clean,
+        )
+        if whatsapp_chat_with:
+            contact = whatsapp_chat_with.group(1).strip()
+            res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+            if isinstance(res, dict) and res.get("success"):
+                self.last_whatsapp_contact = contact
+            return {
+                "response": (res.get("message") if isinstance(res, dict) else None)
+                or (res.get("error") if isinstance(res, dict) else None)
+                or f"Could not open WhatsApp chat '{contact}'.",
+                "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                "success": (res.get("success", False) if isinstance(res, dict) else False),
             }
 
         nav_match = re.match(r"^(?:go to|navigate to|visit|open up|open|launch|start|take me to|show me|bring up)\s+(?:the\s+)?(?:my\s+)?(.+)", p_clean)
