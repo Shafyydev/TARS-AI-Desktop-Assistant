@@ -447,6 +447,16 @@ def main() -> None:
                 exec_duration = time.time() - t_exec_start
                 console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
+                # Remind once if all ElevenLabs keys are exhausted.
+                try:
+                    import core.voice_speaker as _vs
+                    if getattr(_vs, "ELEVENLABS_QUOTA_EXHAUSTED", False):
+                        if speaker:
+                            speaker.speak("Reminder: all ElevenLabs API keys have exhausted their credits. Top up or add new keys to use ElevenLabs again. Using fallback voice.", blocking=False)
+                        _vs.ELEVENLABS_QUOTA_EXHAUSTED = False
+                except Exception:
+                    pass
+
                 # Output Spoken / Written Response
                 raw_response = (result.get("response") or "").strip()
                 # Sanitize markdown (tables, pipes, headers) for spoken output.

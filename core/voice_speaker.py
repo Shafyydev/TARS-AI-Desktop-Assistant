@@ -56,6 +56,7 @@ def _pick_female_sapi_voice(sp_voice: Any) -> Any:
 
 
 _EL_EXHAUSTED_KEYS = set()
+ELEVENLABS_QUOTA_EXHAUSTED = False
 
 
 class VoiceSpeaker:
@@ -402,7 +403,9 @@ class VoiceSpeaker:
                         # If all keys exhausted, disable for session.
                         if all(k in _EL_EXHAUSTED_KEYS for k in keys if k):
                             self._elevenlabs_disabled = True
-                            print("[VoiceSpeaker] All ElevenLabs keys exhausted; falling back to Edge-TTS/SAPI.")
+                            global ELEVENLABS_QUOTA_EXHAUSTED
+                            ELEVENLABS_QUOTA_EXHAUSTED = True
+                            print("[VoiceSpeaker] REMINDER: All ElevenLabs API keys have exhausted their credits. Top up or add new keys to ELEVENLABS_API_KEYS in .env. Falling back to Edge-TTS/SAPI.")
                             return False
                         continue
             except Exception as exc:

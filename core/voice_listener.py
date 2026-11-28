@@ -1,4 +1,5 @@
 _EL_EXHAUSTED_KEYS = set()
+ELEVENLABS_QUOTA_EXHAUSTED = False
 """High-accuracy, locale-aware voice capture and speech recognition listener for TARS."""
 import io
 import os
@@ -400,6 +401,10 @@ class VoiceListener:
                 if resp.status_code in (401, 403, 429):
                     _EL_EXHAUSTED_KEYS.add(api_key)
                     print(f"[Listener] ElevenLabs key exhausted ({resp.status_code}); trying next.")
+                    import core.voice_speaker as _vs
+                    if hasattr(_vs, 'ELEVENLABS_QUOTA_EXHAUSTED') and all(k in _EL_EXHAUSTED_KEYS for k in keys if k):
+                        _vs.ELEVENLABS_QUOTA_EXHAUSTED = True
+                        print("[Listener] REMINDER: All ElevenLabs API keys have exhausted their credits.")
                     continue
                 return None, False
             except Exception:
