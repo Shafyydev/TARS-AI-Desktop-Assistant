@@ -330,7 +330,7 @@ class VoiceListener:
                 wf.setsampwidth(2)
                 wf.setframerate(16000)
                 wf.writeframes(raw16)
-            model = os.getenv("TARS_GROQ_STT_MODEL", "whisper-large-v3-turbo").strip()
+            model = os.getenv("TARS_GROQ_STT_MODEL", "whisper-large-v3-turbo").strip() or "whisper-large-v3-turbo"
             sess = self._get_http_session()
             resp = sess.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -338,7 +338,7 @@ class VoiceListener:
                 files={"file": ("cmd.wav", buf.getvalue(), "audio/wav")},
                 data={
                     "model": model,
-                    "language": (self.language or "en").split("-")[0],
+                    "language": "en",
                     "temperature": "0",
                     "prompt": "TARS, WhatsApp, Amma, Reshma, Reshmaa, Shafyy, Chrome, Brave, YouTube, Gmail.",
                     "response_format": "json",
@@ -555,7 +555,7 @@ class VoiceListener:
             _t2 = time.time()
             if self.stt_engine in ("auto", "groq", "elevenlabs", "scribe"):
                 # Try ElevenLabs Scribe first if available
-                if self.stt_engine in ("elevenlabs", "scribe") or os.getenv("ELEVENLABS_API_KEY"):
+                if self.stt_engine in ("elevenlabs", "scribe") or (self.stt_engine == "auto" and os.getenv("ELEVENLABS_API_KEY")):
                     text, el_ok = self._transcribe_elevenlabs_scribe(audio)
                     if el_ok:
                         used_engine = "elevenlabs"
@@ -569,6 +569,16 @@ class VoiceListener:
                         used_engine = "groq"
                         if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
                             text = None
+                    elif self.stt_engine == "auto":
+                        text = self._transcribe_whisper(audio)
+                        if text:
+                            used_engine = "whisper"
+                        if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
+                            text = None
+                        if not text:
+                            text = self._transcribe_google(audio, duration, peak_rms)
+                            if text:
+                                used_engine = "google"
                 else:
                     if self.stt_engine == "auto" and not text:
                         text = self._transcribe_whisper(audio)
@@ -576,7 +586,7 @@ class VoiceListener:
                             used_engine = "whisper"
                         if text and _is_whisper_hallucination(text, peak_rms, clamped_thresh, duration):
                             text = None
-                    if not text:
+                    if not text and self.stt_engine == "auto":
                         text = self._transcribe_google(audio, duration, peak_rms)
                         if text:
                             used_engine = "google"
