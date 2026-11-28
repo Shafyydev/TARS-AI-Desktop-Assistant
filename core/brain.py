@@ -1632,21 +1632,24 @@ class TARSAgent:
                 }
             return {"response": "I don't have a record of a recently sent WhatsApp message.", "steps": [], "success": True}
 
-        # Fast path: a bare name while WhatsApp is already open should open that
-        # chat directly instead of routing through the LLM (which can take 20-40s).
+        # Fast path: a bare name (optionally followed by "chat") while WhatsApp is
+        # already open should open that chat directly instead of routing through
+        # the LLM (which can take 20-50s).
         if any("whatsapp" in str(t).lower() for t in tools.get_running_windows()):
+            contact_candidate = re.sub(r"\s+chat$", "", p_clean).strip()
             if (
-                re.fullmatch(r"[a-z][a-z0-9._'-]{1,30}", p_clean)
-                and p_clean not in self.WHATSAPP_SEND_STOPWORDS
+                1 <= len(contact_candidate.split()) <= 3
+                and re.fullmatch(r"[a-z][a-z0-9._' -]{1,40}", contact_candidate)
+                and contact_candidate not in self.WHATSAPP_SEND_STOPWORDS
             ):
-                res = self.execute_tool("open_whatsapp_chat", {"contact_name": p_clean})
+                res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact_candidate})
                 if isinstance(res, dict) and res.get("success"):
-                    self.last_whatsapp_contact = p_clean
+                    self.last_whatsapp_contact = contact_candidate
                 return {
                     "response": (res.get("message") if isinstance(res, dict) else None)
                     or (res.get("error") if isinstance(res, dict) else None)
-                    or f"Could not find WhatsApp chat '{p_clean}'.",
-                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": p_clean}, "result": res}],
+                    or f"Could not find WhatsApp chat '{contact_candidate}'.",
+                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact_candidate}, "result": res}],
                     "success": (res.get("success", False) if isinstance(res, dict) else False),
                 }
 
