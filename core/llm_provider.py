@@ -532,7 +532,8 @@ class LLMProvider:
                 "parameters": {"type": "object", "properties": properties, "required": required},
             },
         }
-    def _strip_ollama_thinking(self, content: str) -> str:
+    @staticmethod
+    def _strip_ollama_thinking(content: str) -> str:
         """Removes Qwen thinking text when a model emits it despite think=false."""
         if "</think>" in content:
             return content.rsplit("</think>", 1)[-1].strip()
@@ -775,6 +776,21 @@ class LLMProvider:
                             }
                     else:
                         failed_calls.pop(call_key, None)
+
+            # Fast exit: if a single tool succeeded with a useful message, avoid
+            # an extra LLM round-trip whose only job is to rephrase it.
+            if (
+                len(tool_calls) == 1
+                and isinstance(result, dict)
+                and result.get("success")
+                and result.get("message")
+            ):
+                return {
+                    "success": True,
+                    "response": result.get("message"),
+                    "steps": steps,
+                    "no_tool_calls": False,
+                }
 
             # Max iterations reached, ask for summary
             messages.append({
