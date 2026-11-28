@@ -30,6 +30,20 @@ class TaskOrchestrator:
     })
 
     @classmethod
+    def _is_question(cls, request: str) -> bool:
+        """True when the request is a question about prior actions/state, not a new action."""
+        text = (request or "").strip().lower()
+        if text.endswith("?"):
+            return True
+        return any(
+            marker in text
+            for marker in (
+                "what ", "which ", "how ", "did you", "did i", "have you",
+                "tell me", "show me", "remind me", "what did", "what was",
+            )
+        )
+
+    @classmethod
     def _is_action_request(cls, request: str) -> bool:
         """True when the request starts with a verb that must actually do something."""
         text = (request or "").strip().lower()
@@ -62,6 +76,8 @@ class TaskOrchestrator:
         falsely claiming completion) with zero executed steps means nothing happened,
         so the result must not claim success.
         """
+        if self._is_question(request):
+            return llm_result
         if not llm_result.get("no_tool_calls"):
             return llm_result
         if llm_result.get("steps"):
@@ -136,12 +152,23 @@ class TaskOrchestrator:
         "switch_window",
         "browser_navigate", "browser_click_first_result", "browser_extract_text", "smart_search",
         "smart_click", "smart_type",
-        "open_whatsapp_chat", "send_whatsapp_message",
+        "open_whatsapp", "search_contacts", "get_active_chat", "open_whatsapp_chat",
+        "get_latest_message", "send_whatsapp_message",
         "set_reminder", "list_active_reminders", "cancel_active_reminder",
         "list_unread_emails", "search_emails", "read_email", "send_email", "list_upcoming_events",
         "create_calendar_event",
         "remember_fact", "verify_action", "cancel_current_task",
     })
+
+    WHATSAPP_MODEL_TOOLS = frozenset({
+        "open_whatsapp", "get_whatsapp_state", "get_active_chat",
+        "get_unread_chats", "search_contacts", "resolve_contact",
+        "open_whatsapp_chat", "get_chat_messages", "get_latest_message",
+        "get_contact_information", "search_messages", "view_status", "search_media",
+        "send_whatsapp_message", "reply_to_message",
+    })
+
+    WHATSAPP_ALL_TOOLS = WHATSAPP_MODEL_TOOLS | frozenset({"open_chat", "send_message"})
 
     # Full model-facing tool set for cloud/frontier models while still omitting duplicate aliases.
     MODEL_TOOL_NAMES = frozenset({
@@ -171,7 +198,13 @@ class TaskOrchestrator:
         # Desktop UI automation & WhatsApp
         "get_active_window", "get_active_window_context", "list_running_applications",
         "get_ui_elements", "click_ui_element", "type_into_ui_element", "wait_for_condition",
-        "smart_click", "smart_type", "open_whatsapp_chat", "send_whatsapp_message",
+        "smart_click", "smart_type",
+        # WhatsApp Desktop stateful agent suite
+        "open_whatsapp", "get_whatsapp_state", "get_active_chat",
+        "get_unread_chats", "search_contacts", "resolve_contact",
+        "open_whatsapp_chat", "get_chat_messages", "get_latest_message",
+        "get_contact_information", "search_messages", "view_status", "search_media",
+        "send_whatsapp_message", "reply_to_message",
         # Reminders & scheduling
         "set_reminder", "list_active_reminders", "cancel_active_reminder",
         # Google Workspace
@@ -186,7 +219,11 @@ class TaskOrchestrator:
         import tools as tools_pkg
 
         active_provider = provider_name or getattr(self.llm, "provider", "")
-        selected = self.MODEL_TOOL_NAMES
+        selected = (
+            self.OLLAMA_TOOL_NAMES
+            if str(active_provider or "").strip().lower() == "ollama"
+            else self.MODEL_TOOL_NAMES
+        )
         declarations: List[Callable] = []
         for name in sorted(selected):
             if name not in self.agent.tool_registry:
@@ -215,19 +252,87 @@ class TaskOrchestrator:
         # A greeting or common word is not a real contact.  A capable model may
         # still try to "send hello ..." to a contact literally named "hello";
         # refuse and ask for a real name instead of firing a message into the void.
-        if name == "send_whatsapp_message":
-            contact = str(args.get("contact_name", "")).strip().lower()
-            if contact in self.agent.WHATSAPP_SEND_STOPWORDS or contact in self.agent.WHATSAPP_CONTACT_PLACEHOLDERS:
+        args = dict(args or {})
+        wa_state = getattr(self.agent, "whatsapp_state", None)
+        if name in {"send_whatsapp_message", "send_message", "reply_to_message"}:
+            raw_contact = str(args.get("contact_name") or args.get("contact") or "").strip()
+            ref_res: Dict[str, Any] = {}
+            if wa_state is not None and raw_contact:
+                ref_res = wa_state.resolve_contact_reference(raw_contact)
+                if ref_res.get("ambiguous"):
+                    return {
+                        "success": False,
+                        "ambiguous": True,
+                        "candidates": ref_res.get("candidates", []),
+                        "error": ref_res.get("clarification_question") or ref_res.get("error"),
+                        "whatsapp_state": wa_state.snapshot(),
+                    }
+            contact_low = raw_contact.lower()
+            is_contextual = bool(ref_res.get("resolved") and ref_res.get("contact"))
+            if name == "send_whatsapp_message" and not is_contextual:
+                if contact_low in self.agent.WHATSAPP_SEND_STOPWORDS or contact_low in self.agent.WHATSAPP_CONTACT_PLACEHOLDERS:
+                    return {
+                        "success": False,
+                        "error": f"'{raw_contact}' is not a valid contact name. Ask the user who to message.",
+                    }
+            dup_target = (
+                (ref_res.get("contact") if is_contextual else raw_contact)
+                or (wa_state.active_chat if wa_state is not None else "")
+                or ""
+            )
+            msg_text = str(args.get("message") or "").strip()
+            active_req = getattr(self, "_active_user_request", "") or ""
+            explicit_resend = bool(
+                re.search(r"\b(?:resend|send\s+again|retry\s+send|try\s+again)\b", active_req, re.IGNORECASE)
+            )
+            if (
+                wa_state is not None
+                and dup_target
+                and msg_text
+                and not explicit_resend
+                and wa_state.has_recent_uncertain_send(dup_target, msg_text)
+            ):
                 return {
                     "success": False,
-                    "error": f"'{args.get('contact_name')}' is not a valid contact name. Ask the user who to message.",
+                    "verified": False,
+                    "verification": "BLOCKED_DUPLICATE",
+                    "contact": dup_target,
+                    "error": (
+                        f"Previous send of this message to '{dup_target}' had unconfirmed delivery. "
+                        "Refusing automatic duplicate resend; tell the user to verify WhatsApp manually."
+                    ),
+                    "whatsapp_state": wa_state.snapshot(),
                 }
         # Reject hallucinated/unknown tool names (and search/browser tools that are
         # not exposed to the model) so it answers from its own knowledge instead.
-        allowed = self.MODEL_TOOL_NAMES | self.OLLAMA_TOOL_NAMES
+        allowed = self.MODEL_TOOL_NAMES | self.OLLAMA_TOOL_NAMES | self.WHATSAPP_ALL_TOOLS
         if name not in allowed:
             return {"success": False, "error": f"Tool '{name}' is not available. Answer from your own knowledge."}
+        result = self.agent.execute_tool(name, args)
+        # Sync agent & memory state with WhatsApp interaction outcome
+        if isinstance(result, dict) and result.get("success") and name in {
+            "send_whatsapp_message", "send_message", "reply_to_message",
+            "open_whatsapp_chat", "open_chat",
+        }:
+            contact_val = result.get("contact") or args.get("contact_name") or args.get("contact")
+            if contact_val:
+                self.agent.last_whatsapp_contact = contact_val
+            if name in {"send_whatsapp_message", "send_message", "reply_to_message"}:
+                try:
+                    if hasattr(self.agent, "memory") and self.agent.memory is not None:
+                        self.agent.memory.set_user_preference(
+                            "last_whatsapp_message",
+                            {
+                                "contact": contact_val,
+                                "message": args.get("message"),
+                                "verification": result.get("verification"),
+                            },
+                        )
+                except Exception:
+                    pass
         if isinstance(result, dict):
+            if wa_state is not None and name in self.WHATSAPP_ALL_TOOLS:
+                result.setdefault("whatsapp_state", wa_state.snapshot())
             return result
         return {"success": result is not None, "result": result}
 
@@ -548,6 +653,13 @@ class TaskOrchestrator:
         or delegates to the multi-turn LLM agent loop with automatic provider failover.
         """
         reset_cancellation()
+        self._active_user_request = request
+        wa_state = getattr(self.agent, "whatsapp_state", None)
+        if wa_state is not None:
+            try:
+                wa_state.record_user_instruction(request)
+            except Exception:
+                pass
 
         # 1. Check contextual follow-up
         follow_up_res = self.resolve_follow_up(request)
@@ -567,6 +679,13 @@ class TaskOrchestrator:
         # 4. Multi-turn LLM ReAct Tool-Calling Agent Loop with seamless provider failover
         tools_list = self._tools_for_provider()
         system_instruction = f"{self.agent.system_prompt}\n\n{build_runtime_context()}"
+        if wa_state is not None:
+            try:
+                wa_ctx = wa_state.to_prompt_context()
+                if wa_ctx:
+                    system_instruction = f"{system_instruction}\n\n{wa_ctx}"
+            except Exception:
+                pass
         history = self.agent.memory.get_recent_messages(limit=10) if hasattr(self.agent, "memory") else None
         user_prefs = self.agent.memory.get_all_preferences() if hasattr(self.agent, "memory") else None
 

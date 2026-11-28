@@ -14,7 +14,11 @@ import pyautogui
 
 import tools.gui_tools as gui
 import tools.os_tools as os_tools
-from core.whatsapp_state import SearchResultEntry, get_whatsapp_state_manager
+from core.whatsapp_state import (
+    SearchResultEntry,
+    WHATSAPP_ACTION_PERMISSIONS,
+    get_whatsapp_state_manager,
+)
 
 logger = logging.getLogger("tars.whatsapp.desktop")
 
@@ -29,27 +33,6 @@ _WHATSAPP_BROWSER_PROCESSES = frozenset({
 })
 _CONTACT_HONORIFICS = frozenset({"dr", "mr", "mrs", "ms", "miss", "prof", "sir"})
 _SEARCH_PLACEHOLDER = "search or start"
-
-# Safety & permission classification (Part 9)
-WHATSAPP_ACTION_PERMISSIONS: Dict[str, str] = {
-    "get_whatsapp_state": "READ",
-    "get_active_chat": "READ",
-    "get_unread_chats": "READ",
-    "get_chat_messages": "READ",
-    "get_latest_message": "READ",
-    "get_contact_information": "READ",
-    "search_contacts": "READ",
-    "search_messages": "READ",
-    "search_media": "READ",
-    "resolve_contact": "READ",
-    "open_whatsapp": "NAVIGATION",
-    "open_whatsapp_chat": "NAVIGATION",
-    "open_chat": "NAVIGATION",
-    "view_status": "NAVIGATION",
-    "send_whatsapp_message": "EXTERNAL_WRITE",
-    "send_message": "EXTERNAL_WRITE",
-    "reply_to_message": "EXTERNAL_WRITE",
-}
 
 
 def _it_module() -> Any:
@@ -521,7 +504,7 @@ def _ensure_whatsapp_desktop_active(
         hwnd=hwnd if isinstance(hwnd, int) else None,
         title=win_title,
         process=proc_name,
-        verified=is_whatsapp_desktop_window(window) and bool(fg_ok),
+        verified=is_whatsapp_desktop_window(window),
     )
 
     return {
@@ -1637,30 +1620,46 @@ def get_unread_chats(limit: int = 15) -> Dict[str, Any]:
     except Exception:
         pass
 
+    rows_before, _ = _collect_search_rows(dom_root, is_real_win) if is_real_win else ([], [])
     toggled_filter = False
     if unread_btn is not None and is_real_win:
-        _activate_chat_row(unread_btn, dom_root, cw_hwnd, is_real_win)
-        toggled_filter = True
-        time.sleep(0.45)
+        clicked_unread = False
+        try:
+            unread_btn.invoke()
+            clicked_unread = True
+        except Exception:
+            clicked_unread = _activate_chat_row(unread_btn, dom_root, cw_hwnd, is_real_win)
+        if clicked_unread:
+            time.sleep(0.5)
 
     rows, _ = _collect_search_rows(dom_root, is_real_win)
+    explicit_unread = [
+        r for r in rows if r.get("unread_count", 0) > 0 or "unread" in r["raw_label"].casefold()
+    ]
+    filter_narrowed = bool(rows_before and len(rows) < len(rows_before))
+    if unread_btn is not None and is_real_win and (filter_narrowed or not rows):
+        toggled_filter = True
+
+    candidate_rows = rows if toggled_filter else explicit_unread
     unread_items = []
-    for row in rows:
-        if toggled_filter or row.get("unread_count", 0) > 0 or "unread" in row["raw_label"].casefold():
-            unread_items.append({
-                "index": len(unread_items) + 1,
-                "name": row["name"],
-                "section": row["section"],
-                "unread_count": row.get("unread_count", 1 if toggled_filter else 0),
-                "preview": row["preview"],
-                "timestamp": row["timestamp"],
-                "raw_label": row["raw_label"],
-            })
+    for row in candidate_rows:
+        unread_items.append({
+            "index": len(unread_items) + 1,
+            "name": row["name"],
+            "section": row["section"],
+            "unread_count": row.get("unread_count") or (1 if toggled_filter else 0),
+            "preview": row["preview"],
+            "timestamp": row["timestamp"],
+            "raw_label": row["raw_label"],
+        })
         if len(unread_items) >= limit:
             break
 
     if toggled_filter and all_btn is not None:
-        _activate_chat_row(all_btn, dom_root, cw_hwnd, is_real_win)
+        try:
+            all_btn.invoke()
+        except Exception:
+            _activate_chat_row(all_btn, dom_root, cw_hwnd, is_real_win)
         time.sleep(0.25)
 
     if unread_items:

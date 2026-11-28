@@ -20,6 +20,7 @@ from core.personality import build_system_prompt
 from core.memory import MemoryStore, remember_fact, forget_fact, set_default_memory
 from core.orchestrator import TaskOrchestrator
 from core.scheduler import set_reminder, list_active_reminders, cancel_active_reminder
+from core.whatsapp_state import WHATSAPP_ACTION_PERMISSIONS, get_whatsapp_state_manager
 import tools.google_workspace_tools as google_ws
 import tools
 
@@ -100,9 +101,27 @@ class TARSAgent:
     # Words that stand in for a contact name ("send another one") and must resolve
     # to the previous chat instead of being searched for as a person.
     WHATSAPP_CONTACT_PLACEHOLDERS = frozenset({
-        "another", "another one", "one more", "it", "that", "this", "again",
-        "same", "them", "him", "her", "the same person",
+        "another", "another one", "another messg", "another msg",
+        "another message", "another text", "one more", "different one",
+        "other one", "it", "that", "this", "again", "same", "them",
+        "him", "her", "the same person",
     })
+
+    # Contextual / exploratory tokens that must route to the stateful LLM planner
+    # instead of blind regex chat matching or browser search.
+    WHATSAPP_CONTEXTUAL_WORDS = frozenset({
+        "first", "second", "third", "fourth", "fifth", "1st", "2nd", "3rd",
+        "4th", "5th", "last", "previous", "next", "other", "another", "this",
+        "that", "same", "him", "her", "his", "their", "them", "unread",
+        "status", "media", "conversation", "result", "results", "one",
+        "message", "messages", "latest", "about",
+    })
+
+    WHATSAPP_EXTERNAL_WRITE_TOOLS = frozenset({
+        "send_whatsapp_message", "send_message", "reply_to_message",
+    })
+
+    WHATSAPP_ACTION_PERMISSIONS = WHATSAPP_ACTION_PERMISSIONS
 
     # Leading words that mean "send X Y" is not a WhatsApp message to a person.
     WHATSAPP_SEND_STOPWORDS = frozenset({
@@ -113,10 +132,13 @@ class TARSAgent:
         "one", "us", "me", "you", "them", "him", "her",
     })
 
-    # Tools that are not destructive by themselves but persist state that is fed back
-    # into the system prompt on every later turn.  A model-initiated call is gated;
-    # the explicit "remember ..." fast path grants confirmation itself.
-    CONFIRMATION_TOOLS = DESTRUCTIVE_TOOLS | frozenset({"remember_fact", "forget_fact"})
+    # Tools that are not destructive by themselves or perform external side effects
+    # when invoked autonomously by the model without an explicit local fast-path.
+    CONFIRMATION_TOOLS = (
+        DESTRUCTIVE_TOOLS
+        | frozenset({"remember_fact", "forget_fact"})
+        | WHATSAPP_EXTERNAL_WRITE_TOOLS
+    )
 
     # Tools whose output is text an attacker can control (web pages, email bodies,
     # files).  Results are wrapped before they are handed back to the model.
@@ -153,7 +175,15 @@ class TARSAgent:
         self.system_prompt = build_system_prompt(self.settings)
         self.confirmation_callback: Optional[Callable[[str, Dict[str, Any]], bool]] = None
         self.pending_confirmation: Optional[Dict[str, Any]] = None
+        self._grant_fast_path_confirmation: bool = False
+        self.whatsapp_state = get_whatsapp_state_manager()
         self.last_whatsapp_contact: Optional[str] = None
+        try:
+            _pref = self.memory.get_user_preference("last_whatsapp_message") if self.memory else None
+            if isinstance(_pref, dict) and _pref.get("contact"):
+                self.last_whatsapp_contact = _pref.get("contact")
+        except Exception:
+            pass
         
         # Comprehensive Tool Dispatch Registry
         self.tool_registry: Dict[str, Callable] = {
@@ -245,8 +275,24 @@ class TARSAgent:
             "smart_click": tools.smart_click,
             "smart_type": tools.smart_type,
             "smart_search": tools.smart_search,
+            # WhatsApp Desktop Automation Suite
+            "open_whatsapp": tools.open_whatsapp,
+            "get_whatsapp_state": tools.get_whatsapp_state,
+            "get_active_chat": tools.get_active_chat,
+            "get_unread_chats": tools.get_unread_chats,
+            "search_contacts": tools.search_contacts,
+            "resolve_contact": tools.resolve_contact,
             "open_whatsapp_chat": tools.open_whatsapp_chat,
+            "open_chat": tools.open_chat,
+            "get_chat_messages": tools.get_chat_messages,
+            "get_latest_message": tools.get_latest_message,
+            "get_contact_information": tools.get_contact_information,
+            "search_messages": tools.search_messages,
+            "view_status": tools.view_status,
+            "search_media": tools.search_media,
             "send_whatsapp_message": tools.send_whatsapp_message,
+            "send_message": tools.send_message,
+            "reply_to_message": tools.reply_to_message,
             # Vision & Multimodal
             "describe_screen": tools.describe_screen,
             # Reminders & Task Scheduling
@@ -357,9 +403,12 @@ class TARSAgent:
                     "error": f"BLOCKED BY SAFETY PROTOCOL: {reason}"
                 }
 
-        # Central Confirmation Gate for destructive tools
+        # Central Confirmation Gate for destructive and model-initiated external write tools
         if tool_name in self.CONFIRMATION_TOOLS:
-            is_confirmed = confirmation_granted
+            is_confirmed = confirmation_granted or (
+                bool(getattr(self, "_grant_fast_path_confirmation", False))
+                and tool_name in self.WHATSAPP_EXTERNAL_WRITE_TOOLS
+            )
             if not is_confirmed and tool_name in self.SHELL_TOOLS:
                 # Shell tools stay inside the gate, but only commands the safety
                 # validator flags as sensitive actually stop for a prompt.  Benign
@@ -421,6 +470,61 @@ class TARSAgent:
             return (ok_message, False)
         return (ok_message, True)
 
+    def _has_contextual_whatsapp_token(self, text: str) -> bool:
+        """True if ``text`` looks like a positional/pronoun/exploratory WhatsApp reference."""
+        tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+        if not tokens:
+            return False
+        if any(tok in self.WHATSAPP_CONTEXTUAL_WORDS for tok in tokens):
+            return True
+        if "'s" in (text or "").lower() or "’s" in (text or "").lower():
+            return True
+        return False
+
+    def _should_route_to_whatsapp_agent(self, p_clean: str) -> bool:
+        """
+        Determines whether ``p_clean`` should bypass non-WhatsApp local regexes
+        (web search, app launcher, generic smart_click) and route to the stateful
+        WhatsApp orchestrator/LLM agent.
+        """
+        if any(kw in p_clean for kw in ("youtube", "google", "brave", "chrome", "web", "browser")):
+            return False
+        explicit_wa = bool(
+            re.search(
+                r"\b(?:whatsapp|chat|chats|conversation|unread\s+(?:chats?|messages?)|whatsapp\s+status|contact\s+info(?:rmation)?)\b",
+                p_clean,
+            )
+        )
+        if explicit_wa:
+            return True
+        wa_state = getattr(self, "whatsapp_state", None)
+        session_active = bool(
+            wa_state is not None and (
+                wa_state.window_verified
+                or wa_state.active_chat
+                or wa_state.search_results
+                or wa_state.last_search_query
+                or wa_state.workflow_status != "idle"
+            )
+        )
+        fg_whatsapp = False
+        if not session_active:
+            try:
+                fg = tools.get_active_window()
+                fg_title = str((fg or {}).get("title") or "").lower()
+                fg_proc = str((fg or {}).get("process_name") or (fg or {}).get("app_name") or "").lower()
+                fg_whatsapp = ("whatsapp" in fg_title) or ("whatsapp" in fg_proc)
+            except Exception:
+                fg_whatsapp = False
+        if not (session_active or fg_whatsapp):
+            return False
+        if re.search(
+            r"\b(?:search|find|read|reply|status|unread|message|messages|chat|conversation|contact|first|second|third|other|previous|last|his|her|their|that)\b",
+            p_clean,
+        ):
+            return True
+        return False
+
     def _autonomous_local_execute(self, prompt: str) -> Optional[Dict[str, Any]]:
         """
         100% Free, Zero-Cost Autonomous Execution Engine.
@@ -465,15 +569,18 @@ class TARSAgent:
             contact = whatsapp_click.group(1).strip()
             if (
                 1 <= len(contact.split()) <= 2
+                and not self._has_contextual_whatsapp_token(contact)
                 and contact not in {"ok", "enter", "cancel", "search bar", "search box", "search", "result", "video", "link", "button", "tab", "menu", "first chat", "first result", "first video", "first link", "first item", "that image", "the image", "this image", "image", "photo", "picture", "media", "thumbnail"}
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
-                if res.get("success"):
-                    self.last_whatsapp_contact = contact
+                if isinstance(res, dict) and res.get("success"):
+                    self.last_whatsapp_contact = res.get("contact") or contact
                 return {
-                    "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
+                    "response": (res.get("message") if isinstance(res, dict) else None)
+                    or (res.get("error") if isinstance(res, dict) else None)
+                    or f"Could not find WhatsApp chat '{contact}'.",
                     "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
-                    "success": res.get("success", False),
+                    "success": (res.get("success", False) if isinstance(res, dict) else False),
                 }
 
         # 0. Chained & Compound Action Sequences
@@ -695,7 +802,10 @@ class TARSAgent:
             return {"response": msg, "steps": [{"tool": "click_coordinate", "args": {"button": "left", "clicks": 1}, "result": res}], "success": ok}
 
         # Targeted click: short imperative commands only (e.g. "click search bar", "click the first video")
-        click_target_match = re.match(r"^(?:click|tap|select)\s+(?:on\s+|the\s+)?(.+)$", p_clean)
+        if self._should_route_to_whatsapp_agent(p_clean):
+            click_target_match = None
+        else:
+            click_target_match = re.match(r"^(?:click|tap|select)\s+(?:on\s+|the\s+)?(.+)$", p_clean)
         if click_target_match:
             target_cand = click_target_match.group(1).strip()
             # Defer single hotkey presses to dedicated handlers and restrict to short commands (<= 4 words)
@@ -956,7 +1066,10 @@ class TARSAgent:
                 msg, ok = self._reply(res, f"Playing '{yt_q}' on YouTube.")
                 return {"response": msg, "steps": [{"tool": "smart_search", "args": {"query": yt_q, "engine": "youtube"}, "result": res}], "success": ok}
 
-        search_match = re.search(r"^(?:search\s+(?:google\s+|web\s+)?for|google|search\s+web\s+for)\s+(.+)", p_clean)
+        if self._should_route_to_whatsapp_agent(p_clean):
+            search_match = None
+        else:
+            search_match = re.search(r"^(?:search\s+(?:google\s+|web\s+)?for|google|search\s+web\s+for)\s+(.+)", p_clean)
         if search_match:
             s_query = search_match.group(1).strip(" ?.")
             if s_query:
@@ -1303,18 +1416,9 @@ class TARSAgent:
                 "success": False,
             }
 
-        # Hydrate the last WhatsApp contact from persisted memory so a follow-up
-        # "send a message saying ..." without an explicit name still targets the
-        # right person instead of falling through to the LLM (which may shorten
-        # the requested text).
-        if not getattr(self, "last_whatsapp_contact", None):
-            try:
-                _pref = self.memory.get_user_preference("last_whatsapp_message") if hasattr(self, "memory") and self.memory else None
-                if isinstance(_pref, dict) and _pref.get("contact"):
-                    self.last_whatsapp_contact = _pref.get("contact")
-            except Exception:
-                pass
-
+        # Direct explicit user-issued WhatsApp sends bypass confirmation only when
+        # both recipient and text are unambiguous; model-initiated external writes
+        # remain gated via CONFIRMATION_TOOLS.
         whatsapp_send = re.match(
             r"^(?:(?:please|can\s+you|could\s+you)\s+)?"
             r"(?:send\s+(?:a\s+)?(?:whatsapp\s+)?(?:message|msg|messg|mesg|text)\s+(?:to\s+)?|whatsapp\s+(?:to\s+)?|message\s+(?:to\s+)?|text\s+(?:to\s+)?)"
@@ -1390,9 +1494,28 @@ class TARSAgent:
             message = re.sub(
                 r"\s+(?:in|on)\s+whatsapp$", "", message, flags=re.IGNORECASE
             ).strip()
-            res = self.execute_tool("send_whatsapp_message", {"contact_name": contact, "message": message})
+            # Contextual references (e.g. "first chat", "other shafi") or active
+            # multi-match ambiguity must route to the stateful LLM planner.
+            wa_state = getattr(self, "whatsapp_state", None)
+            if self._has_contextual_whatsapp_token(contact) and not whatsapp_send_followup:
+                return None
+            if (
+                wa_state is not None
+                and wa_state.workflow_status == "awaiting_user_selection"
+                and wa_state.search_results
+            ):
+                return None
+            send_args = {"contact_name": contact, "message": message}
+            if getattr(self, "confirmation_callback", None) is not None:
+                res = self.execute_tool("send_whatsapp_message", send_args)
+            else:
+                self._grant_fast_path_confirmation = True
+                try:
+                    res = self.execute_tool("send_whatsapp_message", send_args)
+                finally:
+                    self._grant_fast_path_confirmation = False
             if isinstance(res, dict) and res.get("success"):
-                self.last_whatsapp_contact = contact
+                self.last_whatsapp_contact = res.get("contact") or contact
             msg, ok = self._reply(res, f"Sent WhatsApp message to {contact}.")
             return {
                 "response": msg,
@@ -1400,9 +1523,8 @@ class TARSAgent:
                 "success": ok,
             }
 
-        # If WhatsApp is already running, short "go to <name>" commands
-        # refer to a chat rather than a Windows executable.  Explicit "open X"
-        # commands retain their normal application-launch behavior.
+        # Direct chat opening / searching only for simple unambiguous contact names;
+        # positional, pronoun, ambiguous, or message-search intents route to Groq.
         whatsapp_running = any(
             "whatsapp" in title.lower() for title in tools.get_running_windows()
         )
@@ -1411,38 +1533,39 @@ class TARSAgent:
         )
         if whatsapp_running and whatsapp_implicit_chat:
             contact = whatsapp_implicit_chat.group(1).strip()
-            # Drives and real folders must keep their normal navigation behavior
-            # even while WhatsApp is open, otherwise "go to d drive" is treated
-            # as a contact name.
             target_path = tools.resolve_system_target(contact)
             resolves_to_path = bool(target_path and target_path.exists())
             if (
                 1 <= len(contact.split()) <= 4
-                and contact not in {"ok", "enter", "cancel", "search", "first chat", "first result"}
-                and not contact.endswith(" chat")
+                and not contact.endswith((" chat", " chats", " conversation"))
+                and not self._has_contextual_whatsapp_token(contact)
                 and not resolves_to_path
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
-                if res.get("success"):
-                    self.last_whatsapp_contact = contact
+                if isinstance(res, dict) and res.get("success"):
+                    self.last_whatsapp_contact = res.get("contact") or contact
                 return {
-                    "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
+                    "response": (res.get("message") if isinstance(res, dict) else None)
+                    or (res.get("error") if isinstance(res, dict) else None)
+                    or f"Could not find WhatsApp chat '{contact}'.",
                     "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
-                    "success": res.get("success", False),
+                    "success": (res.get("success", False) if isinstance(res, dict) else False),
                 }
 
         whatsapp_search = re.match(
-            r"^(?:search|find)\s+(.+?)\s+(?:in|on)\s+whatsapp$", p_clean,
+            r"^(?:search|find)\s+(?:for\s+)?(.+?)\s+(?:in|on)\s+whatsapp$", p_clean,
         )
         if whatsapp_search:
-            contact = whatsapp_search.group(1).strip()
-            res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
-            if res.get("success"):
-                self.last_whatsapp_contact = contact
+            query = whatsapp_search.group(1).strip()
+            if self._has_contextual_whatsapp_token(query):
+                return None
+            res = self.execute_tool("search_contacts", {"query": query})
             return {
-                "response": res.get("message") or res.get("error") or f"Could not find WhatsApp chat '{contact}'.",
-                "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
-                "success": res.get("success", False),
+                "response": (res.get("message") if isinstance(res, dict) else None)
+                or (res.get("error") if isinstance(res, dict) else None)
+                or f"Searched WhatsApp for '{query}'.",
+                "steps": [{"tool": "search_contacts", "args": {"query": query}, "result": res}],
+                "success": (res.get("success", False) if isinstance(res, dict) else False),
             }
 
         whatsapp_chat = re.match(
@@ -1451,14 +1574,18 @@ class TARSAgent:
         )
         if whatsapp_chat:
             contact = whatsapp_chat.group(1).strip()
-            res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
-            if res.get("success"):
-                self.last_whatsapp_contact = contact
-            return {
-                "response": res.get("message") or res.get("error") or f"Could not open WhatsApp chat '{contact}'.",
-                "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
-                "success": res.get("success", False),
-            }
+            if not self._has_contextual_whatsapp_token(contact):
+                res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+                if isinstance(res, dict) and res.get("success"):
+                    self.last_whatsapp_contact = res.get("contact") or contact
+                return {
+                    "response": (res.get("message") if isinstance(res, dict) else None)
+                    or (res.get("error") if isinstance(res, dict) else None)
+                    or f"Could not open WhatsApp chat '{contact}'.",
+                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                    "success": (res.get("success", False) if isinstance(res, dict) else False),
+                }
+            return None
 
         # Direct Drive navigation (e.g. "open d drive", "go to d drive", "d drive", "drive c", "f:")
         drive_direct = re.search(r"^(?:(?:go\s+to|open|navigate\s+to|show\s+me)\s+)?(?:the\s+)?([a-zA-Z])\s+(?:drive|disk)$|^(?:(?:go\s+to|open|navigate\s+to|show\s+me)\s+)?(?:the\s+)?(?:drive|disk)\s+([a-zA-Z])$|^([a-zA-Z]):\\?$", p_clean)
@@ -1480,18 +1607,23 @@ class TARSAgent:
         )
         if whatsapp_chat_with:
             contact = whatsapp_chat_with.group(1).strip()
-            res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
-            if isinstance(res, dict) and res.get("success"):
-                self.last_whatsapp_contact = contact
-            return {
-                "response": (res.get("message") if isinstance(res, dict) else None)
-                or (res.get("error") if isinstance(res, dict) else None)
-                or f"Could not open WhatsApp chat '{contact}'.",
-                "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
-                "success": (res.get("success", False) if isinstance(res, dict) else False),
-            }
+            if not self._has_contextual_whatsapp_token(contact):
+                res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact})
+                if isinstance(res, dict) and res.get("success"):
+                    self.last_whatsapp_contact = res.get("contact") or contact
+                return {
+                    "response": (res.get("message") if isinstance(res, dict) else None)
+                    or (res.get("error") if isinstance(res, dict) else None)
+                    or f"Could not open WhatsApp chat '{contact}'.",
+                    "steps": [{"tool": "open_whatsapp_chat", "args": {"contact_name": contact}, "result": res}],
+                    "success": (res.get("success", False) if isinstance(res, dict) else False),
+                }
+            return None
 
-        nav_match = re.match(r"^(?:go to|navigate to|visit|open up|open|launch|start|take me to|show me|bring up)\s+(?:the\s+)?(?:my\s+)?(.+)", p_clean)
+        if self._should_route_to_whatsapp_agent(p_clean):
+            nav_match = None
+        else:
+            nav_match = re.match(r"^(?:go to|navigate to|visit|open up|open|launch|start|take me to|show me|bring up)\s+(?:the\s+)?(?:my\s+)?(.+)", p_clean)
         if nav_match:
             target = nav_match.group(1).strip()
             # "open a new tab in brave browser" targets Brave, not a literal app
@@ -1557,7 +1689,10 @@ class TARSAgent:
                 return {"response": f"The answer is {val}.", "steps": [], "success": True}
 
         # 21. Smart Web & Desktop In-App Search
-        search_match = re.match(r"^(?:search\s+for|search\s+web\s+for|search\s+youtube\s+for|search|google)\s+(.+)", p_clean)
+        if self._should_route_to_whatsapp_agent(p_clean):
+            search_match = None
+        else:
+            search_match = re.search(r"^(?:search\s+for|search\s+web\s+for|search\s+youtube\s+for|search|google)\s+(.+)", p_clean)
         if search_match:
             raw_query = search_match.group(1).strip(" ?.")
             # Check if query contains "on youtube" or "in youtube"
@@ -1632,33 +1767,23 @@ class TARSAgent:
                 }
             return {"response": "I don't have a record of a recently sent WhatsApp message.", "steps": [], "success": True}
 
-        # Fast path: selecting the first WhatsApp search result should not route
-        # through the LLM or launch a bogus application named "first one".
-        if any("whatsapp" in str(t).lower() for t in tools.get_running_windows()):
-            if p_clean in {
-                "open the first one", "first one", "open first", "open first chat",
-                "first chat", "open first result", "first result", "open first one chat",
-            }:
-                res = tools.press_keys(["enter"])
-                return {
-                    "response": "Opened the first chat." if res.get("success") else (res.get("error") or "Could not open the first chat."),
-                    "steps": [{"tool": "press_keys", "args": {"keys": ["enter"]}, "result": res}],
-                    "success": res.get("success", False),
-                }
-
-        # Fast path: a bare name (optionally followed by "chat") while WhatsApp is
-        # already open should open that chat directly instead of routing through
-        # the LLM (which can take 20-50s).
-        if any("whatsapp" in str(t).lower() for t in tools.get_running_windows()):
+        # Bare non-contextual contact name while WhatsApp is open (defer contextual
+        # references and pending disambiguation to the stateful LLM planner).
+        wa_state = getattr(self, "whatsapp_state", None)
+        if (
+            not (wa_state is not None and wa_state.search_results and wa_state.workflow_status == "awaiting_user_selection")
+            and any("whatsapp" in str(t).lower() for t in tools.get_running_windows())
+        ):
             contact_candidate = re.sub(r"\s+chat$", "", p_clean).strip()
             if (
                 1 <= len(contact_candidate.split()) <= 3
                 and re.fullmatch(r"[a-z][a-z0-9._' -]{1,40}", contact_candidate)
                 and contact_candidate not in self.WHATSAPP_SEND_STOPWORDS
+                and not self._has_contextual_whatsapp_token(contact_candidate)
             ):
                 res = self.execute_tool("open_whatsapp_chat", {"contact_name": contact_candidate})
                 if isinstance(res, dict) and res.get("success"):
-                    self.last_whatsapp_contact = contact_candidate
+                    self.last_whatsapp_contact = res.get("contact") or contact_candidate
                 return {
                     "response": (res.get("message") if isinstance(res, dict) else None)
                     or (res.get("error") if isinstance(res, dict) else None)
@@ -1694,6 +1819,26 @@ class TARSAgent:
                 tool_res = self._execute_tool_inner(pending["tool"], pending["args"], confirmation_granted=True)
                 self._log_tool_call(pending["tool"], pending["args"], tool_res)
                 ok = tool_res.get("success", False) if isinstance(tool_res, dict) else False
+                if ok and pending["tool"] in self.WHATSAPP_EXTERNAL_WRITE_TOOLS:
+                    contact_val = (
+                        (tool_res.get("contact") if isinstance(tool_res, dict) else None)
+                        or pending["args"].get("contact_name")
+                        or pending["args"].get("contact")
+                    )
+                    if contact_val:
+                        self.last_whatsapp_contact = contact_val
+                    try:
+                        if self.memory:
+                            self.memory.set_user_preference(
+                                "last_whatsapp_message",
+                                {
+                                    "contact": contact_val,
+                                    "message": pending["args"].get("message"),
+                                    "verification": tool_res.get("verification") if isinstance(tool_res, dict) else None,
+                                },
+                            )
+                    except Exception:
+                        pass
                 if not ok:
                     # The user approved the action, but it still failed; report the
                     # failure instead of claiming the action was carried out.
@@ -1735,7 +1880,11 @@ class TARSAgent:
 
         # 2. Free Web Knowledge for simple informational questions (who/what/when/why)
         p_lower = user_prompt.strip().lower()
-        if re.search(r"^(?:who\s+is|what\s+is|where\s+is|explain|define|tell\s+me\s+about)\b", p_lower) and not any(kw in p_lower for kw in ["folder", "file", "drive", "cwd", "click", "search youtube", "open"]):
+        if (
+            re.search(r"^(?:who\s+is|what\s+is|where\s+is|explain|define|tell\s+me\s+about)\b", p_lower)
+            and not any(kw in p_lower for kw in ["folder", "file", "drive", "cwd", "click", "search youtube", "open"])
+            and not self._should_route_to_whatsapp_agent(p_lower)
+        ):
             free_kb_ans = tools.get_free_knowledge(user_prompt)
             if free_kb_ans:
                 summary = free_kb_ans[:250] + ("..." if len(free_kb_ans) > 250 else "")

@@ -288,13 +288,16 @@ class TestAgentInteractionIntegration(unittest.TestCase):
         mock_chat.assert_called_once_with(contact_name="reshma")
 
     def test_agent_searches_whatsapp_instead_of_the_web(self):
-        mock_chat = MagicMock(return_value={"success": True, "message": "Opened chat."})
-        self.agent.tool_registry["open_whatsapp_chat"] = mock_chat
+        mock_search = MagicMock(return_value={"success": True, "query": "shafi", "results": [{"index": 1, "name": "Shafi Friend"}], "count": 1, "message": "Found 1 contact matching 'shafi': 1. Shafi Friend."})
+        mock_web = MagicMock(return_value={"success": True, "message": "Web search."})
+        self.agent.tool_registry["search_contacts"] = mock_search
+        self.agent.tool_registry["smart_search"] = mock_web
 
         result = self.agent.run_agent_loop("search Shafi in WhatsApp")
 
         self.assertTrue(result["success"])
-        mock_chat.assert_called_once_with(contact_name="shafi")
+        mock_search.assert_called_once_with(query="shafi")
+        mock_web.assert_not_called()
 
     def test_agent_uses_implicit_contact_name_when_whatsapp_is_running(self):
         mock_chat = MagicMock(return_value={"success": True, "message": "Opened chat."})

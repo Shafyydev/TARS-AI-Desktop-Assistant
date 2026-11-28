@@ -131,6 +131,46 @@ class WhatsAppStateManager:
         with self._lock:
             self._state = WhatsAppAgentState()
 
+    @property
+    def active_chat(self) -> Optional[str]:
+        with self._lock:
+            return self._state.active_chat
+
+    @property
+    def selected_contact(self) -> Optional[str]:
+        with self._lock:
+            return self._state.selected_contact
+
+    @property
+    def search_results(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._state.search_results)
+
+    @property
+    def last_search_query(self) -> Optional[str]:
+        with self._lock:
+            return self._state.last_search_query
+
+    @property
+    def workflow_status(self) -> str:
+        with self._lock:
+            return self._state.workflow_status
+
+    @property
+    def active_screen(self) -> str:
+        with self._lock:
+            return self._state.active_screen
+
+    @property
+    def clarification_request(self) -> Optional[str]:
+        with self._lock:
+            return self._state.clarification_request
+
+    @property
+    def window_verified(self) -> bool:
+        with self._lock:
+            return bool(self._state.verified_state.get("window_verified"))
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return asdict(self._state)
@@ -349,8 +389,9 @@ class WhatsAppStateManager:
             self._state.last_executed_action = record
             if verified and success:
                 self._state.last_verified_action = record
-                self._state.workflow_status = "verified"
-                self._state.pending_action = None
+                if self._state.workflow_status != "awaiting_user_selection":
+                    self._state.workflow_status = "verified"
+                    self._state.pending_action = None
             elif not success:
                 self._state.workflow_status = "failed"
             self._state.previous_results.append({
@@ -488,7 +529,14 @@ class WhatsAppStateManager:
                 }
 
             # 2. Previous single search/discussion result ("previous result", "open that conversation")
-            if low in _PREVIOUS_RESULT_REFS or stripped in _PREVIOUS_RESULT_REFS:
+            if (
+                low in _PREVIOUS_RESULT_REFS
+                or stripped in _PREVIOUS_RESULT_REFS
+                or (
+                    s.active_screen == "search_results"
+                    and stripped in {"that conversation", "that chat", "this conversation", "that one", "that"}
+                )
+            ):
                 candidate = s.selected_search_result or (s.search_results[0] if len(s.search_results) == 1 else None)
                 if candidate:
                     return {
@@ -588,13 +636,31 @@ class WhatsAppStateManager:
 
             # 5. Substring/distinguishing descriptor against existing search_results ("the work one", "Shafi College")
             if s.search_results:
+                norm_query = re.sub(r"[^a-z0-9]+", " ", (stripped_item or stripped).casefold()).strip()
+                exact_name_matches = [
+                    r for r in s.search_results
+                    if re.sub(r"[^a-z0-9]+", " ", r.get("name", "").casefold()).strip() == norm_query
+                ] if norm_query else []
+                if len(exact_name_matches) == 1:
+                    return {
+                        "success": True,
+                        "resolved": True,
+                        "contact": exact_name_matches[0]["name"],
+                        "source": "search_results_exact_name",
+                        "selected_result": exact_name_matches[0],
+                        "ambiguous": False,
+                    }
+
                 q_tokens = [tok for tok in re.findall(r"[a-z0-9]+", stripped_item or stripped) if tok not in {"the", "chat", "contact", "one"}]
                 if q_tokens:
-                    matches = []
-                    for r in s.search_results:
-                        hay = f"{r.get('name', '')} {r.get('preview', '')}".casefold()
-                        if all(tok in hay for tok in q_tokens):
-                            matches.append(r)
+                    name_matches = [
+                        r for r in s.search_results
+                        if all(tok in r.get("name", "").casefold() for tok in q_tokens)
+                    ]
+                    matches = name_matches or [
+                        r for r in s.search_results
+                        if all(tok in f"{r.get('name', '')} {r.get('preview', '')}".casefold() for tok in q_tokens)
+                    ]
                     if len(matches) == 1:
                         return {
                             "success": True,
@@ -649,3 +715,32 @@ def reset_whatsapp_state_manager() -> WhatsAppStateManager:
     mgr = get_whatsapp_state_manager()
     mgr.reset()
     return mgr
+
+
+# Safety & permission classification (Part 9)
+WHATSAPP_ACTION_PERMISSIONS: Dict[str, str] = {
+    "get_whatsapp_state": "READ",
+    "get_active_chat": "READ",
+    "get_unread_chats": "READ",
+    "get_chat_messages": "READ",
+    "get_latest_message": "READ",
+    "get_contact_information": "READ",
+    "search_contacts": "READ",
+    "search_messages": "READ",
+    "search_media": "READ",
+    "resolve_contact": "READ",
+    "open_whatsapp": "NAVIGATION",
+    "open_whatsapp_chat": "NAVIGATION",
+    "open_chat": "NAVIGATION",
+    "view_status": "NAVIGATION",
+    "send_whatsapp_message": "EXTERNAL_WRITE",
+    "send_message": "EXTERNAL_WRITE",
+    "reply_to_message": "EXTERNAL_WRITE",
+    "delete_chat": "DESTRUCTIVE",
+    "delete_message": "DESTRUCTIVE",
+    "clear_chat": "DESTRUCTIVE",
+    "block_contact": "DESTRUCTIVE",
+    "change_profile_name": "ACCOUNT_SETTINGS",
+    "change_about": "ACCOUNT_SETTINGS",
+    "privacy_settings": "ACCOUNT_SETTINGS",
+}
