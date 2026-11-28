@@ -446,14 +446,16 @@ def main() -> None:
                 exec_duration = time.time() - t_exec_start
                 console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
-                # After a visible browser search, minimize the browser to reveal TARS.
+                # After a browser search, minimize the browser window to reveal TARS.
                 try:
                     _used_browser = any(str(s.get("tool", "")).startswith("browser_") or s.get("tool") == "web_search" for s in (result.get("steps") or []))
                     if _used_browser:
                         import win32con
                         import win32gui
                         _fg = win32gui.GetForegroundWindow()
-                        if _fg:
+                        _title = (win32gui.GetWindowText(_fg) or "").lower() if _fg else ""
+                        _is_browser = any(b in _title for b in ["brave", "chrome", "edge", "firefox", "opera", "search", "google", "bing"])
+                        if _fg and _is_browser:
                             win32gui.ShowWindow(_fg, win32con.SW_MINIMIZE)
                 except Exception:
                     pass

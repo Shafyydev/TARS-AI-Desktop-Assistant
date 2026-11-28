@@ -84,6 +84,7 @@ class VoiceSpeaker:
         self._speech_start_perf: float = 0.0
         self._speech_backend: Optional[str] = None
         self._audio_active: bool = False
+        self._elevenlabs_disabled: bool = False
 
         # Pre-warm audio subsystem at startup
         self._init_pygame()
@@ -313,6 +314,8 @@ class VoiceSpeaker:
 
     def _synthesize_elevenlabs(self, text: str, output_path: str) -> bool:
         """Synthesizes text into an MP3 file using the ElevenLabs REST API (optional, cloud)."""
+        if getattr(self, "_elevenlabs_disabled", False):
+            return False
         api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
         if not api_key:
             return False
@@ -334,6 +337,9 @@ class VoiceSpeaker:
                     return True
             else:
                 print(f"[VoiceSpeaker] ElevenLabs failed: HTTP {resp.status_code} {resp.text[:120]}")
+                if resp.status_code in (401, 402, 403, 429) or "quota" in (resp.text or "").lower():
+                    self._elevenlabs_disabled = True
+                    print("[VoiceSpeaker] ElevenLabs disabled for this session; falling back to Edge-TTS/SAPI.")
         except Exception as exc:
             print(f"[VoiceSpeaker] ElevenLabs failed ({type(exc).__name__}); falling back to Edge-TTS.")
         return False
