@@ -1632,6 +1632,20 @@ class TARSAgent:
                 }
             return {"response": "I don't have a record of a recently sent WhatsApp message.", "steps": [], "success": True}
 
+        # Fast path: selecting the first WhatsApp search result should not route
+        # through the LLM or launch a bogus application named "first one".
+        if any("whatsapp" in str(t).lower() for t in tools.get_running_windows()):
+            if p_clean in {
+                "open the first one", "first one", "open first", "open first chat",
+                "first chat", "open first result", "first result", "open first one chat",
+            }:
+                res = tools.press_keys(["enter"])
+                return {
+                    "response": "Opened the first chat." if res.get("success") else (res.get("error") or "Could not open the first chat."),
+                    "steps": [{"tool": "press_keys", "args": {"keys": ["enter"]}, "result": res}],
+                    "success": res.get("success", False),
+                }
+
         # Fast path: a bare name (optionally followed by "chat") while WhatsApp is
         # already open should open that chat directly instead of routing through
         # the LLM (which can take 20-50s).

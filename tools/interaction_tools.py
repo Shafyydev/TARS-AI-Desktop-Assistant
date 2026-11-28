@@ -147,7 +147,7 @@ def smart_click(target: str) -> Dict[str, Any]:
     if "spotify" in (ctx.get("title") or "").lower():
         if any(kw in clean_target for kw in ["search", "find"]):
             gui.press_keys(["ctrl", "k"])
-            return {"success": True, "message": "Focused Spotify search (Ctrl+K).", "method": "hotkey:ctrl+k"}
+            return {"success": True, "message": "Focused Spotify search.", "method": "hotkey:ctrl+k"}
         if any(kw in clean_target for kw in ["first result", "first song", "top result", "play", "select"]):
             gui.press_keys(["enter"])
             return {"success": True, "message": "Activated first Spotify result.", "method": "keyboard:enter"}
@@ -160,7 +160,7 @@ def smart_click(target: str) -> Dict[str, Any]:
         if cat == "browser":
             # Focus browser address/search bar (Ctrl+L)
             gui.press_keys(["ctrl", "l"])
-            return {"success": True, "message": f"Focused browser search/address bar ({ctx['title']}).", "method": "hotkey:ctrl+l"}
+            return {"success": True, "message": "Focused browser search/address bar.", "method": "hotkey:ctrl+l"}
         elif cat == "explorer":
             # Focus File Explorer address bar (Alt+D)
             gui.press_keys(["alt", "d"])
@@ -172,7 +172,7 @@ def smart_click(target: str) -> Dict[str, Any]:
         else:
             # Universal fallback: Alt+D focuses address/search in Chrome, Brave, Edge, Firefox, and Explorer
             gui.press_keys(["alt", "d"])
-            return {"success": True, "message": "Focused active address/search bar via universal Alt+D.", "method": "hotkey:alt+d"}
+            return {"success": True, "message": "Focused active address/search bar.", "method": "hotkey:alt+d"}
 
     # 3. First Search Result / First Video / First Link
     if any(kw in clean_target for kw in ["first result", "top result", "first video", "first link", "1st result", "first item", "top link"]):
@@ -200,7 +200,7 @@ def smart_click(target: str) -> Dict[str, Any]:
     if clean_target in tab_controls:
         keys = tab_controls[clean_target]
         gui.press_keys(keys)
-        return {"success": True, "message": f"Executed '{clean_target}' via shortcut {' + '.join(keys)}.", "method": "hotkey"}
+        return {"success": True, "message": f"Executed '{clean_target}'.", "method": "hotkey"}
 
     # 4b. Download / Save (common in browsers, WhatsApp, dialogs)
     if any(kw in clean_target for kw in ["download", "save image", "save file", "save as"]):
@@ -213,7 +213,7 @@ def smart_click(target: str) -> Dict[str, Any]:
             return dl_res
         # Fallback: common save shortcut
         gui.press_keys(["ctrl", "s"])
-        return {"success": True, "message": "Sent save shortcut (Ctrl+S).", "method": "hotkey:ctrl+s"}
+        return {"success": True, "message": "Saved file.", "method": "hotkey:ctrl+s"}
     media_controls = {
         "play": ["space"],
         "pause": ["space"],
@@ -249,7 +249,7 @@ def smart_click(target: str) -> Dict[str, Any]:
     if clean_target in common_hotkeys:
         keys = common_hotkeys[clean_target]
         gui.press_keys(keys)
-        return {"success": True, "message": f"Executed action '{clean_target}' via shortcut {' + '.join(keys)}.", "method": "hotkey"}
+        return {"success": True, "message": f"Executed action '{clean_target}'.", "method": "hotkey"}
 
     # 7. File Explorer Controls & Item Navigation
     if cat == "explorer":
