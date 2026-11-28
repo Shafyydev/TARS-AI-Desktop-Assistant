@@ -438,6 +438,16 @@ def main() -> None:
                 exec_duration = time.time() - t_exec_start
                 console.print("[dim]TIMING: LLM+tools took {:.2f}s[/dim]".format(exec_duration))
 
+                # Return focus to the dashboard/TARS window after a visible browser search.
+                try:
+                    _used_browser = any(str(s.get("tool", "")).startswith("browser_") for s in (result.get("steps") or []))
+                    if _used_browser:
+                        import tools.gui_tools as _gt
+                        _gt.focus_window("Dashboard")
+                        _gt.focus_window("TARS")
+                except Exception:
+                    pass
+
                 # Output Spoken / Written Response
                 raw_response = (result.get("response") or "").strip()
                 # Speak the full response (no artificial truncation).

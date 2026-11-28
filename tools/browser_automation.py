@@ -61,7 +61,7 @@ def _ensure_browser(prefer_brave: bool = True) -> Any:
         pass
 
     brave_exe = find_brave_executable() if prefer_brave else None
-    headless = os.getenv("TARS_BROWSER_HEADLESS", "1") in ["1", "true", "True"]
+    headless = os.getenv("TARS_BROWSER_HEADLESS", "0") in ["1", "true", "True"]
 
     if brave_exe and os.path.exists(brave_exe):
         try:
